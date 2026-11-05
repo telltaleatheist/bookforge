@@ -1,0 +1,195 @@
+
+    <div class="shell">
+      <!--
+        THE TOP ROW, AND IT BELONGS TO WHOEVER IS RUNNING THIS APP.
+
+        The window has the OS's own title bar and nothing of its own under it,
+        which was right for as long as everything on screen was about the book.
+        Hosted, it is not: the host runs a queue this app knows nothing about,
+        and in the host's own windows that queue's state is in the top corner
+        where a glance finds it. So the shell's column grows a first row for it,
+        pinned to the right where a status belongs, above everything that is
+        about a document.
+
+        IT COSTS THE STANDALONE APP NOTHING AND NOT NEARLY NOTHING. The chip's
+        host element is display:none until a host pushes something, and its
+        padding is on that same element, so this row occupies no pixels at all
+        in a window nobody mounted (see the component). Inside the flex column
+        rather than fixed over it, deliberately: a chip floating at z-index over
+        the inspector would be furniture nobody could move off the panel it
+        landed on, and this is chrome, not an overlay.
+      -->
+      <app-host-status />
+      <!--
+        AND THE OTHER OCCUPANT OF THAT CORNER, which is this app's OWN queue.
+
+        Owen, 2026-08-22, verbatim: *"can you make the queue shelf a bar along
+        the top right that i can click and look at"*. So the queue is a chip in
+        the top row now — a glance, a dropdown under it, and a page behind its
+        More info button (`QueueBarComponent` carries the ruling in full and
+        the gravestone for the shelf it replaces).
+
+        THE TWO CHIPS CANNOT COLLIDE, and it is by construction rather than by
+        arrangement: the host's chip is drawn only while a host is pushing a
+        status, and this one is not rendered hosted at all. Each is the corner's
+        whole content in exactly the world the other is absent from. Two rows in
+        the column rather than one shared row, because they are two components
+        with two visibility rules and a shared row would be a third rule to keep
+        in step with both.
+      -->
+      <app-queue-bar />
+      <div class="body">
+        <!--
+          THE LEFT SIDEBAR IS PERMANENT CHROME NOW, and that is Owen's sixth
+          ruling arriving rather than a change of mind about empty panels. It
+          used to be drawn only when there was something to LIST — *"an empty
+          list is 220 pixels of nothing taken off Home"* — and the dock's
+          buttons lived in a row along the bottom of the window. The buttons are
+          inside this panel now, so an unrendered sidebar would be an app with
+          no Settings, no Home and no Documents button on the one screen it
+          opens on. The justification inverted with the contents: a panel
+          holding the app's tools is not nothing.
+
+          Collapsed it is a 30px stub — the reopen button at the top, the tools
+          icon-only at the bottom — so putting the library away never puts the
+          dock away with it. The class is set HERE, on the element the shell's
+          flex row measures, so the width change and the flag are one pass.
+        -->
+        <app-open-documents [class.shut]="!ui.documentsShown()" />
+        <main class="main"><router-outlet /></main>
+        @if (inspectorUp()) {
+          <app-inspector />
+        }
+      </div>
+      <!--
+        THE NOTICES, AND THEY ARE IN THE SHELL NOW RATHER THAN ON A ROUTE.
+
+        `app-notice-bar` is deleted (Owen's ruling, 2026-08-22: Foundry's notices
+        should be toasts, hit on a multi-line capture refusal drawn as a band
+        across the top of the window). What replaces it is a stack of cards in the
+        bottom-right corner — `ToastTrayComponent`, whose
+        docblock carries the ruling, the arithmetic of the offset and the cost of
+        having no severity.
+
+        THE BAR WAS MOUNTED IN THE WORKSPACE PAGE, which was a smaller mistake
+        hiding inside the big one: a notice is about the WINDOW, not about a
+        route, and half the writers of the signal — the action menu, the library
+        panel, the queue panel's Save… — can be pressed with Settings on screen.
+        Every one of those sentences was raised into a component that was not
+        rendered, and vanished without ever being drawn. Here it is a sibling of
+        the queue bar and the dialogs, which is what it always was in kind: chrome
+        over the whole window, alive on every route.
+
+        Always mounted, never gated: the tray IS the reader of
+        `NoticeService.notice`, and a gate would be a door with nobody behind it.
+      -->
+      <app-toast-tray />
+
+      @if (ui.ocrOpen()) {
+        <app-ocr-dialog />
+      }
+
+      @if (ui.exportOpen()) {
+        <app-export-dialog />
+      }
+
+      @if (ui.translateOpen()) {
+        <app-translate-dialog />
+      }
+
+      @if (ui.simplifyOpen()) {
+        <app-simplify-dialog />
+      }
+
+      <!--
+        CLEAN TEXT. The card is mounted on its signal like every other dialog here;
+        what keeps it out of a standalone window is that nothing there can raise
+        the signal — the tile is drawn only when hosted (action-menu.component.ts).
+        Gating the mount as well would be a second copy of one rule.
+      -->
+      @if (ui.cleanOpen()) {
+        <app-clean-dialog />
+      }
+
+      @if (ui.metadataOpen()) {
+        <app-metadata-dialog />
+      }
+
+      @if (ui.mintMetaOpen()) {
+        <app-mint-meta-dialog />
+      }
+
+      @if (ui.captureNewOpen()) {
+        <app-capture-new-dialog />
+      }
+
+      <!--
+        THE REVIEW OF AN ASK RUN, WHICH IS THE ONE DIALOG HERE THAT IS NOT ABOUT
+        THE POSITION. The five above configure an act against the step somebody
+        is standing on; this one is about the BOOK PANE that is open: it lists
+        what the model marked and pushes the undo of any of it onto that pane's
+        own stack. It took the Sweep's place (Owen, 2026-10-29: "we dont need
+        sweep"). It is mounted with them because it is a modal and obeys the
+        one-question-at-a-time rule with them, and for no other reason.
+      -->
+      @if (ui.askReviewOpen()) {
+        <app-ask-review-dialog />
+      }
+      @if (ui.askPresetsOpen()) {
+        <app-ask-presets-dialog />
+      }
+
+      <!--
+        THE ANALYSIS DIALOG, mounted with the acts above it because it IS one of
+        them: it configures a run against the position, enqueues it held, and asks
+        nothing about the pane in front of anybody. What it produces is not a state
+        of the book but a report ABOUT it, which is why the thing that draws its
+        result is a COLUMN and not another modal — see the workspace's second
+        column, and docs/ANALYSIS.md §8.
+      -->
+      @if (ui.analysisOpen()) {
+        <app-analysis-dialog />
+      }
+
+      <!--
+        NOT IN UiService's ONE-QUESTION LIST, and not gated on a flag at all.
+        That list exists because a modal is a QUESTION and only one can be asked
+        at a time; this is a REPORT about work already under way, so only()
+        closing it when something else opens would be exactly wrong. It draws
+        while the service says an intake is running and not otherwise.
+      -->
+      <app-capture-progress />
+
+      <!--
+        FIRST RUN, AND IT IS MOUNTED UNCONDITIONALLY FOR A HARDER REASON THAN
+        capture-progress's. An @if around this is a DESTROY, and this component
+        holds the subscriptions that draw an environment download and a page-reader
+        download — both of which take many minutes, and the first of which keeps
+        running in another process regardless. A wrapper flag that flickered would take the
+        only progress a person can see off the screen while the download it was
+        reporting carried on. It decides its own visibility from
+        UiService.setupOpen, which the shell never touches.
+      -->
+      <app-setup-wizard />
+
+      <!--
+        THE HOST'S OWN ACT, CONFIGURED IN THIS WINDOW. Opened by a request
+        rather than a boolean (`UiService.hostOpOpen`), because unlike the five
+        above it cannot work out for itself what it is about: which operation,
+        which book, which node. Standalone nothing ever opens it — no host, no
+        operations, no forms.
+      -->
+      @if (ui.hostOpOpen() !== null) {
+        <app-host-op-dialog />
+      }
+
+      <!-- Always mounted, unlike the three above: it owns its own visibility
+           because the service that settles its promise has to be able to close
+           it from anywhere, including from another dialog opening. -->
+      <app-confirm-dialog />
+
+      @if (dropping()) {
+        <div class="drop-veil"><span>{{ dropSays() }}</span></div>
+      }
+    </div>
+  

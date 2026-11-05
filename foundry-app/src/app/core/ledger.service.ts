@@ -1,9 +1,9 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import { positionOf } from '@shared/ledger';
-import { fold } from '@shared/original';
-import { admitPending, pendingStepOf, rowMinting, withPending } from '@shared/pending';
-import type { Job, LedgerStep, ProjectLedger, StepRow } from '@shared/types';
+import { positionOf } from '@owen/foundry-core/shared/ledger';
+import { fold } from '@owen/foundry-core/shared/original';
+import { admitPending, pendingStepOf, rowMinting, withPending } from '@owen/foundry-core/shared/pending';
+import type { Job, LedgerStep, ProjectLedger, StepRow } from '@owen/foundry-core/shared/types';
 
 import { ConfirmService } from './confirm.service';
 import { api } from './foundry';

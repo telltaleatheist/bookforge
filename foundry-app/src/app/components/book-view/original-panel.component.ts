@@ -12,7 +12,7 @@ import {
   viewChild,
 } from '@angular/core';
 
-import type { BookRow } from '@shared/book';
+import type { BookRow } from '@owen/foundry-core/shared/book';
 import { api } from '../../core/foundry';
 
 /**
@@ -77,140 +77,8 @@ import { api } from '../../core/foundry';
 @Component({
   selector: 'app-original-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="strip">
-      <button
-        type="button"
-        class="step"
-        aria-label="Previous page"
-        [disabled]="shown() <= 1"
-        (click)="flip(-1)"
-      >‹</button>
-      <span class="foot">{{ caption() }}</span>
-      @if (browse() !== null) {
-        <button
-          type="button"
-          class="step"
-          aria-label="Back to the reading position"
-          title="Back to the reading position"
-          (click)="home()"
-        >⌖</button>
-      }
-      <button
-        type="button"
-        class="step"
-        aria-label="Next page"
-        [disabled]="count() !== null && shown() >= count()!"
-        (click)="flip(1)"
-      >›</button>
-    </div>
-    @if (sentence(); as said) {
-      <p class="says">{{ said }}</p>
-    } @else if (row() !== null) {
-      <!--
-        THE PAGE SCROLLS INSIDE ITS OWN BOX. The panel is a column of the
-        pane's height and a printed page at reading width is taller than it,
-        so the scroller is where the rest of the page lives — a plain
-        overflow, so the mouse wheel over the panel does what a wheel over a
-        tall thing does everywhere, with no listener written for it.
-      -->
-      <div class="frames" #frames>
-        <div class="frame" [style.aspect-ratio]="ratio()">
-          <canvas #sheet></canvas>
-          @if (mark(); as box) {
-            <div
-              class="box"
-              [style.left.%]="box.left"
-              [style.top.%]="box.top"
-              [style.width.%]="box.width"
-              [style.height.%]="box.height"
-            ></div>
-          }
-        </div>
-      </div>
-    }
-  `,
-  styles: [`
-    :host {
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      /*
-        THE PANEL'S ONE DECLARED WIDTH. A fraction of the pane with a floor a
-        page is still readable at and a ceiling that keeps the bench the wider
-        partner — the paper is the work and this is the reference. The bench
-        beside it keeps its own scroller and its sheet re-centres in what is
-        left, which is the "gray area" of the ruling giving some of itself up.
-
-        (This comment once ended with an HTML closer instead of this CSS one —
-        one character of template muscle-memory, and the parser silently ate
-        every rule from here to the middle of .frame: no .closed, no flex
-        basis, a white host, a bench squeezed to zero. The gates cannot see a
-        wrong terminator inside a string; the running page named it.)
-      */
-      flex: 0 0 clamp(16rem, 28vw, 30rem);
-      border-left: 1px solid color-mix(in srgb, var(--ink-note) 30%, transparent);
-      background: var(--bench);
-    }
-    :host(.closed) { display: none; }
-    .strip {
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.4rem 0.6rem;
-      border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-      color: var(--ink-soft);
-    }
-    .step {
-      flex: none;
-      width: 1.35rem;
-      height: 1.35rem;
-      padding: 0;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-      border-radius: var(--radius);
-      background: transparent;
-      color: inherit;
-      font-size: 0.9em;
-      line-height: 1;
-      cursor: pointer;
-    }
-    .step:hover:not(:disabled) { background: color-mix(in srgb, currentColor 10%, transparent); }
-    .step:disabled { opacity: 0.35; cursor: default; }
-    .foot { flex: 1; font-size: 0.75em; }
-    .frames {
-      flex: 1 1 0;
-      min-height: 0;
-      overflow: hidden auto;
-      padding: 0.6rem;
-      scrollbar-width: thin;
-    }
-    .frame {
-      position: relative;
-      /* A DEFINITE WIDTH — the capture cards' lesson: an item sized only by
-         its own aspect ratio collapses to zero with the ratio still reading
-         correctly in the inspector. */
-      width: 100%;
-      background: #fff;
-      border: 1px solid rgb(0 0 0 / 0.25);
-      box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
-    }
-    .frame canvas { display: block; width: 100%; height: 100%; }
-    .box {
-      position: absolute;
-      border: 1.5px solid var(--ink-note);
-      background: color-mix(in srgb, var(--ink-note) 12%, transparent);
-    }
-    .says {
-      margin: 0;
-      padding: 1rem;
-      font-size: 0.8em;
-      line-height: 1.5;
-      color: var(--ink-soft);
-    }
-  `],
+  templateUrl: './original-panel.component.html',
+  styleUrl: './original-panel.component.scss',
 })
 export class OriginalPanelComponent {
   /**

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 
-import type { LedgerStep } from '@shared/types';
+import type { LedgerStep } from '@owen/foundry-core/shared/types';
 
 import { OpenDocumentsService } from '../../core/documents.service';
 import { LedgerService } from '../../core/ledger.service';
@@ -57,112 +57,8 @@ import { StageService } from '../../core/stage.service';
 @Component({
   selector: 'app-compare-picker',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <!--
-      DRAWN ONLY WHERE THERE IS SOMETHING TO COMPARE AGAINST. A project with one
-      step has no second row to offer, and a button whose menu would be empty is
-      furniture that teaches somebody the feature does not work.
-    -->
-    @if (choices().length > 0) {
-      <button
-        type="button"
-        class="act"
-        [class.on]="stage.compare() !== null"
-        title="Put another step beside this one, read-only"
-        (click)="open($event)"
-      >Compare</button>
-    }
-
-    <!--
-      THE APP'S ONE CONTEXT-MENU IDIOM: a full-window scrim under a fixed menu, so
-      the next click anywhere dismisses it exactly once and cannot also land on
-      whatever was underneath. The library's own vocabulary, to the pixel — there
-      is one of these in this app and a second would be a second thing to learn.
-    -->
-    @if (at(); as where) {
-      <div class="menu-scrim" (click)="at.set(null)" (contextmenu)="at.set(null)"></div>
-      <div
-        class="menu"
-        role="menu"
-        aria-label="Choose a step to compare against"
-        [style.left.px]="where.x"
-        [style.top.px]="where.y"
-        (keydown.escape)="at.set(null)"
-      >
-        <span class="lbl">compare against</span>
-        @for (step of choices(); track step.id) {
-          <button role="menuitem" (click)="choose(step)">{{ step.label }}</button>
-        }
-      </div>
-    }
-  `,
-  styles: [`
-    :host { display: contents; }
-
-    /*
-      THE HOST'S OWN BUTTON SHAPE. Both chromes this is dropped into draw their
-      controls at 11px in a bordered pill (\`.act\` on the book's head tray,
-      \`.ghost\` on the PDF toolbar), and a control that arrived wearing its own
-      idea of a button would read as something bolted on rather than as one more
-      thing this row offers. The two differ by a pixel of padding and neither
-      cares; this takes the smaller.
-    */
-    .act {
-      display: inline-flex; align-items: center;
-      height: 22px; padding: 0 9px;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-md);
-      color: var(--text-secondary);
-      font-size: 11px; line-height: 1;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .act:hover { color: var(--text-primary); border-color: var(--border-strong); }
-    /* Lit while a comparison is up, because the button is also the reminder that
-       the second column is somebody's own doing rather than the app's. */
-    .act.on {
-      background: var(--accent-faint);
-      border-color: var(--accent-strong);
-      color: var(--accent);
-    }
-
-    /* Above the panels and below the dialogs; the scrim is what makes the next
-       click dismiss it exactly once. The library's menu, to the pixel. */
-    .menu-scrim { position: fixed; inset: 0; z-index: 1000; }
-    .menu {
-      position: fixed;
-      z-index: 1001;
-      min-width: 200px;
-      max-height: 60vh;
-      overflow-y: auto;
-      padding: 4px;
-      display: flex; flex-direction: column;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-md);
-      box-shadow: 0 10px 20px -6px rgba(0, 0, 0, 0.35);
-    }
-    .menu .lbl {
-      padding: 4px 10px 6px;
-      font-family: var(--font-mono);
-      font-size: 8.5px; font-weight: 600;
-      letter-spacing: 0.12em; text-transform: uppercase;
-      color: var(--text-tertiary);
-    }
-    .menu button {
-      display: block; width: 100%;
-      padding: 6px 10px;
-      background: transparent; border: none; border-radius: var(--radius-sm);
-      color: var(--text-secondary);
-      font-size: 12px; text-align: left; cursor: pointer;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
-  `],
+  templateUrl: './compare-picker.component.html',
+  styleUrl: './compare-picker.component.scss',
 })
 export class ComparePickerComponent {
   protected readonly stage = inject(StageService);

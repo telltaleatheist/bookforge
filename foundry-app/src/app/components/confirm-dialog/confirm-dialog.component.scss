@@ -1,0 +1,107 @@
+
+    /*
+     * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT.
+     *
+     * This component is mounted for the whole life of the window — unlike the
+     * three dialogs beside it, which app.ts only creates while they are open —
+     * because the service that settles its promise has to be able to close it
+     * from anywhere. That is the right call and it has a price this file has to
+     * pay: a `position: fixed; inset: 0` host is a full-window sheet of glass
+     * over the application AT ALL TIMES, and while the `@if` above leaves it
+     * empty and invisible, an empty sheet of glass still swallows every click
+     * that lands on it. It did: with nothing being confirmed, Home's rows, the
+     * rail, the tabs — the entire app — took the pointer and did nothing with
+     * it, which reads exactly like an app that has died.
+     *
+     * `pointer-events: none` here and `auto` on the two things that are drawn
+     * fixes it in the state-independent way: the host never takes a click, open
+     * or closed, and the scrim and the card take their own because they are
+     * what a person can actually see to click on.
+     *
+     * THE Z-INDEX IS ABOVE THE OTHER DIALOGS' 1200 AND THAT IS LOAD-BEARING NOW.
+     * This card draws OVER whatever raised the question rather than replacing it
+     * (see `ConfirmService`), so being above the OCR card is what makes "the
+     * question is modal" true while the card behind it is still there to go back
+     * to.
+     */
+    :host { position: fixed; inset: 0; z-index: 1300; display: block; pointer-events: none; }
+
+    .scrim {
+      position: absolute; inset: 0;
+      pointer-events: auto;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(4px);
+      animation: fade 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+    .card {
+      position: relative;
+      pointer-events: auto;
+      width: min(520px, calc(100vw - 48px));
+      max-height: calc(100vh - 96px);
+      margin: 64px auto 0;
+      display: flex; flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.45);
+      outline: none;
+      animation: rise 140ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    .head { padding: 16px 20px 8px; }
+    .title { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+
+    .body { padding: 0 20px 4px; overflow-y: auto; }
+    .lead { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--text-primary); }
+    .line { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+
+    /* The standing answer sits with the sentences rather than with the buttons:
+       it is a statement about the question, and a tick beside the buttons reads
+       as a fourth answer. */
+    .standing {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 20px 12px;
+      font-size: 12px; color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .standing input { accent-color: var(--accent-strong); cursor: pointer; }
+
+    .foot {
+      display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
+      padding: 12px 20px 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .ghost, .danger, .primary {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 32px; padding: 0 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+    }
+    .ghost {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+    }
+    .ghost:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    /* The answer worth pressing, in the app's own accent: it is the one that
+       costs nothing and keeps everything — a save before a close, an offer to
+       carry a rename across. */
+    .primary {
+      border: none;
+      background: var(--accent-strong); color: var(--text-inverse);
+    }
+    .primary:hover { background: var(--accent); }
+    .primary:active { transform: scale(0.98); }
+    /* The error colour, filled rather than hinted: this button ends something.
+       The same red the "not there any more" tag and Home's delete hover use. */
+    .danger {
+      border: none;
+      background: var(--error); color: var(--text-inverse);
+    }
+    .danger:hover { filter: brightness(1.08); }
+    .danger:active { transform: scale(0.98); }
+  

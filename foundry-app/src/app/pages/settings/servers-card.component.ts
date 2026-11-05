@@ -74,18 +74,19 @@ import { CrucibleDoorsComponent } from '../../components/crucible-doors/crucible
 import { CrucibleInstallOutcomeComponent } from '../../components/crucible-doors/install-outcome.component';
 import { NoticeService } from '../../core/notice.service';
 import { cardWords, coordinationWords } from '../../core/crucible-words';
-import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
-import { ANY_SLOT } from '@shared/slots';
+import type { CrucibleCoordinationMap } from '@owen/foundry-core/shared/coordinate-wire';
+import { ANY_SLOT } from '@owen/foundry-core/shared/slots';
 import type {
   ComputeSlot,
   CrucibleProbe,
   CrucibleServerEdit,
   CrucibleServerView,
   NewJobsWaitFor,
-} from '@shared/slots';
-import type { Job } from '@shared/types';
+} from '@owen/foundry-core/shared/slots';
+import type { Job } from '@owen/foundry-core/shared/types';
 import { api } from '../../core/foundry';
 import { QueueService } from '../../core/queue.service';
+import { ServerRepairComponent } from '../../components/crucible-doors/server-repair.component';
 
 /**
  * One row as this card edits it: the view, plus the token somebody may have
@@ -103,319 +104,10 @@ interface EditableServer extends CrucibleServerView {
 
 @Component({
   selector: 'app-servers-card',
-  imports: [FormsModule, CrucibleDoorsComponent, CrucibleInstallOutcomeComponent],
+  imports: [FormsModule, CrucibleDoorsComponent, CrucibleInstallOutcomeComponent, ServerRepairComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Servers</span>
-        @if (saved()) { <span class="badge">saved</span> }
-      </div>
-
-      @if (hosted()) {
-        <p class="detail">
-          The slots below belong to the application Foundry is running inside. Change them there.
-        </p>
-        @for (slot of slots(); track slot.name) {
-          <p class="small mono">{{ slot.name }}@if (slot.url) { — {{ slot.url }} }</p>
-        } @empty {
-          <p class="small">The host has offered no slots, so every job runs the way it always did.</p>
-        }
-      } @else {
-        <!--
-          FIRST MENTION IS "GPU engine (Crucible)", AND EVERY MENTION AFTER IT
-          IS "engine" — the copy rule of 2026-09-14, kept here and in
-          core/crucible-words.ts so that Foundry and BookForge say the same
-          words about the same machine. The card's TITLE stays "Servers",
-          because that is what somebody is looking for when they know the word
-          already.
-        -->
-        <p class="detail">
-          A GPU engine (Crucible) is a separate program that serves models over the network.
-          These are the engines this machine can send translation, simplification, analysis,
-          narration cleanup and page reading to, and jobs are tried in this order. Every one of
-          them is a GPU slot in the queue — including an engine running on this computer, which
-          is a server like any other. Without an engine there is no GPU slot at all, and that
-          work has nowhere to run; exports and compiles are unaffected.
-        </p>
-
-        @for (row of rows(); track row.key) {
-          <div class="server" draggable="true"
-               (dragstart)="dragFrom.set($index)"
-               (dragover)="$event.preventDefault()"
-               (drop)="dropOn($index)">
-            <div class="server-top">
-              <span class="grip" title="Drag to change the order">⠿</span>
-              <input class="name" type="text" placeholder="Mac Studio"
-                     [ngModel]="row.name" [name]="'name' + row.key"
-                     (ngModelChange)="edit(row.key, { name: $event })">
-              <label class="toggle">
-                <input type="checkbox" [ngModel]="row.enabled" [name]="'on' + row.key"
-                       (ngModelChange)="edit(row.key, { enabled: $event })">
-                <span>On</span>
-              </label>
-              <button class="ghost" (click)="drop(row.key)">Remove</button>
-            </div>
-            <input class="url" type="text" placeholder="http://192.0.2.20:7100"
-                   [ngModel]="row.url" [name]="'url' + row.key"
-                   (ngModelChange)="edit(row.key, { url: $event })">
-            <!--
-              ── NO TOKEN BOX, AND NO APPROVAL LIST ────────────────────
-
-              Both went on 2026-09-17 with Owen's ruling: *"we're making it so
-              crucible doesnt require a connect code. it just connects, like
-              ollama"*, and *"we dont use tokens anymore so that can be pulled.
-              we use ip addresses to connect to crucible servers."*
-
-              A TOKEN STILL EXISTS — the engine issues one and Foundry stores it
-              — and that is exactly why the BOX is gone rather than the field.
-              Nobody types it and nobody reads it, so a password input for a
-              value a person never sees is a control that can only be got wrong.
-
-              THE APPROVAL LIST WENT BECAUSE THERE IS NOTHING LEFT TO APPROVE.
-              Crucible 1.0.0 creates a pairing request already approved
-              (DEFAULT_OPEN_PAIRING), so the connecting app's first poll returns
-              the token. A list that is now always empty, headed by a sentence
-              telling somebody to compare a code that is never shown, is worse
-              than no list at all.
-
-              An [auth] open_pairing = false restores the approval flow on an
-              engine, and if that comes back this is where it returns — keyed
-              off the server's own answer, never off a default assumed here.
-            -->
-            <div class="server-top">
-              <button class="ghost" [disabled]="testing() === row.name"
-                      (click)="test(row.name)">
-                {{ testing() === row.name ? 'Testing…' : 'Test connection' }}
-              </button>
-              <!--
-                THE SERVER'S OWN CONSOLE. Administering an engine belongs to the
-                engine (Owen, 2026-09-14), so this is where a person goes to
-                install a job type, pull weights or read what is resident.
-              -->
-              <button class="ghost" (click)="openUi(row.name)">Advanced engine console</button>
-            </div>
-            @if (probes()[row.name]; as probe) {
-              @if (probe.outcome === 'ok') {
-                <p class="small ok">
-                  {{ probe.serverName }} {{ probe.version ?? '(version not stated)' }} — {{ probe.backend ?? 'backend not stated' }}, {{ cardWords(probe) }}
-                </p>
-                <!--
-                  Reached through an orchestrator (crucible
-                  PHASE17-ORCHESTRATOR.md §6), which is a SUCCESS and is the
-                  shape of a Windows machine with WSL: the tray answers the
-                  address in this row and the engine that did the answering
-                  above is behind it. "Open engine console" still opens the
-                  address in the row — see openCrucibleUi, which says why.
-                -->
-                @if (probe.via; as via) {
-                  <p class="small">{{ via }}</p>
-                }
-              } @else {
-                <p class="small warn">{{ probe.message }}</p>
-              }
-            }
-            <!--
-              AND WHAT FOUNDRY HAS ALREADY SAID TO IT, without anybody asking.
-              crucible docs/PHASE14-ENVPACKS.md §4a: connecting to an engine is
-              the request, so there is no button here and never was one — the
-              row says what happened. A server nothing has asked about yet has
-              no state and draws no line, because "idle" written out would be a
-              card announcing the absence of news.
-            -->
-            @if (coordinationOf(row.name); as said) {
-              <p class="small">{{ said }}</p>
-            }
-            <!--
-              TWO DOORWAYS ONTO ONE MACHINE. Owen, 2026-09-15: *"the windows
-              crucible instance should act as a passthrough for the WSL crucible
-              … it's just a passthrough to the real engine."* So this row and
-              the one it names are one card, and the queue draws ONE lane for
-              them — otherwise it would start two jobs on one GPU believing it
-              had two.
-
-              THE ROW STAYS, and that is the point of saying it. It is still
-              listed, still enabled, still editable, and work sent to either
-              address arrives at the same engine. What it does not have is a
-              lane of its own, and a row that quietly stopped being a slot would
-              be the app disagreeing with somebody's registry behind their back.
-            -->
-            @if (row.sharesEngineWith; as shared) {
-              <p class="small">
-                Same engine as "{{ shared }}" — one machine reached two ways, so the queue gives
-                them one GPU slot between them. Work sent here still arrives.
-              </p>
-            }
-            <!--
-              THE SENTENCE THAT WAS HERE SAID *"This is the engine on this
-              machine, so it replaces the local GPU slot rather than sitting
-              beside it"*, and Owen's ruling made every clause of it false:
-              *"one gpu slot in the queue per connected crucible server.
-              including the local crucible, which is indistinguishable from the
-              remote crucible server."* There is no local GPU slot for a loopback
-              engine to replace, and nothing about this row is special — so it is
-              drawn like every other row, and the card says nothing rather than
-              explaining a difference that no longer exists.
-            -->
-          </div>
-        } @empty {
-          <!--
-            THE EMPTY STATE IS NOW A REAL ONE. It read *"No servers. Everything
-            runs on this computer."* — true while this machine's own GPU was a
-            slot, and false since Owen's ruling deleted it. No engine means no GPU
-            slot, so it says what cannot run rather than promising it will run
-            here.
-          -->
-          <p class="small">
-            No engines. Translation, simplification, cleanup, analysis and page reading have
-            nowhere to run until one is added; exports and compiles are unaffected.
-          </p>
-        }
-
-        <div class="actions">
-        <!--
-          "ADD A ROW BY HAND" IS GONE (Owen, 2026-09-17: *"add row by hand seem
-          superfluous"*). It predates connecting by address: a blank row is not
-          a server, it is a form somebody then has to fill in correctly and a
-          save that fails until they do. The door below does the same job from
-          the one fact a person actually has — the address. What is left on
-          these rows edits engines that already exist.
-        -->
-          <button class="primary" [disabled]="saving()" (click)="save()">
-            {{ saving() ? 'Saving…' : 'Save' }}
-          </button>
-        </div>
-        @if (problem(); as why) { <p class="warn">{{ why }}</p> }
-
-        <!--
-          THE THREE DOORS. The same child the first-run wizard mounts, so the two
-          screens offer one set of choices — see the module note. The WSL distro
-          field lives inside door 2, beside the button that needs it.
-        -->
-        <!--
-          AND THE FOURTH DOOR, THE WAY OUT, drawn only here. The child takes an
-          input for it and the first-run wizard does not pass one: offering to
-          remove Crucible to somebody who has not installed it yet is a screen
-          teaching the wrong thing. crucible docs/INSTALL-UNINSTALL.md section
-          6.1 decides the rest — the door appears only for a server main can
-          PROVE is this machine's, and never for a registry row.
-        -->
-        <app-crucible-doors [canUninstall]="true" (changed)="load()" />
-
-        <!--
-          ── WHAT CAME OF THE LINUX ENGINE ON THIS MACHINE ────────────────────
-
-          crucible PHASE19 section 2.2. This is the readout that replaced
-          Settings, AI's button offering to set WSL acceleration up: the move happens by
-          itself as the last step of the install (section 2.3) and nobody is
-          asked for it, so what is left to show is the outcome -- nothing at all
-          on a machine that is done or that was kept native on purpose, the
-          state table's own sentence and Try again on one that cannot, and
-          Restart now while Windows is waiting for one.
-
-          IT IS ON THIS CARD BECAUSE THIS CARD IS ABOUT MACHINES. Settings, AI
-          is about which model answers which class; a restart prompt among the
-          routes would be a second screen about the computer underneath them.
-
-          (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
-        -->
-        <app-crucible-install-outcome />
-
-        <!--
-          WHAT A NEW ROW STARTS AS. It is resolved to a slot NAME at the press,
-          never carried as the word "top" — see AppSettings.newJobsWaitFor.
-        -->
-        <label class="field">
-          <span class="label">New jobs wait for</span>
-          <select name="newJobs" [ngModel]="newJobsWaitFor()"
-                  (ngModelChange)="setNewJobsWaitFor($event)">
-            <option value="top">The top-ranked slot</option>
-            <option value="any">Any — whichever is free first</option>
-          </select>
-        </label>
-
-        @if (slots().length > 1) {
-          <p class="small">
-            Slots, in order: {{ slotNames() }}. Every queued job can be sent to one of them, or
-            to "any", from its own row on the queue page.
-          </p>
-        }
-
-        @if (orphans().length > 0) {
-          <!--
-            TOLD, NEVER MOVED SILENTLY. These rows named a server that is now off
-            or gone; nothing has happened to them and nothing will until this is
-            pressed.
-          -->
-          <p class="warn">
-            {{ orphans().length }} waiting
-            {{ orphans().length === 1 ? 'job is' : 'jobs are' }} still set to a server that is
-            switched off or no longer here.
-          </p>
-          <div class="actions">
-            <button class="ghost" (click)="freeOrphans()">Send them to any slot</button>
-          </div>
-        }
-      }
-    </div>
-  `,
-  styles: [`
-    :host { display: block; }
-    .card {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius);
-      padding: 12px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .card-head { display: flex; align-items: center; gap: 8px; }
-    .card-title { font-family: var(--font-display); font-weight: 600; font-size: 13px; flex: 1; }
-    .badge {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--ok); background: var(--ok-soft); border-radius: 999px; padding: 2px 8px;
-    }
-    .detail { margin: 0; font-size: 12px; color: var(--text-secondary); }
-    .small { font-size: 11px; color: var(--text-tertiary); margin: 0; }
-    .mono { font-family: var(--font-mono); word-break: break-all; }
-    .warn { color: var(--warn); font-size: 12px; margin: 0; }
-    .ok { color: var(--ok); }
-
-    .server {
-      display: flex; flex-direction: column; gap: 6px;
-      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-      padding: 8px;
-    }
-    .server-top { display: flex; align-items: center; gap: 6px; }
-    .grip { cursor: grab; color: var(--text-tertiary); font-size: 13px; }
-    .name { flex: 1; min-width: 0; }
-    .url { flex: 1; min-width: 0; }
-    .toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .label {
-      font-size: 10px; font-weight: 600; text-transform: uppercase;
-      letter-spacing: 0.08em; color: var(--text-tertiary);
-    }
-
-    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .primary, .ghost {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 26px; padding: 0 12px;
-      border-radius: var(--radius-sm);
-      font-size: 12px; font-weight: 500; line-height: 1;
-      cursor: pointer;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .primary { border: none; background: var(--accent); color: var(--text-inverse); }
-    .primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
-    .ghost { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); }
-    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
-    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
-  `],
+  templateUrl: './servers-card.component.html',
+  styleUrl: './servers-card.component.scss',
 })
 export class ServersCardComponent {
   /*
@@ -434,6 +126,7 @@ export class ServersCardComponent {
   protected readonly cardWords = cardWords;
 
   protected readonly rows = signal<EditableServer[]>([]);
+  protected readonly reinstallNeeded = signal(false);
   protected readonly slots = signal<ComputeSlot[]>([]);
   protected readonly newJobsWaitFor = signal<NewJobsWaitFor>('top');
   protected readonly hosted = signal(false);

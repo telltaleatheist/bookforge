@@ -1,0 +1,65 @@
+
+    @if (stage.activeDocument(); as tab) {
+      <!--
+        ONE COLUMN, OR TWO WHILE A COMPARISON IS UP.
+
+        The row is present either way and holds one child in the ordinary case,
+        so the live viewer's box is the same element whether or not a second
+        column is beside it — a viewer that was re-created by opening a
+        comparison would lose the reader's place in the book they were reading.
+      -->
+      <div class="row">
+        <section class="stage" (pointerdown)="stand(tab.id)">
+          <app-viewer [tab]="tab" />
+        </section>
+        <!--
+          THE SECOND COLUMN IS ONE THING OR NOTHING, and the union on the stage is
+          what makes that true rather than these two @ifs (see `SecondColumn`).
+          Written as two blocks because they are two components; they cannot both
+          draw, because one signal cannot hold two values.
+        -->
+        @if (stage.compare() !== null) {
+          <app-compare-column />
+        }
+        @if (stage.analysis() !== null) {
+          <app-analysis-panel />
+        }
+      </div>
+    } @else if (heldTitle(); as title) {
+      <!--
+        NOTHING OPEN IS NOT NO PROJECT. The window keeps the book it was working
+        on (StageService.heldProject): the tree stays up on the left, and this
+        bench says the way back is one click away. Home is where you go on
+        purpose, by the button.
+      -->
+      <div class="held">
+        <p class="held-title">{{ title }}</p>
+        <p class="held-hint">Nothing is open. Click a step in the tree to open it here.</p>
+        <!--
+          THE WAY OUT IS TO THE LIBRARY, SO HOSTED THERE IS NOWHERE FOR IT TO GO.
+          `leave()` releases the held project, and an empty workspace with no
+          project held is Home — so this button is a door onto Foundry's own
+          library, which a hosted window must not have (see the class docblock).
+        -->
+        @if (!hosted()) {
+          <button type="button" class="held-leave" (click)="leave()">Back to the library</button>
+        }
+      </div>
+    } @else if (hosted()) {
+      <!--
+        HOSTED, THE EMPTY WORKSPACE IS A BENCH AND NEVER HOME — see the class
+        docblock for the two routes this closes.
+
+        It says only what is true from here. A window can be empty because the
+        document it was opened for has not arrived yet, or because the deep link
+        found nothing openable and gave up (`openFoundryWindow`, electron/mount.ts),
+        and this branch cannot tell those apart — so it names neither, and the
+        host's own window is where the reason belongs.
+      -->
+      <div class="held">
+        <p class="held-hint">Nothing is open in this window.</p>
+      </div>
+    } @else {
+      <app-home />
+    }
+  

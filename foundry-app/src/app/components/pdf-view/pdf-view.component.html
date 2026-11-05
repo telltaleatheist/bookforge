@@ -1,0 +1,179 @@
+
+    <div class="pdf">
+      <header class="toolbar">
+        <!-- THIS ROW DOES NOT NAME THE DOCUMENT. It did, for as long as there
+             was nothing above it that would — but the chrome-style strip is
+             back (the workspace draws a tab per document, with its title on
+             it), so a title here is the same word twice, one row apart, on a
+             row that already has to fit a search box, a zoom group and a page
+             counter. -->
+        <!--
+          THE TWO VIEW MODES, AND THE COMPARE CONTROL, ARE THE THREE THINGS A
+          COMPARE COLUMN HAS NO USE FOR. Both toggles write through the tab id
+          (`toggleLayerView`, `toggleThumbnails`) and a compare column's tab
+          is synthetic — not in the documents list, so the write would land
+          nowhere and the buttons would be dead. Compare itself is worse than
+          dead there: it would offer a third column from inside the second.
+          Everything else on this row — the search, the zoom, the page counter —
+          is exactly what somebody comparing a scan wants, and stays.
+        -->
+        @if (!readOnly()) {
+          <button
+            class="ghost"
+            [class.on]="tab().layerView"
+            [disabled]="doc() === null"
+            (click)="documents.toggleLayerView(tab().id)"
+          >{{ tab().layerView ? 'Hide text layer' : 'Text layer' }}</button>
+          <button
+            class="ghost"
+            [class.on]="tab().thumbnails"
+            [disabled]="doc() === null"
+            (click)="documents.toggleThumbnails(tab().id)"
+          >Thumbnails</button>
+          <!--
+            AND A SCAN GETS COMPARE TOO. The question *"is this what the page
+            actually said?"* is asked at least as often over a photograph of a
+            page as over the book reflowed from it, and a control that existed
+            only on the book would make the answer depend on which face of the
+            project happened to be up. This toolbar is its natural home: it is
+            the row that already carries what-am-I-looking-at-and-how.
+          -->
+          <app-compare-picker />
+        }
+        <!--
+          ── THERE IS NO BLOCKS BUTTON AND THERE IS NO BLOCK LAYER ──
+
+          Both are deleted. The layer turned this pane into an editing surface —
+          outline what the model read off the scan, strike it, relabel it, mark
+          the chapters — and the user asked what it was for, which is the answer:
+          a scan is a photograph of pages, and editing what the book SAYS on a
+          photograph of it means every correction is made in per-page coordinates
+          the flowing document has already thrown away. A1 retires it
+          (docs/RENDERER.md §0): the scan and the facsimile stay VIEWABLE, and
+          editing happens on the rendered book alone.
+
+          THE DISPLAY WENT WITH THE EDITOR AND THAT IS A JUDGEMENT, not an
+          oversight. What remained after the gestures came out would have read the
+          overlay file — {page, order, note} decisions over a bank — and that
+          grammar and every module that speaks it are deleted whole in the same
+          wave (§7). An outline layer that survived would have had to keep the
+          grammar alive to draw less than the proof sheet already draws, over a
+          photograph, in the chrome ruling 8 calls "sloppy and ugly". So the pane
+          is a viewer: the page, its text layer, the thumbnails and the search.
+        -->
+
+        <span class="counter">{{ current() }} / {{ shells().length }}</span>
+
+        <div class="zoom">
+          <button class="icon" title="Zoom out" [disabled]="doc() === null" (click)="zoomOut()">−</button>
+          <button class="icon" title="Zoom in" [disabled]="doc() === null" (click)="zoomIn()">+</button>
+          <button class="icon wide" title="Fit width" [disabled]="doc() === null" (click)="fitWidth()">Fit</button>
+        </div>
+
+        <div class="find">
+          <input
+            #needle
+            type="search"
+            placeholder="Search this document"
+            spellcheck="false"
+            [value]="query()"
+            (input)="onQuery(needle.value)"
+            (keydown.enter)="step(1)"
+            [attr.aria-label]="'Search ' + tab().title"
+          >
+          <span class="hits">
+            @if (searching()) { reading… }
+            @else if (query().length === 0) { }
+            @else if (matches().length === 0) { no matches }
+            @else { {{ at() + 1 }} of {{ matches().length }} }
+          </span>
+          <button class="icon" title="Previous match" [disabled]="matches().length === 0" (click)="step(-1)">‹</button>
+          <button class="icon" title="Next match" [disabled]="matches().length === 0" (click)="step(1)">›</button>
+        </div>
+
+        <!--
+          ── SAVE A COPY IS NOT ON THIS ROW ANY MORE ──
+
+          It dropped a copy of whatever file the pane happened to be pointed at
+          into a folder of the user's choosing — no record of it in the project,
+          nothing to say which step of the ledger it was a picture of, and one
+          more copy of a scan for somebody to find in six months and wonder about.
+          Getting a document out is Export, on the dock: it names a PRODUCT, it
+          is made from the position you are standing on, and the result is filed
+          under the project where it can be found again.
+
+          The save-as call on the service stays — the close-with-corrections
+          dialog is still allowed to offer somewhere to put them.
+        -->
+      </header>
+
+      @if (problem(); as reason) {
+        <div class="problem">
+          <h1>This PDF would not open</h1>
+          <p>{{ reason }}</p>
+        </div>
+      } @else {
+        <div class="panes" [class.split]="tab().layerView">
+          <div class="viewport" #viewport (scroll)="onScroll()" (wheel)="onWheel($event)">
+            <div class="reel">
+              @for (shell of shells(); track shell.number) {
+                <div
+                  class="page"
+                  #pageBox
+                  [attr.data-page]="shell.number"
+                  [style.width.px]="shell.width"
+                  [style.height.px]="shell.height"
+                >
+                  <canvas></canvas>
+                  <div class="text"></div>
+                  @if (pageProblems().get(shell.number); as reason) {
+                    <p class="page-problem">This page would not render — {{ reason }}</p>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+
+          @if (tab().layerView) {
+            <div class="viewport paper-side" #layerViewport (scroll)="onLayerScroll()" (wheel)="onWheel($event)">
+              <div class="reel">
+                @for (shell of shells(); track shell.number) {
+                  <div
+                    class="page paper"
+                    #layerBox
+                    [attr.data-page]="shell.number"
+                    [style.width.px]="shell.width"
+                    [style.height.px]="shell.height"
+                  >
+                    <div class="text shown"></div>
+                    @if (itemCounts().get(shell.number) === 0) {
+                      <p class="no-layer">This page has no text layer</p>
+                    }
+                  </div>
+                }
+              </div>
+            </div>
+          }
+        </div>
+
+        @if (tab().thumbnails) {
+          <div class="strip" #strip>
+            @for (shell of shells(); track shell.number) {
+              <button
+                class="thumb"
+                #thumbBox
+                [class.on]="current() === shell.number"
+                [attr.data-page]="shell.number"
+                [style.width.px]="thumbWidth"
+                [title]="'Page ' + shell.number"
+                (click)="jumpTo(shell.number)"
+              >
+                <canvas [style.height.px]="thumbHeight(shell)"></canvas>
+                <span>{{ shell.number }}</span>
+              </button>
+            }
+          </div>
+        }
+      }
+    </div>
+  

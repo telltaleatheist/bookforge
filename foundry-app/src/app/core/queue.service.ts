@@ -1,6 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-import type { AnalyzeRequest, CleanRequest, Job, JobRequest, TextPassRequest } from '@shared/types';
+import type { AnalyzeRequest, CleanRequest, Job, JobRequest, TextPassRequest } from '@owen/foundry-core/shared/types';
 
 import { api } from './foundry';
 

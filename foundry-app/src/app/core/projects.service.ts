@@ -1,9 +1,9 @@
 import { Injectable, effect, inject, signal } from '@angular/core';
 
-import { spokenName } from '@shared/documents';
-import { arrivedAsBook } from '@shared/stages';
-import { bookRow, fold, originalOf } from '@shared/original';
-import type { ProjectDocument, ProjectSummary } from '@shared/types';
+import { spokenName } from '@owen/foundry-core/shared/documents';
+import { arrivedAsBook } from '@owen/foundry-core/shared/stages';
+import { bookRow, fold, originalOf } from '@owen/foundry-core/shared/original';
+import type { ProjectDocument, ProjectSummary } from '@owen/foundry-core/shared/types';
 
 import { ConfirmService } from './confirm.service';
 import { QueueService } from './queue.service';

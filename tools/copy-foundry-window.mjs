@@ -132,6 +132,10 @@ function copy(from, sha) {
   for (const file of text(git(['ls-files', '--', WINDOW])).split('\n').filter(Boolean)) {
     fs.rmSync(path.join(REPO, file), { force: true });
   }
+  // Folders the copy no longer has, now empty.
+  for (const old of ['engine', 'shared', 'test', 'vendor', 'tools/checks']) {
+    fs.rmSync(path.join(REPO, WINDOW, old), { recursive: true, force: true });
+  }
   git(['read-tree', tree]);
   git(['checkout', '--', WINDOW]);
   fs.writeFileSync(path.join(REPO, RECORD), `${JSON.stringify({ sha: full }, null, 2)}\n`);

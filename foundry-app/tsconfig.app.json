@@ -2,10 +2,13 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "./out-tsc/app",
-    "types": []
+    "types": [],
+    // The renderer takes @owen/foundry-core from node_modules, through the
+    // package's exports (its ES build) — exactly what BookForge's renderer will.
+    // tsconfig.json's source mapping is for bun's tests only; this empties it.
+    "paths": {}
   },
   "include": [
-    "src/**/*.ts",
-    "shared/**/*.ts"
+    "src/**/*.ts"
   ]
 }

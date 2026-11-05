@@ -1,0 +1,1340 @@
+
+    /* ── §1 Tokens. Copied from RENDERER-DESIGN.md, and nothing else in this
+       file is a colour. The app shell keeps its own dark variables; these are
+       the paper's, declared once on the surface's host. ─────────────────── */
+    :host {
+      --bench:        var(--bg-base, #191817);
+
+      --paper:        #f6f1e7;
+      --paper-high:   #fbf8f1;
+      --ink:          #211d16;
+      --ink-muted:    #6f6659;
+      --ink-faint:    #a99f8f;
+
+      --ink-select:   #3b6ea5;
+      --ink-strike:   #a23b2a;
+      --ink-chapter:  #2f7d4f;
+      --ink-note:     #8a5a2b;
+      --ink-flag:     #b98a1c;
+      --ink-edit:     #2f7d4f;
+      /*
+        `--ink-added` IS THE COMPARISON'S SECOND INK (2026-09-08), and the first
+        is `--ink-strike` above, borrowed rather than minted. Owen asked for the
+        changes *"on each side, like in analysis"*: what the newer step DROPPED
+        is drawn on the older column in the strike's own red, because a dropped
+        word and a struck block are the same statement about words leaving the
+        book and one colour should say it; what the newer step ADDED is drawn on
+        the newer column in this green. It is a shade beside `--ink-edit` and
+        `--ink-chapter` (the paper's two greens, both "something was made
+        here") but a touch deeper and cooler, so that at the 22% wash the run
+        wears it reads as a highlighter and not as the chapter rule's mint —
+        and it is never the glyph colour, on the same alpha rule every ink on
+        this sheet is under (`.run.added`, in the styles).
+      */
+      --ink-added:    #3a7d44;
+      /*
+        `--ink-hit` DIED HERE (2026-08-25), AND THE GRAVESTONE IS THE RULING.
+
+        There was one highlight ink on this paper — an amber, #d9a441, laid at
+        20% — and a long argument beside it saying there must never be more:
+        *"One highlight ink on the paper — the page must not turn into
+        confetti."* Owen overruled it, reading the reworked panel against the
+        page: *"maybe make the text's highlighted color the same color as the
+        analysis block."*
+
+        HE IS RIGHT, AND THE OLD ARGUMENT WAS ABOUT A DIFFERENT PAGE. Confetti is
+        what a page becomes when it speaks a code with no key — twelve colours a
+        reader has to memorise. The panel beside it now IS the key: a legend of
+        named, coloured chips, and every card carrying its category's hue on its
+        rail. The tint and the card are one fact drawn twice rather than two facts
+        competing, which is exactly what shared/categories.ts's header says a
+        colour has to be to be worth having.
+
+        WHAT SURVIVES IS THE ALPHA DISCIPLINE, which is where the real risk always
+        was: the words stay black on warm and only the wash behind them is
+        coloured — a pale stroke, never a pigment, and never the glyphs (*"the
+        text shouldn't be a different color, just a light highlight color
+        difference"*). The recipe is `tintOf` at the foot of this file, composed
+        from `analysisCategoryHue` — the ONE hue table, which the panel's rails
+        read too, so the two surfaces cannot disagree about which category is
+        which colour. It is not a token because it is not one value.
+      */
+
+      --gutter:       3.25rem;
+      --rail-w:       3px;
+      --radius:       3px;
+      --shadow-paper: 0 1px 2px rgb(0 0 0 / .4), 0 12px 48px rgb(0 0 0 / .28);
+
+      --ease:         cubic-bezier(.2, .7, .3, 1);
+      --t-fast:       120ms;
+      --t-med:        180ms;
+
+      /* A COLUMN NOW: the head row first, the pair filling the rest. The
+         bench ground is painted on the host itself because the head row is
+         narrower than the pane — the strip either side of it would otherwise
+         be the viewer's own darker sunken tone showing through a surface
+         that is meant to read as one bench. */
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      background: var(--bench);
+      /*
+       * WHAT LETS A BLOCK COLLAPSE FROM THE HEIGHT IT HAPPENS TO HAVE. §6 asks
+       * that things which leave the document collapse, and a block's height is
+       * `auto` — there is no number to animate from, and measuring one is the
+       * FLIP machinery this surface has been told not to grow (see `join`).
+       * `interpolate-size` is the browser doing that measurement itself, which
+       * is why the collapse below is nine lines of CSS and no JavaScript. It is
+       * inherited, so it is declared once here; nothing else on this sheet
+       * animates a keyword, so it changes nothing that is already drawn.
+       */
+      interpolate-size: allow-keywords;
+    }
+
+    /* ── §2 The paper ─────────────────────────────────────────────────────── */
+
+    /* The bench shows above and below the sheet so the paper reads as an object
+       and not as a fill. Clipped horizontally rather than scrollable: a margin
+       chip longer than its gutter is chrome, and chrome must never be able to
+       give the page a second scrollbar. */
+    .bench, .context {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden auto;
+      padding-block: 3rem;
+      background: var(--bench);
+      scrollbar-width: thin;
+      scrollbar-color: #3a3733 transparent;
+      /* Equal halves of the pair, and zero basis so a long word in one column
+         cannot widen it at the other's expense. Alone, one item at `flex: 1` is
+         the whole width, which is what the bench has always been. */
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    .bench::-webkit-scrollbar, .context::-webkit-scrollbar { width: 8px; }
+    .bench::-webkit-scrollbar-track, .context::-webkit-scrollbar-track { background: transparent; }
+    .bench::-webkit-scrollbar-thumb, .context::-webkit-scrollbar-thumb {
+      background: #3a3733;
+      border-radius: 4px;
+    }
+
+    .sheet {
+      position: relative;
+      /*
+       * THE GRAY IS RESERVED IN REMS, NOT IN PERCENT. The category chip hangs
+       * LEFT of the sheet by its own width plus 0.5rem, and the widest of them
+       * ("Section header", with a selection count after it) needs ~5rem beyond
+       * the sheet's edge. A percentage cap promises a FRACTION of gray, which
+       * at some window width is always less than a chip — Owen has now met
+       * that clip twice, in two different layouts ("ON HEADER", then "ECTION
+       * HEADER" with the original panel up). So the fallback arm is absolute:
+       * whatever the bench's width, the sheet leaves 5rem of gray a side, and
+       * the chip has its room in every mode there is or will be.
+       *
+       * HALVED TO 2.5rem A SIDE (Owen, 2026-11-03: *"looks like the book has
+       * margins on the sides that could be used. we can reduce the margins a
+       * bit more, maybe half what they are on each side"*). Still absolute, for
+       * the reason above — but 2.5rem is less than the widest chip's ~5rem, so
+       * a "Section header" chip with a count can reach past the gray again.
+       * That trade was Owen's to make and is named here so it is not
+       * rediscovered as a bug.
+       */
+      width: min(var(--measure-alone, 46rem), calc(100% - 5rem));
+      margin: 0 auto;
+      padding: 4.5rem var(--gutter) 6rem;
+      border-radius: 2px;
+      background: var(--paper);
+      box-shadow: var(--shadow-paper);
+
+      font-family: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
+      /* --zoom is the loupe — Ctrl+wheel, set natively on the host — and it
+         multiplies the type rather than transforming the box, so every
+         em-derived measure on the paper scales with the words as one thing. */
+      font-size: calc(1.05rem * var(--zoom, 1));
+      line-height: 1.62;
+      color: var(--ink);
+      text-rendering: optimizeLegibility;
+      /* The archival blue at reading strength — the browser's washed default
+         made a selection something to squint at (user report, 2026-08-16). */
+      &::selection, & *::selection {
+        background: color-mix(in srgb, var(--ink-select) 30%, transparent);
+      }
+      /* A drag over the sheet is the marquee (§3). A native text selection left
+         behind by one would be a second highlight nothing on screen explains, so
+         the browser's own is off — copying a block's words is a gesture this
+         surface does not offer yet. */
+      user-select: none;
+      /* §5 — the crossfade into the edition. The GUTTERS are what actually
+         travels: the paper's 3.25rem of instrument margin closes to the export's
+         own `body { margin: 0 5%; }` and the leading opens from the bench's 1.62
+         to the cast sheet's 1.5, both over `--t-med`, both back again. Neither
+         property ever changes for any other reason, so this transition costs
+         nothing on a book nobody is previewing. */
+      transition:
+        padding var(--t-med) var(--ease),
+        line-height var(--t-med) var(--ease);
+    }
+
+    .sheet:focus { outline: none; }
+
+    /* ── §5 The pair ──────────────────────────────────────────────────────── */
+
+    .pair { display: flex; width: 100%; flex: 1 1 0; min-height: 0; }
+    /*
+     * *"Both sheets narrow to fit: min(38rem, 46%) each."* — the lead's measure,
+     * written here against the COLUMN because that is the box a sheet is centred
+     * in: each column is half the pair, so 92% of one is 46% of the bench, and the
+     * two spellings are the same width. What is left over is bench, on both sides
+     * of both sheets, which is the gap between them.
+     *
+     * THE FALLBACK ARM IS ABSOLUTE for the base rule's reason, stated up at
+     * `.sheet`: the fraction spelling promised gray that a narrow column does
+     * not have, and the category chip was the thing that paid for it.
+     */
+    .pair.aligned .sheet, .pair.aligned .tray {
+      width: min(var(--measure-aligned, 44rem), calc(100% - 5rem));
+    }
+    /*
+     * ── AND THE MEASURE IS THE READER'S (Owen, 2026-09-22) ───────────────────
+     *
+     * *"when i click aligned, it narrows the two viewports to be really tiny. i
+     * can barely read it … i should have the ability to resize the viewports,
+     * whether aligned or alone."* The two numbers above were caps the window
+     * could never argue with: on a two-thousand-pixel pane the aligned pair
+     * took half of it and left the rest gray. They are now DEFAULTS, written as
+     * `--measure-alone` and `--measure-aligned` on the host by the drag on the
+     * paper's edge (`measure` in the constructor), one per view so widening
+     * the pair never widens the lone sheet. The `100% - 5rem` arm still holds
+     * in every case: the chip gutter is not the reader's to give away.
+     */
+    :host(.grip), :host(.grip) * { cursor: ew-resize !important; }
+    /*
+     * ── AND THE TWO COLUMNS STAND TOGETHER, CENTRED AS ONE GROUP ─────────────
+     *
+     * Owen, 2026-09-08: *"lets make the two views right next to each other.
+     * theyre spaced way too far apart."* Each column was `width: 100%` of half
+     * the pane with a 38rem sheet centred inside it, so on a wide screen the
+     * leftover gray fell BETWEEN the sheets as well as outside them — two
+     * columns of one book with a hand's width of nothing down the middle, which
+     * is exactly the distance a reader's eye has to jump per line.
+     *
+     * The fix is the one already ruled for the original panel, one rule up:
+     * *"they should be side-by-side with a small margin between them and the two
+     * should be centered on screen."* The columns stop stretching, take a basis
+     * just over their own sheet, and the pair centres the pair rather than each
+     * column centring itself. Pure flex — no measurement, no listener — and
+     * every column keeps its own scroller, which is what the lock is locking.
+     */
+    .pair.aligned { justify-content: center; }
+    .pair.aligned .context, .pair.aligned .bench {
+      flex: 0 1 calc(var(--measure-aligned, 44rem) + 5rem);
+    }
+    /*
+     * ── THE ORIGINAL OPEN: paper and scan stand together, centred ────────────
+     *
+     * Owen (2026-08-23): *"they should be side-by-side with a small margin
+     * between them and the two should be centered on screen."* With the bench
+     * at width:100% the sheet centred itself in the leftover and the panel
+     * hugged the pane's far edge — two objects with a field of gray between
+     * them. So while the panel is up, the bench stops stretching: its basis is
+     * just over the sheet's own 46rem, the sheet's auto margins shrink to the
+     * small gap that basis leaves, and the pair centres the two columns as ONE
+     * group. Pure flex — no measurement, no listener, and closing the panel
+     * puts every rule back exactly as it was.
+     *
+     * :not(.aligned) on the bench override because the aligned pair already
+     * divides its width between two columns of one book, and a 48rem basis
+     * jammed into that split would fight the lead's own measure above.
+     */
+    .pair.original { justify-content: center; }
+    /*
+     * 54rem AND NOT 48: the first basis left ~1.9rem of gray beside the sheet
+     * and the category chip hangs LEFT of the block by its own width plus
+     * 0.5rem — "Section header" reached the bench's edge and the bench's
+     * horizontal clip cut it to "ON HEADER" on Owen's screen. The widest chip
+     * needs ~4rem beyond the sheet's edge; 54rem gives both sides that room
+     * and the gap to the panel stays small enough to read as one group.
+     */
+    .pair.original:not(.aligned) .bench { flex: 0 1 calc(var(--measure-alone, 46rem) + 8rem); }
+    /*
+     * THE AMBER PILL OPENS INWARD while the panel is up. It normally unrolls
+     * rightward into the bench's gray, up to ~9.5rem past the sheet — room the
+     * centred bench no longer has, and clipping the one sentence that names an
+     * unlinked note is worst exactly here, where somebody is proofing against
+     * the scan. Right-aligned to its dot it unrolls over the paper's margin
+     * instead: over words only while hovered, readable always.
+     */
+    .pair.original .flag .pill { left: auto; right: 0; }
+    /*
+     * THE CONTEXT SHEET IS THE PAPER WITHOUT THE INSTRUMENT. Same ground, same
+     * serif, same measured sizes — it has to be, or the two columns would set the
+     * same book in two typefaces and the scroll lock would be tying rows of
+     * different heights together — and none of §3's chrome, because there is
+     * nothing on this sheet to decide. The gutters close to the paper's own
+     * margin: with no rails, chips, ordinals, ghosts or flags to hang in them,
+     * 3.25rem of instrument margin either side would be air with nothing in it.
+     */
+    .context-sheet {
+      padding-inline: 2rem;
+      /* A caret cannot land here — there is no editor on this sheet — but a
+         person reading the source will want to take a sentence out of it, and
+         nothing on this column drags a marquee for the selection to fight with. */
+      user-select: text;
+    }
+
+    .waiting, .failure { margin: 0; text-indent: 0; color: var(--ink-muted); }
+    .waiting { text-align: center; }
+    /*
+      The unplaced strip sits above the paper as a sheet of its own, in the
+      muted register the sheet already uses for what the app is telling you
+      about the book rather than what the book says.
+    */
+    .unplaced { margin-bottom: 0.75rem; }
+    .unplaced .lede { margin: 0 0 0.4rem; text-indent: 0; color: var(--ink-muted); }
+    .unplaced ul { margin: 0; padding-left: 1.1rem; color: var(--ink-muted); }
+    .unplaced li { text-indent: 0; }
+
+    /* A fact about the chain, not a decision to make — so it is `--ink-muted`
+       and not the amber the gutter flags wear. It sits above the first block,
+       inside the paper's own top padding, and it takes its own height because
+       it is only ever there when it has something to say. */
+    .stranded {
+      margin: -2rem 0 2rem;
+      color: var(--ink-muted);
+      font-size: 0.8rem;
+      font-style: italic;
+    }
+    .stranded p { margin: 0 0 0.4em; text-indent: 0; }
+    .stranded p:last-child { margin-bottom: 0; }
+
+    /* ── §3 Block chrome. The text column NEVER reflows from any of it: rails
+       and chips are absolute in the gutters, tints are backgrounds that bleed
+       past the text and back. ─────────────────────────────────────────────── */
+
+    /* The chrome host. It is exactly as wide as the text column, so every
+       gutter offset below is measured from the words rather than from a box
+       that has already been pushed about. */
+    .block { position: relative; outline: none; }
+
+    /* The words, the tint, and the containment — see the class docblock for why
+       the last of those cannot live on the host. */
+    .body {
+      margin-inline: -0.9rem;
+      padding-inline: 0.9rem;
+      border-radius: var(--radius);
+      content-visibility: auto;
+      contain-intrinsic-size: auto 4rem;
+      transition: background var(--t-fast) var(--ease);
+    }
+
+    /* The category ink rides on the block's own `color` so that every mark below
+       can be a `currentColor` mix and no second palette is stated anywhere. It
+       reaches .body too, which is what makes the tints category-coloured — and
+       the WORDS are put straight back to the book's ink one level in, because a
+       book with recoloured text is unreadable, which is the rule categories.ts
+       closes with. */
+    .body > * { color: var(--ink); }
+
+    .block:hover .body { background: color-mix(in srgb, currentColor 5%, transparent); }
+    /*
+     * §5 — THE TWIN, which is the hover tint reaching across the gap.
+     *
+     * *"Hovering a block in either column lights the SAME id in the other."* It is
+     * the hover state and NOT the note coupling's sienna one level down: what is
+     * being said is "this paragraph and that paragraph are the same paragraph",
+     * which is exactly what a hover already says about one block. A second colour
+     * would have made the pairing look like a decision somebody had to make.
+     * Selection and the lit note both beat it, by order, because both of those ARE
+     * decisions.
+     */
+    .block.twin .body { background: color-mix(in srgb, currentColor 5%, transparent); }
+    .block.selected .body { background: color-mix(in srgb, currentColor 16%, transparent); }
+    .block.lit .body, .block.pulse .body {
+      background: color-mix(in srgb, var(--ink-note) 18%, transparent);
+    }
+
+    .gutter { position: absolute; pointer-events: none; }
+
+    .rail {
+      top: 0.15em;
+      bottom: 0.15em;
+      left: calc(var(--gutter) * -1 + 0.9rem);
+      width: var(--rail-w);
+      border-radius: var(--rail-w);
+      background: currentColor;
+      opacity: 0;
+      transition: opacity var(--t-fast) var(--ease);
+    }
+    .block:hover .rail { opacity: 0.6; }
+    .block.selected .rail { opacity: 1; }
+    /* The one place page provenance is visible, and deliberately a whisper. */
+    .block.spanned .rail { opacity: 1; background: var(--ink-faint); }
+
+    /* ── §3 Struck: the proofreader's cancel ──────────────────────────────── */
+
+    /*
+     * THE MARK ITSELF, STATED ONCE. Two thin diagonals in the iron red at 50%,
+     * which is the whole of the X. It is a custom property rather than two
+     * literals because there are now TWO CARRIERS for it — the paint behind a
+     * block of prose and the paint over a plate, for the reason the next two
+     * docblocks argue — and two hand-copied gradients are two marks that drift
+     * the first time somebody adjusts the weight of one of them. Nothing about
+     * the ink moved: this is the same declaration that used to sit inline in
+     * `.block.struck .body`, character for character.
+     */
+    .block {
+      --strike-x:
+        linear-gradient(to bottom right,
+          transparent calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% + 1px),
+          transparent calc(50% + 1px)),
+        linear-gradient(to top right,
+          transparent calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% + 1px),
+          transparent calc(50% + 1px));
+    }
+
+    /*
+     * COPIED FROM RENDERER-DESIGN.md §3 AND NOT REINTERPRETED. Line-through in
+     * the iron red at 55%, the whole block at .45, and the X drawn as two thin
+     * diagonal linear-gradients in the same ink at 50% with `mix-blend-mode:
+     * multiply` — which is what makes the mark sit ON the paper like ink rather
+     * than float over it as a graphic. It is on `.body`, whose background box
+     * already bleeds into the gutters, so the X crosses the block edge to edge
+     * with no element added and no layout moved.
+     *
+     * THE MARK SHOWS ALWAYS. Struck is a state of the document and not of a mode
+     * (landed rule), so there is no toggle anywhere that hides it — what leaves
+     * the mark out is the EDITION, which is a projection and not a view of this
+     * one.
+     *
+     * A BACKGROUND IS STILL RIGHT HERE AND IS WRONG ONE RULE DOWN, which is the
+     * whole of the Picture defect and is worth stating on the rule that is
+     * correct rather than only on the one that had to change. Glyphs cover a few
+     * percent of the box they sit in, so paint behind prose reads as ink UNDER
+     * the words, which is exactly what a proofreader's stroke is; and it costs no
+     * element, no stacking context and no layout. A plate covers all of its box,
+     * so the same paint is simply behind an opaque object and cannot be seen.
+     * Prose does not move onto an overlay to keep the two consistent — the
+     * consistency that matters is the MARK, and that is now one declaration.
+     */
+    .block.struck .body {
+      opacity: 0.45;
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--ink-strike) 55%, transparent);
+      background-image: var(--strike-x);
+      background-repeat: no-repeat;
+      mix-blend-mode: multiply;
+      /* On strike the X fades and scales in; on restore it lifts. Scaling the
+         BACKGROUND rather than the box is what keeps the promise that no chrome
+         ever moves the text: the words stay exactly where they are while the
+         mark grows across them. */
+      background-size: 100% 100%;
+      transition:
+        opacity var(--t-med) var(--ease),
+        background-size var(--t-med) var(--ease);
+    }
+    .block:not(.struck) .body { background-size: 0% 0%; }
+
+    /*
+     * ── §3 THE SAME MARK, OVER A PLATE ─────────────────────────────────────
+     *
+     * A struck Picture used to change state in every way except the one that
+     * says struck. The plate dimmed to .45 and the caption took the line-through
+     * — both of those are on `.body` and both land — while the X, which is
+     * PAINT, sat behind an opaque image and was invisible. The user's words for
+     * it were that it "kind of" happens in the background, which is an exact
+     * description of a background.
+     *
+     * SO THE PICTURE, AND ONLY THE PICTURE, GETS THE MARK AS INK OVER THE PLATE.
+     * `figure` is the Picture case's own element and appears nowhere else in
+     * this template, so the selector needs no class plumbed through the switch
+     * and no `:has()` to find one — the element IS the condition. It covers the
+     * figure rather than the body so that the mark is the size of the thing it
+     * cancels: a crop narrower than the column would otherwise take an X sized to
+     * the column with two thirds of it crossing empty paper.
+     *
+     * AND THE BODY'S OWN PAINT IS TURNED OFF UNDER A FIGURE, which is the half of
+     * this that is easy to miss. Left on, a picture would carry TWO marks — one
+     * sized to the body showing in the margins either side of a narrow plate, and
+     * one sized to the figure — and where no plate was ever cut, the dashed empty
+     * frame is transparent, so both would be fully visible, at two sizes, crossing
+     * each other. One block, one X.
+     *
+     * ── The three things carried across from the rule above ────────────────
+     *
+     * (1) THE ANIMATION IS ON `background-size`, and it needs BOTH halves of the
+     * pair or the mark pops into existence instead of growing across. So the
+     * pseudo-element exists at all times and is 0%×0% when the block is not
+     * struck, exactly as `.body` is — a pseudo-element that only existed under
+     * `.struck` would have nothing to transition from and nothing to lift on
+     * restore.
+     *
+     * (2) `mix-blend-mode` MAKES THIS AN ISOLATED THING, and the isolation is
+     * already where it needs to be. A blended element blends with the backdrop of
+     * the nearest ancestor that forms a group, and `.body` forms one twice over
+     * — `content-visibility: auto` implies paint containment, and a struck body
+     * is at `opacity: .45`. So the multiply happens against the PLATE and the
+     * body's own tint, then the whole composite fades to 45% over the paper. The
+     * mark reads as ink on the picture rather than as a decal over the sheet,
+     * which is the same sentence RENDERER-DESIGN §3 wrote about prose.
+     *
+     * The honest cost of multiply is that it darkens and cannot lighten, so
+     * across a region of a plate that is already near black the X approaches
+     * invisibility. That is accepted rather than worked around: the alternative
+     * is a normal-blend stroke, which reads as a sticker laid on the photograph
+     * on every ordinary plate to buy back the rare one, and the two halves that
+     * always land — the dim and the struck caption — carry the state there. THE
+     * DARK THEME IS NOT A FACTOR AND IT IS WORTH SAYING WHY: the sheet's palette
+     * is fixed light (§1 declares `--paper` and `--ink-strike` as constants and
+     * this file has no `prefers-color-scheme` in it); the only token that follows
+     * the shell's theme is `--bench`, the ground BEHIND the paper, and no mark
+     * ever blends against it.
+     *
+     * (3) REDUCED MOTION covers selectors by name down at the bottom of this
+     * sheet, and a new selector is not in that list until it is put there. It is.
+     *
+     * `pointer-events: none` because every gesture on this surface — hover,
+     * select, the context menu — is bound on the block, and an overlay that ate
+     * them would make a struck picture the one block nobody can restore.
+     */
+    figure::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image: var(--strike-x);
+      background-repeat: no-repeat;
+      background-size: 0% 0%;
+      mix-blend-mode: multiply;
+      transition: background-size var(--t-med) var(--ease);
+    }
+    .block.struck figure::after { background-size: 100% 100%; }
+    .block.struck .body:has(figure) { background-image: none; }
+
+    /* ── §3 Editing: the block IS the editor ─────────────────────────────── */
+
+    /* Spruce, at 7%, with the rail in the same ink — growth, not warning. No
+       box, no visible textarea, and no border anywhere: the only sign that this
+       paragraph is live is that it is tinted and there is a caret in it. */
+    .block.editing .body,
+    .block.editing:hover .body { background: color-mix(in srgb, var(--ink-edit) 7%, transparent); }
+    .block.editing .rail { opacity: 1; background: var(--ink-edit); }
+    /* The one place the sheet's own `user-select: none` is lifted, because a
+       caret with no selection is an editor nobody can correct a word in. */
+    .editor {
+      white-space: pre-wrap;
+      user-select: text;
+      outline: none;
+      caret-color: var(--ink-edit);
+    }
+
+    /* THE PHANTOM wears the editing state's own paint — same tint, same spruce
+       rail — because it IS an editor; what marks it as a block that does not
+       exist yet is the hint, which only an empty one shows. The hint is CSS
+       content, so it can never survive into the words. */
+    .block.adding .body { background: color-mix(in srgb, var(--ink-edit) 7%, transparent); }
+    .block.adding .rail { opacity: 1; background: var(--ink-edit); }
+    .block.adding .editor:empty::before {
+      content: 'Type the words the reading missed — Enter keeps them, Escape lets them go.';
+      color: var(--ink-faint);
+    }
+
+    .chip {
+      top: 0;
+      left: 0;
+      transform: translateX(calc(-100% - 0.5rem));
+      padding: 0.1rem 0.45rem;
+      border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+      border-radius: 999px;
+      background: var(--paper-high);
+      font-size: 10px;
+      font-weight: 600;
+      font-variant: small-caps;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      /* It is a button now, so it undoes the four things a button brings with it
+         and takes back the pointer `.gutter` turns off. Everything else about it
+         — the ink, the hairline, the ground, the small caps — is §3's chip
+         unchanged, because it IS §3's chip: what it gained is a click. */
+      font-family: inherit;
+      color: inherit;
+      line-height: inherit;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    .chip:hover { background: var(--paper); border-color: color-mix(in srgb, currentColor 70%, transparent); }
+    .chip:focus-visible { outline: 2px solid var(--ink-select); outline-offset: 2px; }
+
+    /* §4 — the sienna ordinal beside a note, in the left gutter. */
+    .ordinal {
+      top: 0.15em;
+      left: calc(var(--gutter) * -1 + 0.9rem);
+      width: calc(var(--gutter) - 1.8rem);
+      text-align: right;
+      color: var(--ink-note);
+      font-size: 10px;
+      line-height: 1.8;
+    }
+
+    /* §4 — page ghosts, right gutter. The ≈ is the design: pages are estimates
+       and the type says so. */
+    .ghost {
+      top: 0.15em;
+      left: calc(100% + 0.6rem);
+      color: color-mix(in srgb, var(--ink-muted) 65%, transparent);
+      font-size: 10px;
+      font-style: italic;
+      line-height: 1.8;
+      white-space: nowrap;
+      pointer-events: auto;
+    }
+
+    /* §4 — the amber flag: a dot until it is asked, a pill naming the problem
+       once the pointer arrives. */
+    .flag {
+      top: 0.45em;
+      left: calc(100% + 0.7rem);
+      pointer-events: auto;
+    }
+    .flag::before {
+      content: '';
+      display: block;
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--ink-flag);
+    }
+    .flag .pill {
+      position: absolute;
+      top: -0.4em;
+      left: 1rem;
+      display: block;
+      width: max-content;
+      max-width: 11rem;
+      padding: 0.15rem 0.5rem;
+      border: 1px solid color-mix(in srgb, var(--ink-flag) 45%, transparent);
+      border-radius: 999px;
+      background: var(--paper-high);
+      color: var(--ink-flag);
+      font-size: 10px;
+      line-height: 1.5;
+      opacity: 0;
+      transition: opacity var(--t-fast) var(--ease);
+    }
+    .flag:hover .pill { opacity: 1; }
+
+    /* The one permitted outline, keyboard only. */
+    .block:focus-visible { outline: 2px solid var(--ink-select); outline-offset: 2px; }
+
+    .marquee {
+      position: absolute;
+      z-index: 2;
+      border: 1px solid color-mix(in srgb, var(--ink-select) 55%, transparent);
+      background: color-mix(in srgb, var(--ink-select) 12%, transparent);
+      pointer-events: none;
+    }
+
+    /* ── §4 The peek card — the other half of an apparatus, beside the hand.
+       A small sheet of the brighter paper joined to the click by a sienna
+       leader; it rides the scroll (sheet coordinates) and never moves it. ── */
+    .peek-line { position: absolute; z-index: 3; pointer-events: none; overflow: visible; }
+    .peek-line circle { fill: var(--ink-note); }
+    .peek-line line {
+      stroke: color-mix(in srgb, var(--ink-note) 55%, transparent);
+      stroke-width: 1.5;
+    }
+    .peek {
+      position: absolute;
+      z-index: 4;
+      width: 22rem;
+      max-height: 16rem;
+      overflow-y: auto;
+      padding: 0.6rem 0.85rem 0.7rem;
+      border: 1px solid color-mix(in srgb, var(--ink-note) 30%, transparent);
+      border-left: 3px solid color-mix(in srgb, var(--ink-note) 65%, transparent);
+      border-radius: var(--radius);
+      background: var(--paper-high);
+      box-shadow: 0 2px 6px rgb(0 0 0 / .18), 0 8px 28px rgb(0 0 0 / .12);
+      font-size: 0.85em;
+      line-height: 1.5;
+      scrollbar-width: thin;
+    }
+    .peek-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.6rem;
+      margin-bottom: 0.35rem;
+    }
+    .peek-what {
+      color: var(--ink-note);
+      font-size: 10px;
+      font-weight: 600;
+      font-variant: small-caps;
+      letter-spacing: 0.06em;
+    }
+    .peek-go {
+      border: 0;
+      padding: 0;
+      background: none;
+      color: var(--ink-select);
+      font: inherit;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .peek-go:hover { text-decoration: underline; }
+    .peek-words { margin: 0; color: var(--ink); }
+    .peek-words .marker.plain { color: var(--ink-note); }
+    .peek-words .marker.hot {
+      background: color-mix(in srgb, var(--ink-note) 35%, transparent);
+      border-radius: 0.45em;
+    }
+    /* The card is honest about a struck counterpart: cancelled there, cancelled here. */
+    .peek-words.struck-words {
+      opacity: 0.55;
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--ink-strike) 55%, transparent);
+    }
+
+    /* ── §2/§4 The type itself ────────────────────────────────────────────── */
+
+    h1, h2 { margin: 1.4em 0 0.8em; line-height: 1.2; font-weight: 600; }
+    p { margin: 0; text-indent: 0; }
+    .para.indent { text-indent: 1.4em; }
+    .para.set-off { text-indent: 0; }
+    .caption { margin: 0.4em 0 1em; font-style: italic; text-align: center; }
+    blockquote { margin: 0.8em 2.2em; }
+    .note { margin-bottom: 0.35em; }
+
+    /* `relative` for one reason and it is not layout: it is the containing block
+       for the strike mark a struck picture wears, which §3 argues at length. A
+       figure has no positioned descendant of its own, so nothing else moves. */
+    figure { position: relative; margin: 1em 0; text-align: center; }
+    figcaption { margin-top: 0.4em; font-style: italic; }
+    .plate {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 8rem;
+      border: 1px dashed var(--ink-faint);
+      border-radius: var(--radius);
+    }
+    .plate-page { color: var(--ink-muted); font-size: 10px; font-style: italic; }
+    .plate-img { display: block; max-width: 100%; margin: 0 auto; border-radius: var(--radius); }
+
+    /*
+     * ── §18c THE GRID, WITH NO RULES DRAWN ──────────────────────────────────
+     *
+     * NO BORDERS AT ALL — Owen's ruling (2026-08-22, on the Julius Streicher
+     * TOC): *"a table generated by dots looks ridiculous with borders."* The
+     * model writes a Table block for anything tabular it meets, and what it
+     * meets in real books is contents pages, indexes and date lists — set type
+     * in columns, which no printer ever ruled. Hairlines made those read as a
+     * spreadsheet. Alignment and spacing are what say "table" now, which is
+     * how the books themselves say it. The engine's two sheets zero their
+     * borders in the same commit, so the bench and the export agree.
+     *
+     * THE WRAPPER IS THE ONLY THING THAT SCROLLS. A wide table must not widen
+     * the paper, because the paper's width is the measure the whole book is set
+     * to and the gutters, rails and margin chips are positioned against it.
+     */
+    .tablewrap { max-width: 100%; margin: 1em 0; overflow-x: auto; }
+    table { border-collapse: collapse; margin: 0 auto; }
+    td, th {
+      padding: 0.28em 0.6em;
+      border: none;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { font-weight: 600; }
+    /*
+     * THE REFUSAL SAYS ITSELF IN THE APP'S OWN AMBER, the ink this sheet already
+     * uses for "something about this block did not resolve" (`.flag`). It is on
+     * the paper rather than in a gutter because it is about the words directly
+     * under it, and it is deliberately a full sentence: a person who sees a wall
+     * of angle brackets should be told that this app looked at them and could
+     * not make a table of them, not left to wonder whether it tried.
+     */
+    .table-refused {
+      margin: 0 0 0.5em;
+      color: var(--ink-flag);
+      font-size: 11px;
+      font-style: italic;
+      line-height: 1.5;
+    }
+
+    /* §4 — an unjoined page turn, drawn where it falls: between the two
+       paragraphs, centered, hairline rules either side, and INVISIBLE until
+       either neighbour is hovered — the seam is an offer, not a decoration,
+       and a page of prose with four permanent captions in it would read as
+       damaged. The two selectors below are the two neighbours: the block
+       above is the seam's previous sibling, the block below its next. */
+    .seam {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      margin: 0.35rem 0;
+      color: var(--ink-muted);
+      font-size: 10px;
+      font-variant: small-caps;
+      letter-spacing: 0.08em;
+      opacity: 0;
+      transition: opacity var(--t-fast) var(--ease);
+    }
+    .seam::before, .seam::after { content: ''; flex: 1; border-top: 1px solid var(--ink-faint); }
+    /* It is a button now, so it undoes the things a button brings with it and
+       keeps every mark §4 gives the ghost. What it gained is the join. */
+    .seam-word {
+      padding: 0;
+      background: transparent;
+      border: none;
+      color: inherit;
+      font: inherit;
+      font-variant: inherit;
+      letter-spacing: inherit;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .seam-word:focus-visible { outline: 2px solid var(--ink-select); outline-offset: 2px; }
+    .block:hover + .seam, .seam:has(+ .block:hover) { opacity: 0.85; }
+    /* Reached from the keyboard, the ghost has to be visible to be pressed. */
+    .seam:focus-within { opacity: 0.85; }
+
+    /* §4 — a short hairline above the first note of a page's group of them. */
+    .notes-rule { width: 4rem; margin: 1.2em 0 0.5em; border-top: 1px solid var(--ink-faint); }
+
+    /* §4 — the chapter rule, carrying its chip. */
+    .chapter {
+      position: relative;
+      margin: 2rem 0 1.25rem;
+      border-top: 2px dashed color-mix(in srgb, var(--ink-chapter) 65%, transparent);
+    }
+    /* The chip and its ✕ ride the rule together: the group carries the
+       absolute anchoring the chip used to carry alone, so the ✕ sits beside
+       the title wherever the title ends without arithmetic about its width. */
+    .chapter-head {
+      position: absolute;
+      top: -0.8em;
+      left: calc(var(--gutter) * -1 + 0.9rem);
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .chapter-chip {
+      padding: 0.1rem 0.45rem;
+      border: 1px solid color-mix(in srgb, var(--ink-chapter) 45%, transparent);
+      border-radius: 999px;
+      background: var(--paper-high);
+      color: var(--ink-chapter);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: default;
+    }
+    /* Being renamed: the same chip with a caret in it and the spruce ground the
+       editing block wears one level down. No box and no field — the chip IS the
+       field, which is §4's own instruction for this gesture. */
+    .chapter-chip.naming {
+      background: color-mix(in srgb, var(--ink-edit) 12%, var(--paper-high));
+      outline: none;
+      caret-color: var(--ink-edit);
+      cursor: text;
+      user-select: text;
+    }
+    /* §4 — the rule lifted: the chip in the hand, and the seam it would settle
+       into glowing spruce under the pointer. The glow is drawn at the head of
+       the block the division would land ABOVE, reaching into the gutters the
+       way the rule itself does, and it can only appear where the drop would be
+       honoured — never on a block already carrying a division. */
+    .chapter-chip.grabbed {
+      cursor: grabbing;
+      box-shadow: 0 1px 3px rgb(0 0 0 / .25);
+      touch-action: none;
+    }
+    /* The marker's ✕ — quiet until the hand is near the rule, and the space
+       held either way so nothing shifts under the pointer on its way to it. */
+    .chapter-x {
+      padding: 0 0.32rem;
+      border: 1px solid color-mix(in srgb, var(--ink-chapter) 45%, transparent);
+      border-radius: 999px;
+      background: var(--paper-high);
+      color: var(--ink-chapter);
+      font-size: 10px;
+      line-height: 1.5;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity var(--t-fast) var(--ease);
+    }
+    .chapter:hover .chapter-x, .chapter-x:focus-visible { opacity: 1; }
+    .chapter-x:hover { background: color-mix(in srgb, var(--ink-chapter) 12%, var(--paper-high)); }
+    .chapter-x:focus-visible { outline: 2px solid var(--ink-select); outline-offset: 2px; }
+    .block.drop-target::before {
+      content: '';
+      position: absolute;
+      top: -0.35rem;
+      left: -0.9rem;
+      right: -0.9rem;
+      height: 2px;
+      background: color-mix(in srgb, var(--ink-chapter) 35%, transparent);
+    }
+
+    /*
+     * ── §18b — THE MODEL'S EMPHASIS, SET AS TYPE ─────────────────────────────
+     *
+     * `**bold**` and `*italic*` arrive as characters in the block's text and
+     * are drawn as the effect (`cut()` says why they stay in the file). These
+     * two rules are the whole of the treatment, and they are deliberately the
+     * PLAINEST possible statement of it: the serif this page is set in has a
+     * real bold and a real italic, and asking for anything more here — a tint, a
+     * weight of our own choosing — would be the workbench inventing typography
+     * the export is not going to use. The finished book gets `<strong>` and
+     * `<em>` from the emitter and lets the reading system set them; the bench
+     * says the same thing in the same two words.
+     *
+     * The selectors are bare so that they land wherever a run does: in the
+     * prose, in a caption, in a heading, on a reference number that fell inside
+     * an emphasised phrase, and on the peek card, which sets its counterpart
+     * with the same pieces.
+     */
+    .bold { font-weight: 700; }
+    .italic { font-style: italic; }
+
+    /* §4 — a reference number is a real element, not a superscript in a string. */
+    .marker {
+      padding: 0 .18em;
+      border-radius: .45em;
+      color: var(--ink-note);
+      font-size: 0.75em;
+      line-height: 0;
+      vertical-align: super;
+      cursor: default;
+      transition: background var(--t-fast) var(--ease);
+    }
+    .marker:hover { box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink-note) 55%, transparent); }
+    .marker.lit { background: color-mix(in srgb, var(--ink-note) 30%, transparent); }
+    .marker.unlinked {
+      color: var(--ink-flag);
+      text-decoration: underline dotted var(--ink-flag);
+      text-underline-offset: 0.2em;
+    }
+    /*
+     * §4 — "Deleting a note strikes its markers with it — derived, animated
+     * together." The number goes with the note because it BELONGS to the note,
+     * and it is cancelled in the same iron red the block wears rather than
+     * removed, for the same reason the block is: struck is a state, and the
+     * reader has to be able to see what they took out.
+     */
+    .marker.struck {
+      opacity: 0.45;
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--ink-strike) 55%, transparent);
+      transition: opacity var(--t-med) var(--ease);
+    }
+
+    /*
+      ── THE ANALYSIS'S HIGHLIGHT — a run wearing a class, and nothing else ────
+
+      docs/ANALYSIS.md §8. It is a background on the RUN because `cut()` already
+      closed the run wherever the light changes: no extra element, no
+      `innerHTML` and no absolutely-positioned layer — an overlay would eat the
+      gestures this surface is made of and turn a flagged paragraph into the one
+      paragraph nobody can select, edit or strike.
+
+      IT DRAWS ONLY WHILE THE PANEL IS OPEN, and that is not enforced here: the
+      class arrives on a piece only when `AnalysisViewService.lit` has a range
+      for the block, and that computed answers empty the moment the second column
+      stops being an analysis. The paper is a workbench; a report is an apparatus
+      somebody summons, not a permanent recolouring of the book.
+
+      THE COLOUR IS THE CATEGORY'S AND IS BOUND, NOT DECLARED — Owen, 2026-08-25:
+      *"maybe make the text's highlighted color the same color as the analysis
+      block"*, and then, when the first attempt came back too solid, *"the text
+      shouldn't be a different color, just a light highlight color difference."*
+      This rule therefore carries the GEOMETRY and the transition and no paint at
+      all: `tintOf` composes a pale stroke from the same hue table the panel's
+      rails use, the walk in `cut()` puts it on the piece, and the template binds
+      it. THERE IS NO GLYPH-COLOUR RULE HERE AND THERE IS NOT GOING TO BE — the
+      words stay black on warm, which is both Owen's sentence and
+      shared/categories.ts's standing alpha rule.
+    */
+    .run.hit {
+      border-radius: 2px;
+      padding: 0 0.05em;
+      transition: background var(--t-fast) var(--ease),
+                  box-shadow var(--t-fast) var(--ease);
+    }
+    /* A struck block is never lit at the source (`litRanges` skips it), so the
+       tint on a struck paragraph is not a thing this rule has to undo — there is
+       none to undo. What is said here is the underline, and the reason is worth
+       one line: a strike is a decision to remove and a highlight is an
+       observation, and two marks arguing about one paragraph is the outcome
+       neither of them is worth. */
+    .block.struck .run.hit { text-decoration: none; }
+
+    /*
+      ── THE SELECTED FINDING, PULSING ────────────────────────────────────────
+
+      Owen, 2026-08-25: *"when i click a highlighted block, the corresponding
+      analysis block only blinks for about 1/4 of a second. can we make it pulse?
+      on either side. have it pulse as long as it's selected."* A blink announces
+      and is gone; a pulse is a STATE, which is what a two-surface instrument
+      needs, because the whole point of clicking a passage is to then look at the
+      other side of the room.
+
+      THE WASH ITSELF BREATHES, IN ITS OWN HUE — the ring is gone, and by the
+      right person's word twice over. The first cut drew a soft-black ring so
+      the emphasis could never read as a thirteenth category; Owen looked at it
+      on the page and overruled the trade (2026-08-25, over a screenshot):
+      *"its just blinking an ugly outline. can we make it actually pulse darker
+      and lighter for that particular shade?"* So the emphasis is now the tint
+      deepening and easing in place — `tintOf` at rest, `deepTintOf` at the
+      peak, one hue, carried per run as `--hit-deep` because a stylesheet
+      cannot know twelve of them.
+
+      ONLY THE MIDPOINT IS DECLARED. A keyframe list with no 0%/100% frame
+      interpolates from the element's own underlying value — the inline resting
+      wash — so the breath starts and ends at exactly the tint the run already
+      wears, and this rule never has to restate a colour that
+      `[style.background]` owns.
+
+      SLOW AND SHALLOW: 1.9s is a breath, not a strobe. A mark that is going to
+      sit on the page for as long as somebody reads the panel has to be findable
+      at a glance and ignorable at a paragraph.
+    */
+    .run.hit.on {
+      animation: hit-breathe 1900ms var(--ease) infinite;
+    }
+    @keyframes hit-breathe {
+      50% { background-color: var(--hit-deep); }
+    }
+
+    /*
+      ── THE COMPARISON'S LIGHT — what went, and what came ────────────────────
+
+      Owen, 2026-09-08: *"It should highlight the changes on each side, like in
+      analysis, so I can see what it was before and what it is now."* Two rules
+      beside the analysis's one, and the same mechanism under them: a run
+      wearing a class, closed by `cut()` where the change begins and ends
+      (docs/COMPARE-CHANGES.md). No extra element, no `innerHTML`, no overlay,
+      for the reasons the analysis rule gives above and this surface's header
+      gives at length.
+
+      REMOVED IS DRAWN ON THE OLDER COLUMN, in the strike's red with a line
+      through it — the words are still there to be read (that is the whole
+      point of the older column) and the mark says the newer step took them
+      out. ADDED IS DRAWN ON THE NEWER COLUMN, in `--ink-added`, a wash and
+      nothing else. Which column is which is the ledger's to say
+      (`ChangesService.order`), never the layout's: the live sheet is the
+      older one whenever somebody compares a row with the cleanup made from it.
+
+      A WASH, NEVER THE GLYPHS — the standing alpha rule, Owen's own sentence
+      about the analysis (*"the text shouldn't be a different color, just a
+      light highlight color difference"*) applied to the second light exactly as
+      to the first. 22% and 18% are the tints' alphas; the strike-through is
+      the one extra mark, at the same 70% the struck body's own line wears.
+
+      THEY ARE UNDER THE EDITION AS WELL, and deliberately: the compare column's
+      pane is always in the finished-book register (`viewing()` puts it there),
+      so a rule that only drew on the bench would draw on one column of two.
+      The edition strips `.body`'s tints and the rails and leaves the runs'
+      backgrounds alone — the analysis light already survives the register flip
+      by the same omission, and these ride with it.
+    */
+    .run.added {
+      background: color-mix(in srgb, var(--ink-added) 22%, transparent);
+      border-radius: 2px;
+      padding: 0 0.05em;
+    }
+    .run.removed {
+      background: color-mix(in srgb, var(--ink-strike) 18%, transparent);
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--ink-strike) 70%, transparent);
+      border-radius: 2px;
+      padding: 0 0.05em;
+    }
+
+    /* ── The one verb on this surface, on the bench beside the paper ──────── */
+
+    .tray {
+      position: sticky;
+      z-index: 3;
+      bottom: 0;
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+      width: min(var(--measure-alone, 46rem), calc(100% - 5rem));
+      margin: 0 auto;
+      padding: 0.75rem 0;
+      pointer-events: none;
+    }
+    /* The app's own act, in the app's own dark tokens — the shell's language,
+       because a button is the shell's furniture and not the paper's. */
+    .act {
+      padding: 5px 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 11px;
+      white-space: nowrap;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    .act:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .act:disabled { opacity: 0.4; cursor: default; }
+    .act.ghost { background: transparent; color: var(--text-secondary); }
+    /*
+      THE PAIR'S ONE CHECKBOX, wearing the chrome's own button shape so it sits
+      in the row with the segments rather than beside it. A label rather than a
+      button because it IS a state with a name, and the native box is kept: this
+      strip has no other checkbox to be consistent with, and a person who has met
+      one anywhere else already knows what it does.
+    */
+    .toggle {
+      display: inline-flex; align-items: center; gap: 5px;
+      user-select: none;
+    }
+    .toggle input { margin: 0; accent-color: var(--accent); }
+
+    /* ── The obvious Apply, at the head of the pane ────────────────────────
+       The app's own filled-accent verb (the capture editor's `.btn.primary`
+       is where that pairing is settled: accent ground, inverse ink, 600) at
+       this row's size rather than that column's. `margin-right: auto` puts
+       it at the LEFT end of a row whose other children are flushed right —
+       the verb and the facts do not sit in one cluster, and nothing has to be
+       re-ordered in the template to say so.
+
+       NO :disabled RULE OF ITS OWN. It is drawn only while there is something
+       to apply, so the only moment it can be disabled is the second an Apply
+       is in flight, and `.act:disabled`'s fade already says that. */
+    .act.now {
+      margin-right: auto;
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--text-inverse);
+      font-weight: 600;
+    }
+    .act.now:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    /* ── §5 The register, at the head of the column the tray closes ────────── */
+
+    /* The tray's measure without the tray's stickiness: the head stands
+       OUTSIDE the scroller now (the template's own comment carries the
+       ruling), a row of the host's column above the pair, so `position`
+       goes back to static and the paper below cannot pass under it.
+       `.tray.head`, not `.head`: the un-sticking must win by SPECIFICITY,
+       not by being typed after `.tray` -- source order is not a place to
+       keep an intention. */
+    .tray.head { position: static; flex: 0 0 auto; padding: 0.75rem 0; }
+
+    /* Two acts made one control: the seam between them is a shared hairline
+       (the second pulled back a pixel onto the first's border) and only the
+       outer corners are rounded, so the pair reads as one segmented thing
+       rather than as two buttons that happen to be adjacent. */
+    .segments { display: flex; pointer-events: auto; }
+    .segment { border-radius: 0; }
+    .segment:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+    .segment:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin-left: -1px; }
+    /* The one in force wears the app's own "this is live" ground — `.act`'s
+       hover state, held — and the other stands back in the secondary ink. No new
+       colour is stated: both are the shell's tokens, which is what keeps this
+       control the shell's furniture. */
+    .segment:not(.on) { background: transparent; color: var(--text-secondary); }
+    .segment.on { z-index: 1; background: var(--bg-hover); border-color: var(--border-strong); }
+    .segment:focus-visible { z-index: 1; outline: 2px solid var(--ink-select); outline-offset: 2px; }
+    /* Refused, not disabled — see the control's own comment in the template. It
+       wears `.act:disabled`'s own fade and keeps the pointer, because pressing it
+       is how the sentence gets said out loud. */
+    .segment[aria-disabled='true'] { opacity: 0.4; }
+
+    /* The app's small menu, copied from open-documents — one vocabulary for
+       one kind of thing, and the scrim is what makes the next click dismiss it
+       exactly once. */
+    .menu-scrim { position: fixed; inset: 0; z-index: 1000; }
+    .menu {
+      position: fixed;
+      z-index: 1001;
+      min-width: 180px;
+      max-height: 60vh;
+      overflow: hidden auto;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      box-shadow: 0 10px 20px -6px rgba(0, 0, 0, 0.35);
+    }
+    .menu button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 6px 10px;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .menu button.current { color: var(--text-primary); }
+    /* The plural warning at the head of a multi-selection's category list. */
+    .menu .menu-note {
+      padding: 6px 10px 4px;
+      border-bottom: 1px solid var(--border-default);
+      margin-bottom: 4px;
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+    /* The swatch is what settles the two close pairs — see shared/categories.ts,
+       which is the ONE table these colours come from. */
+    .swatch { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 2px; }
+
+    /* ── §0/§5 THE EDITION — the export's own sheet, transcribed ──────────────
+     *
+     * The numbers below are `STYLESHEET_BASE` and `dotsStylesheet`
+     * (src/vlm/dots-book.ts), copied rather than imported, on the `BASE_RATIO`
+     * precedent at the top of this file: the app and the engine are two programs
+     * and the app's mirror of the engine lives in `shared/`, so a stylesheet the
+     * engine writes into an EPUB is transcribed here with its source named.
+     *
+     *   body       { margin: 0 5%; line-height: 1.5; }
+     *   p          { margin: 0 0 0.4em; text-indent: 1.4em; }
+     *   sup        { font-size: 0.75em; line-height: 0; vertical-align: super; }
+     *   .footnotes { font-size: 0.85em; margin-top: 2em; }
+     *   .footnotes .footnote { text-indent: 0; margin-bottom: 0.5em; }
+     *
+     * TWO THINGS THE CAST'S SHEET DOES NOT SAY are left where the paper already
+     * had them. It names NO FONT FAMILY anywhere — *"still no point sizes and
+     * still no font families"* — because in a reader the family is the reader's;
+     * on a screen it has to be something, and the something is §2's serif stack,
+     * which is the book's voice in this app. And the per-category SIZES are not
+     * here because they are already on the blocks: `line.size` is the measured
+     * ratio, and `dotsStylesheet` writes those very ratios into the cast.
+     *
+     * These rules sit LAST so that the ones they must beat — the hover tint, the
+     * selected rail — are beaten on specificity AND on order, and neither of
+     * those two things has to be true on its own.
+     */
+    .bench.edition .sheet {
+      /* The cast's own margin is 0 5%, and the first draft of this sheet took
+         it — which read as the preview NARROWING against the bench for no
+         reason a reader could see (user ruling, 2026-08-16: the preview keeps
+         the workbench's measure). The gutters hold; what says "finished" is
+         everything else: the chrome gone, the leading, the collected notes. */
+      line-height: 1.5;
+      /* The marquee is what turned the browser's own selection off (§3), and
+         there is no marquee here. A preview somebody can take a sentence out of
+         is a preview doing its job. */
+      user-select: text;
+    }
+    /* Every tint the bench paints is a state of an instrument: hover, selection,
+       the note that is lit, the block a jump landed on. */
+    .bench.edition .block .body { background: transparent; }
+    .bench.edition .block .rail { opacity: 0; }
+    .bench.edition .para { margin-bottom: 0.4em; }
+    .bench.edition .note { margin-bottom: 0.5em; }
+    /* The cast opens the apparatus with a bare `<hr/>` across the column under
+       `.footnotes { margin-top: 2em; }` — not §4's 4rem hairline, which is a
+       page-group's mark on the bench. */
+    .bench.edition .notes-rule { width: 100%; margin: 2em 0 0.5em; }
+    /* The break a new chapter makes. The cast writes no page-break rule and does
+       not need one — each chapter is its own document in the spine, and a reader
+       turns the page because the file ended. This sheet never ends, and the
+       first translation of that boundary was air alone: 3.5rem of it. Air only
+       says "break" when you can see both sides of it at once, and a chapter that
+       happens to open mid-viewport opens with no announcement whatever. So the
+       edition prints the device paper has always used for the same problem — a
+       short centred rule, neutral, sitting in the middle of the air rather than
+       on top of the words. `--ink-faint` is the paper's own hairline, the one
+       §4 gives the notes rule and the page seam; the chapter rule's green is an
+       instrument's mark and has no business on a finished book. */
+    .bench.edition .block.opens { margin-top: 3.5rem; }
+    .bench.edition .block.opens::before {
+      content: '';
+      position: absolute;
+      top: -1.75rem;
+      left: 50%;
+      width: 4.5rem;
+      transform: translateX(-50%);
+      border-top: 1px solid var(--ink-faint);
+    }
+    .bench.edition .division { margin-top: 3.5rem; }
+    /* Where the division draws its own `h1`, the heading IS the announcement and
+       the block below it is just the chapter starting — so the air closes and
+       the rule goes with it, exactly as the margin rule beside it already did. */
+    .bench.edition .division + .block.opens { margin-top: 0; }
+    .bench.edition .division + .block.opens::before { content: none; }
+    /* `sup`, verbatim — and it is the same rule `.marker` already wears, because
+       §4 built the bench's marker out of the cast's superscript to begin with. */
+    .ref { font-size: 0.75em; line-height: 0; vertical-align: super; }
+
+    /* ── §6 Motion. The states must read perfectly as stills. ─────────────── */
+
+    /*
+     * THE STRUCK BLOCKS DO NOT COLLAPSE, AND THIS IS WHERE THAT WAS SETTLED.
+     * *"struck blocks collapse (height animates to 0)"* — §5 — and *"things
+     * that leave the document collapse"* — §6 — and the collapse is gone,
+     * because of what it cost to ask for it.
+     *
+     * The rule was a keyframe on a class the framework hands each leaving
+     * element, which reads as free and is not. To know when a node may finally
+     * go, the leave machinery interrogates that node — its running animations,
+     * its computed style — one node at a time, interleaved with the class it
+     * has just written to it. That is a forced style pass per departure. And
+     * nothing removes struck rows but the register flip, which removes ALL of
+     * them: four hundred forced passes in one repaint, over a sheet whose
+     * bodies are under `content-visibility: auto` and must be laid out again to
+     * answer at all. Measured in isolation it was 150× a plain removal; on the
+     * real book it froze the flip for something near half a minute. Reduced
+     * motion buys none of it back — `animation: none` is still a style the pass
+     * has to stop and read.
+     *
+     * So the flip's motion is the motion §5 already pays for: the crossfade on
+     * the sheet, where the gutters close to the cast's margin and the leading
+     * opens to 1.5, both over `--t-med`. That is one element's transition
+     * whatever the book's length, and underneath it the struck blocks are
+     * simply not in the list on the next frame — which is the state the still
+     * has to read as, and the state it reads as.
+     *
+     * A merge and a cut are unchanged: they never had an animation to wait for,
+     * and `join` says why the words carry their own result.
+     */
+
+    @media (prefers-reduced-motion: reduce) {
+      /* BY NAME, WHICH IS WHY A NEW SELECTOR HAS TO BE ADDED HERE RATHER THAN
+         INHERITING THE INTENT. `figure::after` is the struck picture's mark and
+         is the newest of them; it is listed once, on the rule that declares the
+         transition, so both of its states are covered. */
+      .body, .rail, .marker, .flag .pill, .seam, .sheet, .run.hit,
+      .block.struck .body, .marker.struck, figure::after { transition-duration: 0ms; }
+      /*
+        AND THE SELECTED PASSAGE HOLDS STILL RATHER THAN GOING DARK. The pulse is
+        an EMPHASIS and the emphasis is what has to survive; the breathing is only
+        how it draws attention. So the animation stops and the deep wash stays,
+        at the breath's own midpoint, which is the glide's precedent one screen
+        down (`matchMedia('(prefers-reduced-motion: reduce)')` there jumps to
+        the destination rather than refusing to travel). `!important` because
+        the resting wash is an INLINE style (`[style.background]`) and inline
+        beats a stylesheet everywhere an animation is not running — this is the
+        one place a static rule must out-rank it, and it says so.
+      */
+      .run.hit.on {
+        animation: none;
+        background: var(--hit-deep) !important;
+      }
+    }
+  

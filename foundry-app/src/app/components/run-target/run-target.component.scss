@@ -1,0 +1,34 @@
+
+    :host { display: block; }
+
+    .none { margin: 0; font-size: 12px; line-height: 1.5; color: var(--warn); }
+
+    .target { display: flex; flex-direction: column; gap: 6px; }
+    /* NO WRAP: the rows are composed in the class, so letting flex re-break them
+       would be a second opinion about the layout and the two would disagree at
+       exactly the widths where it matters. Each button takes an equal share. */
+    .chips { display: flex; gap: 6px; }
+    .chips .chip { flex: 1 1 0; min-width: 0; justify-content: center; }
+
+    /* Selected is a tick and a border; the text never changes colour against its
+       background. A sibling of this control shipped as text on a solid accent
+       and could not be read. */
+    .chip {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      font: inherit; font-size: 12px;
+      background: var(--bg-sunken); color: var(--text-primary);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      padding: 4px 10px; cursor: pointer;
+    }
+    .chip:hover { border-color: var(--text-tertiary); }
+    .chip.chosen { border-color: var(--accent); }
+    .tick { font-size: 10px; color: var(--accent); width: 8px; flex: none; }
+
+    .says { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
+    .says.warn { color: var(--warn); }
+    /* The engine's own words: kept, and quieter than the sentence above them. */
+    .because {
+      margin: 0; font-size: 11px; line-height: 1.5;
+      color: var(--text-muted); font-style: italic;
+    }
+  

@@ -1,0 +1,72 @@
+
+    @if (captures.intakeProgress(); as run) {
+      <!--
+        No click handler on the scrim. Every other dialog's scrim dismisses it;
+        this one has nothing to dismiss to, and a scrim that swallows clicks
+        silently is the same complaint that made this component necessary.
+      -->
+      <div class="scrim"></div>
+
+      <div class="card" role="dialog" aria-modal="true" aria-label="Reading photographs">
+        <header class="head">
+          <span class="title">Reading photographs</span>
+        </header>
+
+        <div class="body">
+          <p class="count">{{ run.done }} of {{ run.total }}</p>
+          <!--
+            The filename holds its line whether or not there is one: the closing
+            push carries an empty file name while the recipe is written, and a
+            disappearing line would make the card jump at the very end.
+          -->
+          <p class="file">{{ run.file.length > 0 ? run.file : 'Writing the recipe…' }}</p>
+
+          <div class="track" role="progressbar"
+               [attr.aria-valuenow]="run.done"
+               [attr.aria-valuemin]="0"
+               [attr.aria-valuemax]="run.total">
+            <div class="fill" [style.width.%]="percent()"></div>
+          </div>
+
+          <p class="lead">
+            Each photograph is decoded once and kept as an upright copy. The
+            window may not answer while one is being read.
+          </p>
+        </div>
+      </div>
+    }
+
+    @if (pdfPages.progress(); as run) {
+      <!-- No click handler on the scrim, for the reason the intake's has none:
+           there is nothing to dismiss TO. The stop is a button that says what it
+           does, on the card, where somebody can decide to press it. -->
+      <div class="scrim"></div>
+
+      <div class="card" role="dialog" aria-modal="true" aria-label="Reading a PDF">
+        <header class="head">
+          <span class="title">Reading the pages of a PDF</span>
+        </header>
+
+        <div class="body">
+          <p class="count">{{ run.done }} of {{ run.total }}</p>
+          <p class="file">{{ run.file }}</p>
+
+          <div class="track" role="progressbar"
+               [attr.aria-valuenow]="run.done"
+               [attr.aria-valuemin]="0"
+               [attr.aria-valuemax]="run.total">
+            <div class="fill" [style.width.%]="pdfPercent()"></div>
+          </div>
+
+          <p class="lead">
+            Each page is drawn once and kept as an image, to be cropped and split
+            on the light table. Nothing is added to a book until this finishes.
+          </p>
+
+          <div class="row">
+            <button type="button" class="ghost" (click)="pdfPages.cancel()">Stop</button>
+          </div>
+        </div>
+      </div>
+    }
+  

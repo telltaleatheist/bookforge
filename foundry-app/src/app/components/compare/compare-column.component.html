@@ -1,0 +1,85 @@
+
+    <!--
+      THE COLUMN NAMES ITSELF, which the live one does not have to. A second view
+      with no label is two books side by side and no way to tell which is which —
+      and the label is the ledger's own, the same string the picker offered.
+    -->
+    <header class="head">
+      <span class="tag">Comparing</span>
+      <span class="name" [title]="label()">{{ label() }}</span>
+      @if (target()?.path === null) {
+        <!--
+          THE COUNT, THE LIGHT AND THE WALK — docs/COMPARE-CHANGES.md. The chip
+          says nothing until both sheets have published their rows
+          (`ready`): "no changes" over a column still loading would be a claim
+          about a book nobody has read yet. The toggle is a checkbox because it
+          is a state and not a verb — the light is on or it is off — and the
+          two arrows are disabled rather than hidden when there is nothing to
+          walk, so the bar keeps its shape between one comparison and the next.
+        -->
+        @if (changes.ready()) {
+          <span class="chip">{{ said() }}</span>
+        }
+        <label class="light" title="Highlight what changed between the two columns">
+          <input
+            type="checkbox"
+            [checked]="changes.enabled()"
+            (change)="light($event)"
+          />
+          Changes
+        </label>
+        <button
+          type="button"
+          class="step"
+          title="Previous change"
+          aria-label="Previous change"
+          [disabled]="changes.changedBlocks() === 0"
+          (click)="changes.step(-1)"
+        >↑</button>
+        <button
+          type="button"
+          class="step"
+          title="Next change"
+          aria-label="Next change"
+          [disabled]="changes.changedBlocks() === 0"
+          (click)="changes.step(1)"
+        >↓</button>
+      }
+      <button
+        type="button"
+        class="x"
+        title="Stop comparing"
+        aria-label="Stop comparing"
+        (click)="stage.stopCompare()"
+      >✕</button>
+    </header>
+
+    @if (target(); as where) {
+      @if (where.path !== null) {
+        <!--
+          `@defer`, FOR `app-viewer`'S REASON AND NOT AS A COPY OF ITS HABIT.
+          pdf.js is half a megabyte and the window boots on Home, which has no
+          document on it at all; the live viewer keeps the engine in a chunk of
+          its own for exactly that, and a compare column that imported it
+          EAGERLY would drag the whole thing back into the initial bundle and
+          undo the split for the entire app. "on immediate" because by the time
+          this block exists somebody has already asked to see a scan.
+
+          The chunk is fetched once and instantiated per viewer, so a comparison
+          of two PDFs costs one download between them.
+        -->
+        @defer (on immediate) {
+          <app-pdf-view [tab]="pdfTab(where.path)" [readOnly]="true" />
+        } @placeholder {
+          <div class="waiting"></div>
+        }
+      } @else {
+        <app-book-view [tab]="bookTab()" [atStep]="where.stepId" />
+      }
+    } @else {
+      <!-- The resolve is one IPC and lands in a frame or two; a spinner for that
+           would flash. The silence is deliberate and matches the viewer's own
+           placeholder. -->
+      <div class="waiting"></div>
+    }
+  

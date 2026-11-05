@@ -1,0 +1,97 @@
+<div class="repair">
+  <div class="actions">
+    <button class="ghost" type="button" [disabled]="running()" (click)="start(false)"
+            title="Check everything this server has installed by hash, and download again whatever is wrong">
+      {{ running() && !state()?.verifyOnly ? 'Repairing…' : 'Repair' }}
+    </button>
+    <button class="ghost" type="button" [disabled]="running()" (click)="start(true)"
+            title="Report what is wrong and change nothing">
+      {{ running() && state()?.verifyOnly ? 'Checking…' : 'Check only' }}
+    </button>
+    @if (running()) {
+      <button class="ghost" type="button" [disabled]="state()?.stopping" (click)="stop()">
+        {{ state()?.stopping ? 'Stopping…' : 'Stop' }}
+      </button>
+    }
+  </div>
+
+  @if (state(); as now) {
+    @if (now.running) {
+      <p class="small">{{ now.doing ?? 'Starting…' }}</p>
+      @if (progress(); as far) {
+        <p class="small">{{ far }}@if (now.file) { — <span class="mono">{{ now.file }}</span> }</p>
+      }
+      @if (now.waitingFor; as busy) {
+        <p class="small">Waiting: {{ busy }} is in use.</p>
+      }
+      @if (now.stopping) {
+        <p class="small">{{ stopWords() }}</p>
+      }
+    }
+  }
+
+  @if (stopped()) {
+    <p class="small">Stopped. Anything not reached was not checked.</p>
+  }
+
+  @if (notAsked(); as down) {
+    <p class="small warn">Nothing was checked, and nothing was changed: {{ down.detail }}</p>
+    <p class="small">Repair can start it and put it right.</p>
+  }
+
+  @if (refused(); as no) {
+    <p class="small warn">{{ no.message }}</p>
+    @if (no.reinstall) {
+      <p class="small">Installing Crucible again is the cure. Install is offered below.</p>
+    }
+  }
+
+  @if (finished(); as done) {
+    @if (done.result.healthy) {
+      <p class="small ok">
+        {{ done.result.verifyOnly ? 'Nothing wrong found' : 'Healthy' }} in what was checked:
+        {{ done.result.checked.length }} {{ done.result.checked.length === 1 ? 'item' : 'items' }}.
+      </p>
+    } @else {
+      <p class="small warn">
+        {{ done.result.verifyOnly ? 'Something is wrong. Nothing was changed.' : 'Not everything could be put back.' }}
+      </p>
+    }
+    @if (done.server === 'reinstalled') {
+      <p class="small">The server itself would not answer properly, and its release was put back.</p>
+    }
+    @if (done.service === 'started') {
+      <p class="small">The service was not running, and was started.</p>
+    }
+    <p class="small">
+      Read {{ size(done.result.bytesHashed) }}.
+      @if (done.result.bytesSkippedVerified > 0) {
+        Not read again, unchanged since a repair last checked them: {{ size(done.result.bytesSkippedVerified) }}.
+      }
+    </p>
+
+    @for (one of done.result.repaired; track subject(one.subject)) {
+      <p class="small ok">Repaired {{ subject(one.subject) }}. It was: {{ one.was }}</p>
+    }
+    @if (done.result.verifyOnly) {
+      @for (one of done.result.broken; track subject(one.subject)) {
+        <p class="small warn">Broken: {{ subject(one.subject) }}. {{ one.was }}</p>
+      }
+    }
+    @for (one of done.result.failed; track subject(one.subject)) {
+      <p class="small warn">
+        Could not put back {{ subject(one.subject) }}: {{ one.message }}
+        @if (one.code === 'subject_in_use') { It stayed in use the whole time. Another repair will finish it. }
+      </p>
+    }
+    @for (one of done.result.unverified; track subject(one.subject)) {
+      <p class="small">Not checked: {{ subject(one.subject) }}. {{ one.why }}</p>
+    }
+    @for (one of done.result.notHashChecked; track subject(one.subject)) {
+      <p class="small">
+        {{ subject(one.subject) }}: {{ one.files.length }}
+        {{ one.files.length === 1 ? 'file' : 'files' }} could not be compared with anything. {{ one.why }}
+      </p>
+    }
+  }
+</div>

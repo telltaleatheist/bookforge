@@ -1,0 +1,177 @@
+
+    <div class="scrim" (click)="ui.closeMetadata()"></div>
+
+    <div class="card" role="dialog" aria-modal="true" aria-label="Document metadata">
+      <header class="head">
+        <span class="title">Metadata</span>
+        <button class="x" (click)="ui.closeMetadata()" title="Close">✕</button>
+      </header>
+
+      @if (source(); as tab) {
+        <div class="body">
+          <!--
+            THE DOCUMENT, NAMED THE WAY EVERY OTHER SURFACE NAMES IT. This box
+            held the whole path, which was doubly wrong here: this dialog is
+            about what a document says its title IS, and the field above the
+            title box was showing a filename that the title deliberately does not
+            follow (see this file's header). The path is on the tooltip.
+          -->
+          <!--
+            A FACT, NOT A FIELD. A read-only input is a control that looks
+            pressable and is not — Owen, 2026-09-17: *"if an option is impossible
+            to click … dont present it as an option. it isnt an option. present
+            it as information or dont present it at all."* The dialog was opened
+            ON this document; there was never a second one to pick.
+          -->
+          <p class="fact" [title]="tab.path">{{ named(tab) }}</p>
+
+          @if (loading()) {
+            <p class="note">Reading what the document says about itself…</p>
+          } @else if (record(); as meta) {
+            @if (meta.kind === 'epub') {
+              <label class="field">
+                <span class="label">Title</span>
+                <input type="text" [ngModel]="title()" (ngModelChange)="title.set($event)" name="title">
+              </label>
+              <label class="field">
+                <span class="label">Author <em>dc:creator</em></span>
+                <input
+                  type="text"
+                  [disabled]="doubled('creator')"
+                  [ngModel]="creator()"
+                  (ngModelChange)="creator.set($event)"
+                  name="creator">
+              </label>
+              <div class="pair">
+                <label class="field">
+                  <span class="label">Language</span>
+                  <input
+                    type="text"
+                    placeholder="de"
+                    [ngModel]="language()"
+                    (ngModelChange)="language.set($event)"
+                    name="language">
+                </label>
+                <label class="field">
+                  <span class="label">Date</span>
+                  <input
+                    type="text"
+                    placeholder="1933"
+                    [ngModel]="date()"
+                    (ngModelChange)="date.set($event)"
+                    name="date">
+                </label>
+              </div>
+              <p class="note">
+                The language is a tag, not a name: <code>en</code>, <code>de</code>,
+                <code>pt-BR</code>. A reading system picks hyphenation and the voice it reads
+                aloud in off that field, so a name there is worse than nothing.
+              </p>
+
+              <label class="field">
+                <span class="label">Publisher</span>
+                <input
+                  type="text"
+                  [disabled]="doubled('publisher')"
+                  [ngModel]="publisher()"
+                  (ngModelChange)="publisher.set($event)"
+                  name="publisher">
+              </label>
+
+              <label class="field">
+                <span class="label">Identifier <em>{{ identifierNote() }}</em></span>
+                <input
+                  type="text"
+                  [disabled]="meta.uniqueIdentifier === null"
+                  [ngModel]="identifier()"
+                  (ngModelChange)="identifier.set($event)"
+                  name="identifier">
+              </label>
+
+              @if (doubledFields(); as many) {
+                <p class="note">
+                  This package declares more than one {{ many }}. Foundry will not choose between
+                  them — the wrong one corrected reads exactly like the right one — so those
+                  fields are shown and not editable here.
+                </p>
+              }
+              <!--
+                THE SECOND HALF, SAID OUT LOUD. Somebody correcting a title on an
+                export is entitled to know whether they have just fixed one file
+                or fixed the book — and the answer is the book, which is the
+                whole reason the write records a step as well as rewriting the
+                container.
+              -->
+              <p class="note">
+                Saving writes this book again in the shelf you exported it to, and remembers the
+                correction as a step — so every book Foundry makes from here carries it too.
+              </p>
+            } @else {
+              <label class="field">
+                <span class="label">Title</span>
+                <input type="text" [ngModel]="title()" (ngModelChange)="title.set($event)" name="title">
+              </label>
+              <label class="field">
+                <span class="label">Author</span>
+                <input type="text" [ngModel]="creator()" (ngModelChange)="creator.set($event)" name="author">
+              </label>
+              <label class="field">
+                <span class="label">Subject</span>
+                <input type="text" [ngModel]="subject()" (ngModelChange)="subject.set($event)" name="subject">
+              </label>
+              <label class="field">
+                <span class="label">Keywords</span>
+                <input
+                  type="text"
+                  placeholder="germany, history, 1933"
+                  [ngModel]="keywords()"
+                  (ngModelChange)="keywords.set($event)"
+                  name="keywords">
+              </label>
+              <p class="note">
+                {{ meta.pages }} pages. Made by
+                <strong>{{ meta.producer ?? meta.creator ?? 'something that did not say' }}</strong> —
+                Foundry reads that and never writes it, because rewriting it would be this app
+                claiming to have produced your scan.
+              </p>
+              <p class="note">
+                Saving re-emits the whole PDF. The file this document was imported from is kept
+                untouched in the project's archive, so nothing here is irreversible.
+              </p>
+            }
+
+            <!--
+              Said in the dialog rather than only in a design document, because
+              it is the thing somebody will otherwise expect to have happened.
+            -->
+            <p class="note">
+              Correcting the title does not rename any file. The document keeps the name it has,
+              because that name is in your recents and in whatever else points at it.
+            </p>
+          }
+
+          @if (problem(); as reason) {
+            <p class="problem">{{ reason }}</p>
+          }
+        </div>
+
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeMetadata()">Cancel</button>
+          <button class="primary" [disabled]="busy() || loading() || record() === null" (click)="save()">
+            {{ busy() ? 'Saving…' : 'Save' }}
+          </button>
+        </footer>
+      } @else {
+        <div class="body empty">
+          <p>
+            Open a book or a scan first — metadata is a thing a document has, and there is no
+            document in front of you.
+          </p>
+        </div>
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeMetadata()">Close</button>
+          <button class="primary" (click)="openDocument()">Open document…</button>
+        </footer>
+      }
+    </div>
+  

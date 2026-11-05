@@ -1,0 +1,299 @@
+
+    /*
+     * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT -- confirm-dialog's rule,
+     * for its reason: a full-window fixed host is a sheet of glass over the
+     * application, and an invisible sheet still swallows every click. This one
+     * is only mounted while it is open, so it is less dangerous than that
+     * component's case; it follows the same rule anyway, because a component
+     * that is safe only because of where it is mounted is safe by accident.
+     */
+    :host { position: fixed; inset: 0; z-index: 1200; display: block; pointer-events: none; }
+
+    .scrim {
+      position: absolute; inset: 0;
+      pointer-events: auto;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(4px);
+      animation: fade 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+    /*
+     * NEARLY THE WHOLE WINDOW, unlike every other dialog in this app, and that
+     * is the point rather than an oversight: the others ask a question and this
+     * one is a workbench. The photograph wants every pixel it can have, because
+     * a corner placed on a small picture is a corner placed badly.
+     *
+     * The margin is what keeps it a modal at all -- the table stays visible
+     * around the edge, so this reads as something opened OVER the work rather
+     * than as a screen that replaced it.
+     */
+    .card {
+      position: relative;
+      pointer-events: auto;
+      width: calc(100vw - 56px);
+      height: calc(100vh - 56px);
+      margin: 28px auto;
+      display: flex; flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+      animation: rise 140ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    /*
+     * THE CARD IS A COLUMN OF TWO BANDS: the work, then the book.
+     *
+     * It was a plain row -- picture, then controls -- and the strip is what
+     * needed a band of its own. Putting the strip inside the cluster would have
+     * made the book a column forty-four pixels wide; putting it under the
+     * picture only would have left it stopping short of the controls, which
+     * reads as part of the stage rather than as the foot of the room.
+     */
+    .work { flex: 1; min-height: 0; display: flex; flex-direction: row; }
+
+    .stage { flex: 1; min-width: 0; display: flex; position: relative; }
+    .stage app-capture-page-editor { flex: 1; min-width: 0; }
+    /*
+     * The side arrows: quiet until wanted. A permanent pair of bright discs
+     * flanking every photograph would be chrome louder than the corners being
+     * placed; at rest they sit at the scrim's own register and the hover is
+     * what makes one a control. 44px hit target, vertically centred on the
+     * stage rather than the picture, so they never move as portrait and
+     * landscape frames trade heights.
+     */
+    .leaf {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      z-index: 2;
+      width: 44px; height: 64px;
+      display: grid; place-items: center;
+      background: rgba(24, 23, 21, 0.55);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 26px; line-height: 1;
+      cursor: pointer;
+      transition: background-color 120ms cubic-bezier(0, 0, 0.2, 1), color 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .leaf:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-strong); }
+    .leaf.back { left: 10px; }
+    .leaf.next { right: 10px; }
+
+    .cluster {
+      width: 268px; flex: none;
+      border-left: 1px solid var(--border-subtle);
+      background: var(--bg-base);
+      display: flex; flex-direction: column;
+      overflow: auto;
+    }
+
+    .who { padding: 14px 16px 12px; border-bottom: 1px solid var(--border-subtle); }
+    .who .name { font-family: var(--font-mono); font-size: 12px; }
+    .who .pos { color: var(--text-tertiary); font-size: 11.5px; margin-top: 2px; }
+    .who .pass { color: var(--accent); font-size: 11.5px; margin-top: 4px; }
+    .walk { display: flex; gap: 6px; margin-top: 10px; }
+
+    .cap {
+      color: var(--text-tertiary); font-size: 11px;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+
+    .does { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
+    /*
+     * A REAL CHECKBOX, not a styled div with a role. The tick is the whole
+     * control -- label included, so the words are as clickable as the box -- and
+     * the native element brings the keyboard, the focus ring and the
+     * announcement with it. This app has no tick-box of its own to borrow from;
+     * the confirm dialog's is the only other one and it is inside a dialog
+     * component that cannot be reached from here.
+     */
+    .tick {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--text-primary);
+      cursor: pointer;
+      user-select: none;
+    }
+    .tick input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+
+    .turnpair { display: flex; gap: 8px; }
+    .turnpair button {
+      flex: 1; padding: 9px 0;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md, 6px);
+      color: var(--text-primary);
+      font-size: 16px; line-height: 1;
+      cursor: pointer;
+    }
+    .turnpair button:hover { background: var(--bg-hover); }
+
+    /*
+     * SCOPE SITS DIRECTLY UNDER THE PHOTOGRAPH'S OWN CONTROLS, and not at the
+     * foot where the acts used to be.
+     *
+     * The acts belonged at the bottom because the thing you finish with is the
+     * thing at the bottom -- the rail puts Mint there for the same reason. This
+     * tick is not a thing you finish with: it changes what the NEXT gesture on
+     * the picture means, so it has to be read beside the handles it governs
+     * rather than found at the end of a column.
+     */
+    .scope {
+      padding: 14px 16px 16px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    /*
+     * THE THREE SIDES, AS ONE CONTROL. A segmented row rather than three ticks
+     * or a <select>: the choice is exclusive and all three answers are worth
+     * seeing at once, which is what a row of segments says and a dropdown hides
+     * behind a click. Indented under the tick it belongs to, because it is
+     * meaningless without it -- the same relationship the caption below has.
+     */
+    .sides { display: flex; gap: 0; margin-left: 22px; }
+    .side {
+      flex: 1;
+      padding: 5px 0;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-right-width: 0;
+      color: var(--text-secondary);
+      font: inherit; font-size: 11px;
+      cursor: pointer;
+    }
+    .side:first-child { border-radius: var(--radius-md, 6px) 0 0 var(--radius-md, 6px); }
+    .side:last-child {
+      border-right-width: 1px;
+      border-radius: 0 var(--radius-md, 6px) var(--radius-md, 6px) 0;
+    }
+    .side:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /* The chosen one carries the accent the ticked box does, so the two read as
+       one setting rather than as a control and a decoration beside it. */
+    .side.on {
+      background: var(--accent-faint, var(--bg-hover));
+      border-color: var(--accent);
+      color: var(--text-primary);
+    }
+    /* Two rules of one border between neighbours would draw a two-pixel seam;
+       the accent has to win over the plain edge on its left. */
+    .side.on + .side { border-left-color: var(--accent); }
+    /*
+     * THE SAME DOT THE CARD DRAWS, at the same size and in the same colour, so
+     * the mark on the table and the mark in the strip are one vocabulary rather
+     * than two things that resemble each other.
+     */
+    .dot {
+      flex: none;
+      width: 13px; height: 13px;
+      border-radius: 99px;
+      background: var(--ok, #4ade80);
+      display: grid; place-items: center;
+      font-size: 8px; line-height: 1;
+      color: var(--bg-base);
+      margin-top: 2px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: var(--radius-md, 6px);
+      font: inherit; font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .btn.quiet {
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border-default);
+    }
+    .btn.quiet:hover { background: var(--bg-hover); }
+    /*
+     * THE .btn.primary AND .btn.right RULES STOOD HERE, AND .applied WITH THEM,
+     * AND THE COLUMN HAS NO ACTS LEFT TO WEAR THEM (Wave 51).
+     *
+     * The accent was the record's, the green was the say-so's -- the colour of
+     * the mark it produced, which is why it was the one exception in this
+     * column -- and .applied was the acknowledgement both borrowed for a second
+     * and a half after a press. Every one of those presses is gone: the
+     * propagation is the gesture now, and a gesture acknowledges itself by
+     * moving the picture. What is left is the quiet button, twice.
+     */
+    /* Said quietly and next to the button it describes: it is a caption on one
+       control, not an announcement about the room. */
+    .says { font-size: 11px; color: var(--text-tertiary); }
+    /* Where the page stands is a fact about the picture rather than a note on a
+       control, so it is set apart from the captions that are. */
+    .says.stands { padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+
+    .walk button, .shut {
+      padding: 5px 9px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md, 6px);
+      background: transparent;
+      color: var(--text-secondary);
+      font: inherit; font-size: 12px;
+      cursor: pointer;
+    }
+    .walk button { flex: 1; }
+    .walk button:hover:not(:disabled), .shut:hover {
+      background: var(--bg-hover); color: var(--text-primary);
+    }
+    .walk button:disabled { opacity: 0.4; cursor: default; }
+
+    /* The one control still floating over the picture, because it belongs to
+       the window rather than to the work. */
+    .shut {
+      position: absolute; top: 10px; right: 14px; z-index: 2;
+      border-color: transparent; padding: 2px 8px;
+    }
+
+    /*
+     * THE FILMSTRIP. One row, scrolling sideways, at the foot of everything --
+     * the same band the table's own strip of thumbnails would occupy, so the
+     * modal and the table put the book in the same place.
+     */
+    .strip {
+      flex: none;
+      display: flex;
+      gap: 6px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-base);
+      scrollbar-width: thin;
+    }
+    .strip .shot {
+      position: relative;
+      flex: none;
+      width: 44px; height: 44px;
+      padding: 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm, 4px);
+      background: var(--bg-sunken);
+      overflow: hidden;
+      cursor: pointer;
+      opacity: 0.55;
+    }
+    .strip .shot:hover { opacity: 0.85; border-color: var(--border-default); }
+    /*
+     * THE ONE YOU ARE ON IS LIT, not merely outlined: at forty-four pixels a
+     * border alone is two pixels of difference between the picture you are
+     * editing and the twenty-four you are not.
+     */
+    .strip .shot.now {
+      opacity: 1;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-faint);
+    }
+    .strip .shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .strip .mark {
+      position: absolute;
+      top: 2px; left: 2px;
+      margin: 0;
+      width: 11px; height: 11px;
+      font-size: 7px;
+      border: 1px solid var(--bg-base);
+    }
+  

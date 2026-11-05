@@ -35,6 +35,9 @@ import {
 import { ComparePickerComponent } from '../compare/compare-picker.component';
 import { OpenDocumentsService, type Tab } from '../../core/documents.service';
 import { api } from '../../core/foundry';
+import { PageBox, Shell, Match, PageText, TextItem, PdfPage, PDFJS_ASSETS, ZOOM_STEPS, WHEEL_RATE, THUMB_WIDTH, pageOf, layoutText } from './pdf-view.model';
+import * as search from './pdf-view.search';
+import * as drawing from './pdf-view.draw';
 
 /**
  * The scan — rendered here rather than by Chromium, so the app can show the
@@ -120,374 +123,8 @@ import { api } from '../../core/foundry';
   selector: 'app-pdf-view',
   imports: [ComparePickerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="pdf">
-      <header class="toolbar">
-        <!-- THIS ROW DOES NOT NAME THE DOCUMENT. It did, for as long as there
-             was nothing above it that would — but the chrome-style strip is
-             back (the workspace draws a tab per document, with its title on
-             it), so a title here is the same word twice, one row apart, on a
-             row that already has to fit a search box, a zoom group and a page
-             counter. -->
-        <!--
-          THE TWO VIEW MODES, AND THE COMPARE CONTROL, ARE THE THREE THINGS A
-          COMPARE COLUMN HAS NO USE FOR. Both toggles write through the tab id
-          (\`toggleLayerView\`, \`toggleThumbnails\`) and a compare column's tab
-          is synthetic — not in the documents list, so the write would land
-          nowhere and the buttons would be dead. Compare itself is worse than
-          dead there: it would offer a third column from inside the second.
-          Everything else on this row — the search, the zoom, the page counter —
-          is exactly what somebody comparing a scan wants, and stays.
-        -->
-        @if (!readOnly()) {
-          <button
-            class="ghost"
-            [class.on]="tab().layerView"
-            [disabled]="doc() === null"
-            (click)="documents.toggleLayerView(tab().id)"
-          >{{ tab().layerView ? 'Hide text layer' : 'Text layer' }}</button>
-          <button
-            class="ghost"
-            [class.on]="tab().thumbnails"
-            [disabled]="doc() === null"
-            (click)="documents.toggleThumbnails(tab().id)"
-          >Thumbnails</button>
-          <!--
-            AND A SCAN GETS COMPARE TOO. The question *"is this what the page
-            actually said?"* is asked at least as often over a photograph of a
-            page as over the book reflowed from it, and a control that existed
-            only on the book would make the answer depend on which face of the
-            project happened to be up. This toolbar is its natural home: it is
-            the row that already carries what-am-I-looking-at-and-how.
-          -->
-          <app-compare-picker />
-        }
-        <!--
-          ── THERE IS NO BLOCKS BUTTON AND THERE IS NO BLOCK LAYER ──
-
-          Both are deleted. The layer turned this pane into an editing surface —
-          outline what the model read off the scan, strike it, relabel it, mark
-          the chapters — and the user asked what it was for, which is the answer:
-          a scan is a photograph of pages, and editing what the book SAYS on a
-          photograph of it means every correction is made in per-page coordinates
-          the flowing document has already thrown away. A1 retires it
-          (docs/RENDERER.md §0): the scan and the facsimile stay VIEWABLE, and
-          editing happens on the rendered book alone.
-
-          THE DISPLAY WENT WITH THE EDITOR AND THAT IS A JUDGEMENT, not an
-          oversight. What remained after the gestures came out would have read the
-          overlay file — {page, order, note} decisions over a bank — and that
-          grammar and every module that speaks it are deleted whole in the same
-          wave (§7). An outline layer that survived would have had to keep the
-          grammar alive to draw less than the proof sheet already draws, over a
-          photograph, in the chrome ruling 8 calls "sloppy and ugly". So the pane
-          is a viewer: the page, its text layer, the thumbnails and the search.
-        -->
-
-        <span class="counter">{{ current() }} / {{ shells().length }}</span>
-
-        <div class="zoom">
-          <button class="icon" title="Zoom out" [disabled]="doc() === null" (click)="zoomOut()">−</button>
-          <button class="icon" title="Zoom in" [disabled]="doc() === null" (click)="zoomIn()">+</button>
-          <button class="icon wide" title="Fit width" [disabled]="doc() === null" (click)="fitWidth()">Fit</button>
-        </div>
-
-        <div class="find">
-          <input
-            #needle
-            type="search"
-            placeholder="Search this document"
-            spellcheck="false"
-            [value]="query()"
-            (input)="onQuery(needle.value)"
-            (keydown.enter)="step(1)"
-            [attr.aria-label]="'Search ' + tab().title"
-          >
-          <span class="hits">
-            @if (searching()) { reading… }
-            @else if (query().length === 0) { }
-            @else if (matches().length === 0) { no matches }
-            @else { {{ at() + 1 }} of {{ matches().length }} }
-          </span>
-          <button class="icon" title="Previous match" [disabled]="matches().length === 0" (click)="step(-1)">‹</button>
-          <button class="icon" title="Next match" [disabled]="matches().length === 0" (click)="step(1)">›</button>
-        </div>
-
-        <!--
-          ── SAVE A COPY IS NOT ON THIS ROW ANY MORE ──
-
-          It dropped a copy of whatever file the pane happened to be pointed at
-          into a folder of the user's choosing — no record of it in the project,
-          nothing to say which step of the ledger it was a picture of, and one
-          more copy of a scan for somebody to find in six months and wonder about.
-          Getting a document out is Export, on the dock: it names a PRODUCT, it
-          is made from the position you are standing on, and the result is filed
-          under the project where it can be found again.
-
-          The save-as call on the service stays — the close-with-corrections
-          dialog is still allowed to offer somewhere to put them.
-        -->
-      </header>
-
-      @if (problem(); as reason) {
-        <div class="problem">
-          <h1>This PDF would not open</h1>
-          <p>{{ reason }}</p>
-        </div>
-      } @else {
-        <div class="panes" [class.split]="tab().layerView">
-          <div class="viewport" #viewport (scroll)="onScroll()" (wheel)="onWheel($event)">
-            <div class="reel">
-              @for (shell of shells(); track shell.number) {
-                <div
-                  class="page"
-                  #pageBox
-                  [attr.data-page]="shell.number"
-                  [style.width.px]="shell.width"
-                  [style.height.px]="shell.height"
-                >
-                  <canvas></canvas>
-                  <div class="text"></div>
-                  @if (pageProblems().get(shell.number); as reason) {
-                    <p class="page-problem">This page would not render — {{ reason }}</p>
-                  }
-                </div>
-              }
-            </div>
-          </div>
-
-          @if (tab().layerView) {
-            <div class="viewport paper-side" #layerViewport (scroll)="onLayerScroll()" (wheel)="onWheel($event)">
-              <div class="reel">
-                @for (shell of shells(); track shell.number) {
-                  <div
-                    class="page paper"
-                    #layerBox
-                    [attr.data-page]="shell.number"
-                    [style.width.px]="shell.width"
-                    [style.height.px]="shell.height"
-                  >
-                    <div class="text shown"></div>
-                    @if (itemCounts().get(shell.number) === 0) {
-                      <p class="no-layer">This page has no text layer</p>
-                    }
-                  </div>
-                }
-              </div>
-            </div>
-          }
-        </div>
-
-        @if (tab().thumbnails) {
-          <div class="strip" #strip>
-            @for (shell of shells(); track shell.number) {
-              <button
-                class="thumb"
-                #thumbBox
-                [class.on]="current() === shell.number"
-                [attr.data-page]="shell.number"
-                [style.width.px]="thumbWidth"
-                [title]="'Page ' + shell.number"
-                (click)="jumpTo(shell.number)"
-              >
-                <canvas [style.height.px]="thumbHeight(shell)"></canvas>
-                <span>{{ shell.number }}</span>
-              </button>
-            }
-          </div>
-        }
-      }
-    </div>
-  `,
-  styles: [`
-    :host { display: block; width: 100%; height: 100%; background: var(--bg-sunken); }
-    .pdf { display: flex; flex-direction: column; height: 100%; }
-
-    /* The same row the book pane wears, so the two do not feel like two apps. */
-    .toolbar {
-      display: flex; align-items: center; gap: 8px;
-      height: 44px;
-      padding: 0 12px;
-      background: var(--bg-elevated);
-      border-bottom: 1px solid var(--border-subtle);
-      flex-shrink: 0;
-    }
-    .counter {
-      min-width: 72px;
-      font-size: 11px;
-      color: var(--text-tertiary);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
-    .zoom { display: flex; gap: 4px; }
-    .find { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; justify-content: flex-end; }
-    .find input { width: 220px; max-width: 40vw; height: 26px; padding: 0 10px; font-size: 12px; border-radius: var(--radius-sm); }
-    .hits {
-      min-width: 82px;
-      font-size: 11px;
-      color: var(--text-tertiary);
-      text-align: right;
-      white-space: nowrap;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .panes { flex: 1; min-height: 0; display: flex; }
-    .panes.split .viewport { flex: 1 1 50%; min-width: 0; }
-    .panes.split .paper-side { border-left: 1px solid var(--border-default); }
-
-    /*
-      \`position: relative\` is load-bearing, not decoration: it makes this the
-      offsetParent of every page box, so a page's offsetTop is measured from the
-      scroller's own content top and can be compared with scrollTop directly.
-      Without it the pages measure from the document body and every jump — the
-      thumbnails, the search, the page counter — lands somewhere else.
-    */
-    .viewport { position: relative; flex: 1; min-width: 0; overflow: auto; }
-    .reel { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px; }
-
-    .page {
-      position: relative; flex-shrink: 0;
-      background: #fff;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.3);
-    }
-    .page canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-
-    /* Paper, not white: the right pane is a reconstruction and should not be
-       mistaken at a glance for the scan on the left. */
-    .page.paper { background: #f6f3ec; }
-
-    .page-problem {
-      position: absolute; inset: 0; margin: 0;
-      display: flex; align-items: center; justify-content: center;
-      padding: 24px;
-      /* Not --error: this one is printed ON the page, and the chrome's red is
-         mixed for a dark surface. */
-      color: #dc2626; font-size: 12px; text-align: center;
-    }
-
-    .no-layer {
-      position: absolute; inset: 0; margin: 0;
-      display: flex; align-items: center; justify-content: center;
-      padding: 24px;
-      color: #8a8172; font-size: 13px; font-style: italic; text-align: center;
-    }
-
-    /*
-      The text layer. Transparent over the page — pdf.js paints the glyphs and
-      this is the selectable copy of them — and inked in the layer pane, so the
-      same geometry reads twice: once as the page, once as what a search finds.
-      \`user-select: text\` on both, because copying out of either is the point.
-
-      EVERY span RULE GOES THROUGH ::ng-deep, and it is load-bearing: the spans
-      are made by \`layoutText\` with document.createElement, and Angular's style
-      emulation scopes a component's CSS by stamping an attribute on template
-      elements — an attribute a dynamically created element never receives. The
-      first version of this file wrote these as plain \`.text span\` and every
-      rule silently missed: no absolute positioning (the whole layer piled up
-      in the page's top-left), no transparent ink over the scan, no dark ink in
-      the layer pane. The \`.text\` ancestor IS from the template, so the rules
-      stay this component's own; only the leap to its children is unscoped.
-    */
-    .text {
-      position: absolute; inset: 0;
-      overflow: hidden;
-      line-height: 1;
-      user-select: text;
-      -webkit-user-select: text;
-    }
-    .text ::ng-deep span {
-      position: absolute;
-      white-space: pre;
-      transform-origin: 0% 0%;
-      color: transparent;
-      cursor: text;
-    }
-    /*
-     * \`color: transparent\` HERE IS LOAD-BEARING. The app's global rule paints
-     * selected text near-white (styles.scss ::selection), and the cascade is
-     * per-property: this rule won the background and never declared a color,
-     * so the global's #faf9f7 re-inked the invisible text layer during every
-     * selection — a white ghost copy of the glyphs, offset from the canvas's
-     * printed ones by the layer's approximation (Owen, 2026-08-21, "is it
-     * revealing the hidden layer as white text?" — almost exactly). Over
-     * paper, the selected words are already printed beneath; selection here
-     * is a box, never a second inking.
-     */
-    .text ::ng-deep span::selection { background: rgba(6, 182, 212, 0.4); color: transparent; }
-    .text.shown ::ng-deep span { color: #23201a; }
-    /* Over the scan the hit is a BOX and the text under it stays invisible —
-       painting it would double the ink the highlight is pointing at. The fill
-       is the accent, but at an alpha that stays findable on a full white page
-       rather than at the chrome's. */
-    .text ::ng-deep span.hit { background: rgba(6, 182, 212, 0.55); border-radius: 2px; }
-    .text.shown ::ng-deep span.hit { background: rgba(6, 182, 212, 0.85); }
-
-    .strip {
-      /* Positioned for the same reason the viewport is — revealThumb reads
-         offsetLeft against this element's scrollLeft. */
-      position: relative;
-      flex-shrink: 0;
-      display: flex; gap: 8px;
-      padding: 8px 10px;
-      overflow-x: auto; overflow-y: hidden;
-      background: var(--bg-elevated);
-      border-top: 1px solid var(--border-subtle);
-    }
-    .thumb {
-      flex-shrink: 0;
-      display: flex; flex-direction: column; align-items: center; gap: 3px;
-      padding: 0;
-      background: transparent; border: none; cursor: pointer;
-      color: var(--text-tertiary); font-size: 10px;
-      font-variant-numeric: tabular-nums;
-    }
-    .thumb canvas {
-      display: block; width: 100%;
-      background: #fff;
-      border: 2px solid transparent; border-radius: var(--radius-sm);
-      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .thumb:hover canvas { border-color: var(--border-strong); }
-    .thumb.on canvas { border-color: var(--accent); }
-    .thumb.on { color: var(--accent); font-weight: 500; }
-
-    .problem {
-      flex: 1;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 8px; padding: 32px;
-      color: var(--text-tertiary); text-align: center;
-    }
-    .problem h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--error); }
-    .problem p { margin: 0; font-size: 13px; max-width: 70ch; white-space: pre-wrap; }
-
-    /* One button shape across the row — 26px tall, 4px radius — so the toolbar
-       reads as a strip of controls rather than a line of separate widgets.
-       There is no accented button here now: nothing on this row is the thing
-       you came to press, and the one control that was (Save a copy) is on the
-       dock as Export. */
-    .ghost, .icon {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 26px; padding: 0 10px;
-      border-radius: var(--radius-sm);
-      font-size: 12px; font-weight: 500; line-height: 1;
-      cursor: pointer; white-space: nowrap;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .ghost, .icon {
-      background: var(--bg-input);
-      border: 1px solid var(--border-default);
-      color: var(--text-primary);
-    }
-    .ghost:hover:not(:disabled), .icon:hover:not(:disabled) {
-      background: var(--bg-hover); border-color: var(--border-strong);
-    }
-    .ghost.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
-    .icon { min-width: 26px; padding: 0 6px; }
-    .icon.wide { min-width: 34px; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-  `],
+  templateUrl: './pdf-view.component.html',
+  styleUrl: './pdf-view.component.scss',
 })
 export class PdfViewComponent implements OnDestroy {
   readonly tab = input.required<Tab>();
@@ -508,7 +145,7 @@ export class PdfViewComponent implements OnDestroy {
   protected readonly doc = signal<PDFDocumentProxy | null>(null);
   protected readonly problem = signal<string | null>(null);
   /** Page sizes in POINTS, in order. The shells are these times the scale. */
-  private readonly boxes = signal<readonly PageBox[]>([]);
+  readonly boxes = signal<readonly PageBox[]>([]);
   protected readonly scale = signal(1);
   protected readonly current = signal(1);
 
@@ -542,9 +179,9 @@ export class PdfViewComponent implements OnDestroy {
   private readonly viewportEl = viewChild<ElementRef<HTMLElement>>('viewport');
   private readonly layerViewportEl = viewChild<ElementRef<HTMLElement>>('layerViewport');
   private readonly stripEl = viewChild<ElementRef<HTMLElement>>('strip');
-  private readonly pageEls = viewChildren<ElementRef<HTMLElement>>('pageBox');
-  private readonly layerEls = viewChildren<ElementRef<HTMLElement>>('layerBox');
-  private readonly thumbEls = viewChildren<ElementRef<HTMLElement>>('thumbBox');
+  readonly pageEls = viewChildren<ElementRef<HTMLElement>>('pageBox');
+  readonly layerEls = viewChildren<ElementRef<HTMLElement>>('layerBox');
+  readonly thumbEls = viewChildren<ElementRef<HTMLElement>>('thumbBox');
 
   /**
    * pdf.js's parser thread, ours to make and ours to kill.
@@ -557,19 +194,19 @@ export class PdfViewComponent implements OnDestroy {
   // `create` rather than `new`: it is the overload pdf.js types properly, and
   // it returns the worker already attached to a port rather than throwing on a
   // second attach. Each component makes its own thread, so it always builds one.
-  private readonly worker = PDFWorker.create({ name: 'foundry-pdf', port: this.thread });
+  readonly worker = PDFWorker.create({ name: 'foundry-pdf', port: this.thread });
 
-  private loadingTask: PDFDocumentLoadingTask | null = null;
+  loadingTask: PDFDocumentLoadingTask | null = null;
   /** Bumped per load, so a document that arrives after the tab moved on is dropped. */
-  private generation = 0;
+  generation = 0;
 
   /** Page -> the scale it is currently drawn at. Absent means nothing is drawn. */
-  private readonly drawn = new Map<number, number>();
-  private readonly tasks = new Map<number, RenderTask>();
+  readonly drawn = new Map<number, number>();
+  readonly tasks = new Map<number, RenderTask>();
   /** Page -> its text items, with the empty ones already gone. Shared by both panes and the search. */
-  private readonly items = new Map<number, readonly TextItem[]>();
+  readonly items = new Map<number, readonly TextItem[]>();
   /** Page -> the spans of the invisible layer and of the visible one, index-aligned with `items`. */
-  private readonly spans = new Map<number, HTMLElement[][]>();
+  readonly spans = new Map<number, HTMLElement[][]>();
   /**
    * Pages the observer says are within reach of the viewport.
    *
@@ -582,17 +219,17 @@ export class PdfViewComponent implements OnDestroy {
    */
   private readonly near = new Set<number>();
   private readonly nearPages = signal<ReadonlySet<number>>(new Set());
-  private readonly thumbsDrawn = new Set<number>();
+  readonly thumbsDrawn = new Set<number>();
 
   private pages: IntersectionObserver | null = null;
   private thumbs: IntersectionObserver | null = null;
 
-  private searchIndex: readonly PageText[] | null = null;
-  private queryTimer: ReturnType<typeof setTimeout> | null = null;
+  searchIndex: readonly PageText[] | null = null;
+  queryTimer: ReturnType<typeof setTimeout> | null = null;
   private syncing = false;
   private scrollPending = false;
   /** Measures a string the way the browser will draw it, without touching the DOM. */
-  private readonly ruler = document.createElement('canvas').getContext('2d');
+  readonly ruler = document.createElement('canvas').getContext('2d');
 
   constructor() {
     /**
@@ -704,95 +341,9 @@ export class PdfViewComponent implements OnDestroy {
     this.thread.terminate();
   }
 
-  // ── Opening ──────────────────────────────────────────────────────────────
+  private open(filePath: string): Promise<void> { return drawing.open.call(this, filePath); }
 
-  /**
-   * Read the file and take its measurements.
-   *
-   * EVERY PAGE'S SIZE IS ASKED FOR UP FRONT, which for a long book is a few
-   * hundred round trips to the worker before the first page appears. It buys a
-   * scrollbar that tells the truth: guessing the rest of the book from page one
-   * makes every page after the first mixed-size one jump under the reader's
-   * cursor, and a viewer that moves the page while you read it is worse than
-   * one that took another moment to open.
-   */
-  private async open(filePath: string): Promise<void> {
-    this.generation += 1;
-    const mine = this.generation;
-    /*
-     * WHERE THE READER WAS, kept across the re-open.
-     *
-     * A tab's document is re-read for two reasons and BOTH of them are the same
-     * document: it was relocated onto the project's own copy of itself (the
-     * bytes are identical), or it was generated again under the same name. In
-     * neither case has the person stopped reading page 214 — but the pane threw
-     * them back to page one, because a re-open is a fresh document as far as
-     * everything below here is concerned.
-     *
-     * Restored only when the new document is long enough to have that page,
-     * which is the whole of the safety: a shorter book simply opens where it
-     * always did.
-     */
-    const wasAt = this.current();
-    this.teardown();
-    this.problem.set(null);
-    this.boxes.set([]);
-    this.itemCounts.set(new Map());
-    this.pageProblems.set(new Map());
-    this.matches.set([]);
-    this.query.set('');
-    this.current.set(1);
-
-    if (!api) {
-      this.problem.set('This window is not running inside Foundry, so it cannot read files.');
-      return;
-    }
-
-    try {
-      const bytes = await api.documentBytes(filePath);
-      if (mine !== this.generation) return;
-
-      const task = getDocument({
-        data: bytes,
-        worker: this.worker,
-        // Everything pdf.js may need at runtime, shipped beside the worker.
-        // Absent, an unusual scan renders blank and says nothing.
-        cMapUrl: new URL('cmaps/', PDFJS_ASSETS).href,
-        cMapPacked: true,
-        standardFontDataUrl: new URL('standard_fonts/', PDFJS_ASSETS).href,
-        wasmUrl: new URL('wasm/', PDFJS_ASSETS).href,
-        iccUrl: new URL('iccs/', PDFJS_ASSETS).href,
-      });
-      this.loadingTask = task;
-      const doc = await task.promise;
-      if (mine !== this.generation) { task.destroy().catch(() => undefined); return; }
-
-      const boxes: PageBox[] = [];
-      for (let number = 1; number <= doc.numPages; number += 1) {
-        const page = await doc.getPage(number);
-        if (mine !== this.generation) return;
-        const viewport = page.getViewport({ scale: 1 });
-        boxes.push({ number, width: viewport.width, height: viewport.height });
-      }
-      this.doc.set(doc);
-      this.boxes.set(boxes);
-      this.fitWidth();
-      // A frame later, because `jumpTo` measures the page divs `shells()` has
-      // only just been given the numbers for.
-      if (wasAt > 1 && wasAt <= boxes.length) {
-        requestAnimationFrame(() => {
-          if (mine === this.generation) this.jumpTo(wasAt);
-        });
-      }
-    } catch (err) {
-      if (mine !== this.generation) return;
-      // By name, never swallowed: a tab showing nothing with no reason on it is
-      // the failure this app refuses to ship (ARCHITECTURE §8).
-      this.problem.set(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  private teardown(): void {
+  teardown(): void {
     for (const task of this.tasks.values()) task.cancel();
     this.tasks.clear();
     this.drawn.clear();
@@ -811,71 +362,7 @@ export class PdfViewComponent implements OnDestroy {
     if (task) task.destroy().catch(() => undefined);
   }
 
-  // ── Drawing ──────────────────────────────────────────────────────────────
-
-  private async draw(number: number): Promise<void> {
-    const doc = this.doc();
-    const factor = this.scale();
-    if (!doc || this.drawn.get(number) === factor) return;
-    const shell = this.pageEls().find((box) => pageOf(box.nativeElement) === number)?.nativeElement;
-    const canvas = shell?.querySelector('canvas');
-    const textEl = shell?.querySelector<HTMLElement>('.text');
-    if (!shell || !canvas || !textEl) return;
-
-    this.tasks.get(number)?.cancel();
-    this.drawn.set(number, factor);
-    const mine = this.generation;
-
-    try {
-      const page = await doc.getPage(number);
-      if (mine !== this.generation || this.drawn.get(number) !== factor) return;
-      const viewport = page.getViewport({ scale: factor });
-
-      // devicePixelRatio-aware, capped. A 3× display would otherwise quadruple
-      // the memory of every page on screen for a difference nobody can see on
-      // a photograph of paper.
-      const density = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(viewport.width * density);
-      canvas.height = Math.round(viewport.height * density);
-      const context = canvas.getContext('2d');
-      if (!context) return;
-
-      const task = page.render({
-        canvas,
-        canvasContext: context,
-        viewport,
-        transform: density === 1 ? undefined : [density, 0, 0, density, 0, 0],
-      });
-      this.tasks.set(number, task);
-      await task.promise;
-      this.tasks.delete(number);
-      if (mine !== this.generation) return;
-
-      const items = await this.textOf(page, number);
-      if (mine !== this.generation || this.drawn.get(number) !== factor) return;
-
-      const layerEl = this.tab().layerView
-        ? this.layerEls().find((box) => pageOf(box.nativeElement) === number)
-          ?.nativeElement.querySelector<HTMLElement>('.text')
-        : null;
-      this.spans.set(number, [
-        layoutText(items, viewport, textEl, this.ruler),
-        layerEl ? layoutText(items, viewport, layerEl, this.ruler) : [],
-      ]);
-      this.paintHit();
-    } catch (err) {
-      // Our own cancel, by name — the one outcome that is not a failure.
-      if (err instanceof Error && err.name === 'RenderingCancelledException') return;
-      this.drawn.delete(number);
-      // ON THE PAGE, not over the document. A page that will not draw is a fact
-      // about that page, and taking the whole book down for it would hide the
-      // 499 that are fine — the reason is still said, by name, where the thing
-      // it is about would have been. A blank page with no explanation is the
-      // failure ARCHITECTURE §8 is about; this is not that.
-      this.pageProblems.update((problems) => new Map(problems)
-        .set(number, err instanceof Error ? err.message : String(err)));
-    }
-  }
+  private draw(number: number): Promise<void> { return drawing.draw.call(this, number); }
 
   private release(number: number): void {
     this.tasks.get(number)?.cancel();
@@ -902,52 +389,9 @@ export class PdfViewComponent implements OnDestroy {
     }
   }
 
-  /**
-   * A page's text items, cached and stripped of the empty ones.
-   *
-   * pdf.js emits a zero-length item every time the text state changes, which
-   * for foundry's layer is once per line. They would be zero-width spans in
-   * both panes and holes in the search's item indexing, so they go here — once,
-   * where every consumer sees the same list.
-   */
-  private async textOf(page: PdfPage, number: number): Promise<readonly TextItem[]> {
-    const cached = this.items.get(number);
-    if (cached) return cached;
-    const content = await page.getTextContent();
-    const items = (content.items as TextItem[]).filter(
-      (item) => typeof item.str === 'string' && item.str.length > 0,
-    );
-    this.items.set(number, items);
-    this.itemCounts.update((counts) => new Map(counts).set(number, items.length));
-    return items;
-  }
+  textOf(page: PdfPage, number: number): Promise<readonly TextItem[]> { return drawing.textOf.call(this, page, number); }
 
-  private async drawThumb(number: number): Promise<void> {
-    const doc = this.doc();
-    if (!doc || this.thumbsDrawn.has(number)) return;
-    const canvas = this.thumbEls().find((box) => pageOf(box.nativeElement) === number)
-      ?.nativeElement.querySelector('canvas');
-    if (!canvas) return;
-    this.thumbsDrawn.add(number);
-    const mine = this.generation;
-    try {
-      const page = await doc.getPage(number);
-      if (mine !== this.generation) return;
-      const unit = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: THUMB_WIDTH / unit.width });
-      canvas.width = Math.round(viewport.width);
-      canvas.height = Math.round(viewport.height);
-      const context = canvas.getContext('2d');
-      if (!context) return;
-      await page.render({ canvas, canvasContext: context, viewport }).promise;
-    } catch (err) {
-      // A thumbnail that will not draw stays blank rather than taking the
-      // viewer down with it — the page itself is where a real failure is said.
-      if (!(err instanceof Error && err.name === 'RenderingCancelledException')) {
-        this.thumbsDrawn.delete(number);
-      }
-    }
-  }
+  private drawThumb(number: number): Promise<void> { return drawing.drawThumb.call(this, number); }
 
   protected readonly thumbWidth = THUMB_WIDTH;
 
@@ -1082,241 +526,15 @@ export class PdfViewComponent implements OnDestroy {
     this.scale.set(Math.max(0.1, (viewport.clientWidth - 28 - 12) / widest));
   }
 
-  // ── Searching ────────────────────────────────────────────────────────────
+  protected onQuery(text: string): void { return search.onQuery.call(this, text); }
 
-  /**
-   * CASE-INSENSITIVE SUBSTRING, and nothing cleverer. No word boundaries, no
-   * regex, no ligature or diacritic folding — the job this has to do is let
-   * Owen type a word he can see on the scan and find out whether the layer
-   * under it says the same thing, and for that a substring is the honest test.
-   * Anything smarter would find matches the layer does not literally contain,
-   * which is the one answer this feature must never give.
-   */
-  protected onQuery(text: string): void {
-    this.query.set(text);
-    if (this.queryTimer !== null) clearTimeout(this.queryTimer);
-    this.queryTimer = setTimeout(() => { void this.run(text); }, QUERY_DELAY_MS);
-  }
+  run(text: string): Promise<void> { return search.run.call(this, text); }
 
-  private async run(text: string): Promise<void> {
-    const needle = text.trim().toLowerCase();
-    if (needle.length === 0) {
-      this.matches.set([]);
-      this.paintHit();
-      return;
-    }
-    const index = await this.index();
-    if (index === null || this.query().trim().toLowerCase() !== needle) return;
+  index(): Promise<readonly PageText[] | null> { return search.index.call(this); }
 
-    const found: Match[] = [];
-    for (const page of index) {
-      const hay = page.lower;
-      for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
-        // The item the match STARTS in. A match that runs over the end of one
-        // item is highlighted on the item it began in rather than on both —
-        // the highlight is a pointer to the place, not a measurement of it.
-        found.push({ page: page.number, item: itemAt(page.starts, at) });
-      }
-    }
-    this.matches.set(found);
-    this.at.set(0);
-    if (found.length > 0) this.go(found[0]!);
-    else this.paintHit();
-  }
+  protected step(delta: number): void { return search.step.call(this, delta); }
 
-  /**
-   * Every page's text, read once.
-   *
-   * This is the expensive thing in the file — a whole book through the worker —
-   * so it happens on the first search rather than on open, and is kept until
-   * the document changes. The toolbar says "reading…" while it runs, because a
-   * search box that does nothing for four seconds looks broken.
-   */
-  private async index(): Promise<readonly PageText[] | null> {
-    if (this.searchIndex) return this.searchIndex;
-    const doc = this.doc();
-    if (!doc) return null;
-    const mine = this.generation;
-    this.searching.set(true);
-    try {
-      const pages: PageText[] = [];
-      for (let number = 1; number <= doc.numPages; number += 1) {
-        const page = await doc.getPage(number);
-        if (mine !== this.generation) return null;
-        const items = await this.textOf(page, number);
-        let text = '';
-        const starts: number[] = [];
-        for (const item of items) {
-          starts.push(text.length);
-          // A newline where the item said the line ended, so two lines of the
-          // layer cannot be read as one word run together.
-          text += item.hasEOL ? `${item.str}\n` : item.str;
-        }
-        pages.push({ number, lower: text.toLowerCase(), starts });
-      }
-      if (mine !== this.generation) return null;
-      this.searchIndex = pages;
-      return pages;
-    } finally {
-      this.searching.set(false);
-    }
-  }
+  go(match: Match): void { return search.go.call(this, match); }
 
-  protected step(delta: number): void {
-    const found = this.matches();
-    if (found.length === 0) {
-      // Enter on a query that has not run yet — run it now rather than nothing.
-      if (this.query().trim().length > 0) void this.run(this.query());
-      return;
-    }
-    const next = (this.at() + delta + found.length) % found.length;
-    this.at.set(next);
-    this.go(found[next]!);
-  }
-
-  private go(match: Match): void {
-    this.jumpTo(match.page);
-    // The page may not be drawn yet; `draw` calls paintHit when it finishes, so
-    // this call is for the case where it already is.
-    this.paintHit();
-  }
-
-  /** The current match's spans, in whichever panes are drawn. */
-  private paintHit(): void {
-    const found = this.matches();
-    const hit = found[this.at()] ?? null;
-    for (const [number, panes] of this.spans) {
-      for (const pane of panes) {
-        for (let index = 0; index < pane.length; index += 1) {
-          const wanted = hit !== null && hit.page === number && hit.item === index;
-          pane[index]?.classList.toggle('hit', wanted);
-        }
-      }
-    }
-  }
+  paintHit(): void { return search.paintHit.call(this); }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-interface PageBox { number: number; width: number; height: number }
-interface Shell { number: number; width: number; height: number }
-
-interface Match { page: number; item: number }
-interface PageText { number: number; lower: string; starts: readonly number[] }
-
-/**
- * A text item, as much of one as this file touches.
- *
- * Declared here rather than imported from pdfjs-dist's deep type paths: four
- * fields is the whole of the contract, and a structural type cannot break on a
- * version that moves a declaration file.
- */
-interface TextItem {
-  str: string;
-  width: number;
-  height: number;
-  hasEOL: boolean;
-  transform: number[];
-}
-
-/** Only the two methods this file calls, so the page proxy need not be imported. */
-interface PdfPage {
-  getTextContent(): Promise<{ items: unknown[] }>;
-}
-
-/**
- * Where pdf.js's own files were copied to, addressed off the document.
- *
- * `/pdfjs/…` under `ng serve` and `./pdfjs/…` beside index.html in a packaged
- * build, because the production configuration sets baseHref to `./` and a
- * packaged renderer is a `file://` page with no server under it.
- */
-const PDFJS_ASSETS = new URL('pdfjs/', document.baseURI);
-
-const ZOOM_STEPS = [0.25, 0.4, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 3, 4] as const;
-/** e^(100·rate) ≈ 1.2 — one wheel notch is one comfortable zoom step. */
-const WHEEL_RATE = 0.0018;
-const THUMB_WIDTH = 84;
-/** Long enough that typing a word is one search, short enough to feel live. */
-const QUERY_DELAY_MS = 250;
-
-function pageOf(target: Element): number | null {
-  const raw = target.getAttribute('data-page');
-  if (raw === null) return null;
-  const number = Number.parseInt(raw, 10);
-  return Number.isFinite(number) ? number : null;
-}
-
-/** Which item a character offset falls in. The starts are ascending, so this is a walk. */
-function itemAt(starts: readonly number[], offset: number): number {
-  let found = 0;
-  for (let index = 0; index < starts.length; index += 1) {
-    if (starts[index]! > offset) break;
-    found = index;
-  }
-  return found;
-}
-
-/**
- * Put every text item where the page put it — THE arithmetic of this file.
- *
- * `Util.transform(viewport.transform, item.transform)` composes the item's text
- * matrix with the viewport's, which is what turns PDF user space (y up, origin
- * bottom-left, points) into CSS pixels (y down, origin top-left, at the scale
- * the canvas beside it was drawn at). Both panes call this, so a layer that is
- * half a page off is half a page off in both — which is the only way the right
- * pane can be evidence about the left.
- *
- * The horizontal squeeze is measured rather than assumed: the layer's own font
- * is not on this machine, so a span set at the right size is still the wrong
- * WIDTH, and a line of text 15% too long is a line that no longer sits over its
- * ink. The item carries the width it occupied; the ruler says what the browser
- * will actually draw; the ratio between them goes on as a scaleX.
- */
-function layoutText(
-  items: readonly TextItem[],
-  viewport: PageViewport,
-  into: HTMLElement,
-  ruler: CanvasRenderingContext2D | null,
-): HTMLElement[] {
-  const spans: HTMLElement[] = [];
-  const fragment = document.createDocumentFragment();
-  for (const item of items) {
-    const tx = Util.transform(viewport.transform, item.transform);
-    const size = Math.hypot(tx[2]!, tx[3]!);
-    const angle = Math.atan2(tx[1]!, tx[0]!);
-    const span = document.createElement('span');
-    span.textContent = item.str;
-    span.style.fontFamily = LAYER_FONT;
-    span.style.fontSize = `${size}px`;
-    // An upright item's baseline box hangs from its origin; a rotated one's
-    // hangs along the rotation. foundry never writes an angled line, but a page
-    // bound sideways or somebody else's layer can carry one.
-    span.style.left = `${angle === 0 ? tx[4]! : tx[4]! + size * Math.sin(angle)}px`;
-    span.style.top = `${angle === 0 ? tx[5]! - size : tx[5]! - size * Math.cos(angle)}px`;
-
-    let transform = angle === 0 ? '' : `rotate(${angle}rad)`;
-    if (ruler) {
-      ruler.font = `${size}px ${LAYER_FONT}`;
-      const drawn = ruler.measureText(item.str).width;
-      const wanted = item.width * viewport.scale;
-      if (drawn > 0 && wanted > 0) transform += ` scaleX(${wanted / drawn})`;
-    }
-    if (transform.length > 0) span.style.transform = transform;
-
-    spans.push(span);
-    fragment.append(span);
-  }
-  into.replaceChildren(fragment);
-  return spans;
-}
-
-/**
- * One family for both panes and for the ruler that measures them.
- *
- * The point is not that it resembles the scan's typeface — it cannot, and the
- * squeeze above corrects the width regardless. The point is that the measuring
- * and the drawing use the SAME font, because the moment they disagree every
- * span is scaled by a ratio computed for a different shape.
- */
-const LAYER_FONT = 'serif';

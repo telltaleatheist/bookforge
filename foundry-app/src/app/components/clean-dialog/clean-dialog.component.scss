@@ -1,0 +1,160 @@
+
+    /* THE HOST'S SECTION: the analysis dialog's lit box (`.pick`), one of many. */
+    .host-pass {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+    }
+    .host-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-secondary); }
+    .host-choices { display: flex; flex-direction: column; gap: 6px; }
+    .link {
+      background: none; border: none; padding: 0; margin-left: 4px; cursor: pointer;
+      font: inherit; color: var(--accent); text-decoration: underline;
+    }
+    .pick {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 7px 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      text-align: left; cursor: pointer;
+      font: inherit; color: inherit;
+      user-select: none;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .pick:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .pick.on { background: var(--accent-soft); border-color: var(--accent); }
+    .pick-head { display: flex; align-items: flex-start; gap: 6px; }
+    .pick-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+    /* The fill carries the accent, not the words (analysis dialog, 2026-10-30). */
+    .pick.on .pick-name { color: var(--text-primary); font-weight: 600; }
+    .pick.on .pick-said, .pick.on .pick-tag { color: var(--text-secondary); }
+    .pick-said { font-size: 10.5px; line-height: 1.4; color: var(--text-tertiary); }
+    .pick-tag {
+      flex: 0 0 auto; margin-top: 2px;
+      font-family: var(--font-mono);
+      font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+    .queued { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; color: var(--text-primary); }
+
+    /* A fact, not a field. What a read-only input used to be. */
+    .fact {
+      margin: 0; font-size: 12px; color: var(--text-primary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /*
+     * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT -- confirm-dialog's rule,
+     * and the simplify dialog's copy of it verbatim: this host is a full-window
+     * sheet of glass, and the scrim and the card say auto below so nothing a
+     * person can see behaves differently.
+     */
+    :host { position: fixed; inset: 0; z-index: 1200; display: block; pointer-events: none; }
+
+    .scrim {
+      pointer-events: auto;
+      position: absolute; inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(4px);
+      animation: fade 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+
+    .card {
+      pointer-events: auto;
+      position: relative;
+      margin: 8vh auto 0;
+      width: 460px;
+      max-width: calc(100vw - 32px);
+      max-height: 82vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow:
+        0 10px 15px -3px rgba(0, 0, 0, 0.2),
+        0 20px 40px -10px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      animation: rise 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes rise {
+      from { opacity: 0; transform: scale(0.94); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .title { flex: 1; font-family: var(--font-display); font-weight: 600; font-size: 16px; }
+    .x {
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 13px;
+      padding: 3px 5px; border-radius: var(--radius-sm);
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+    .body.empty { color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+    .body.empty p { margin: 0; }
+
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-tertiary);
+    }
+    .label em { text-transform: none; letter-spacing: 0; font-style: normal; font-weight: 400; opacity: 0.75; }
+
+    .note { margin: 0; font-size: 11px; color: var(--text-tertiary); line-height: 1.5; }
+    .check {
+      display: flex; align-items: flex-start; gap: 8px;
+      font-size: 12px; line-height: 1.5; color: var(--text-primary); cursor: pointer;
+    }
+    .check input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
+    .check em { font-style: normal; color: var(--text-tertiary); }
+    .note strong { color: var(--text-secondary); font-weight: 600; }
+    .text {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      font: inherit; font-size: 12px; line-height: 1.5; color: var(--text-primary);
+      background: var(--bg-input); border: 1px solid var(--border-default);
+      border-radius: var(--radius-md); padding: 6px 8px;
+    }
+    .text:focus { outline: none; border-color: var(--accent); }
+    .problem { margin: 0; font-size: 12px; color: var(--warn); }
+
+    .foot {
+      display: flex; justify-content: flex-end; gap: 8px;
+      padding: 12px 16px 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .primary, .ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 32px; padding: 0 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .primary {
+      border: none;
+      background: var(--accent); color: var(--text-inverse);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .primary:active:not(:disabled) { background: var(--accent-active); transform: scale(0.98); }
+    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ghost {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+    }
+    .ghost:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    .ghost:active { background: var(--bg-active); transform: scale(0.98); }
+  

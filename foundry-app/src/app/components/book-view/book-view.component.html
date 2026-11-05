@@ -1,0 +1,1190 @@
+
+    <!--
+      THE WORDS OF ONE BLOCK, in one template used by every category, because the
+      only thing that differs between a paragraph and a caption is the element
+      around them. Each run is an ELEMENT — including the plain ones — so that the
+      whitespace between them in this file is whitespace-only and is dropped:
+      text nodes interleaved with spans would each pick up the indentation of the
+      line they are written on, and the book would come out with a space in front
+      of every note number.
+    -->
+    <!--
+      `plain` IS THE CONTEXT ASKING FOR THE DEMOTED NUMBER, and it is a parameter
+      rather than a reading of `edition()` because there are two sheets now that
+      want it and only one of them is a mode. The edition demotes a marker because
+      the link is a reader's apparatus and a page is not a reader; the SOURCE
+      column demotes it because the left sheet is context — no coupling, no jump,
+      no amber (RENDERER-DESIGN.md §5: chrome only on the live column). One
+      template, asked which it is, instead of two that must be kept saying the
+      same thing about a superscript.
+    -->
+    <!--
+      `bold` AND `italic` ARE THE MODEL'S OWN EMPHASIS, DRAWN AS THE EFFECT —
+      §18b. The vision model writes `**bold**` and `*italic*` into a block's
+      text and the emitter has always turned those into `<strong>` and `<em>`;
+      this sheet drew the asterisks. It now draws what they mean.
+
+      THE MARKERS ARE STILL IN THE FILE and always will be: the ops index into
+      block text by character offset, so removing four characters upstream would
+      move every offset after them and misplace an already-curated project's
+      strikes. The cut is made in `cut()`, which is where that argument is
+      written out; here there is only a class.
+
+      A CLASS AND NOT A `<strong>`/`<em>` ELEMENT, deliberately: every run in
+      this template is already an element for the whitespace reason above, and
+      wrapping some of them in a second one would be three more branches to keep
+      saying the same thing — on a workbench whose whole job is to show a person
+      what the export will look like, where the effect IS the information.
+    -->
+    <ng-template #words let-line let-plain="plain">
+      @for (piece of line.pieces; track $index) {
+        @if (piece.marker; as marker) {
+          @if (plain) {
+            <!--
+              THE REF, DEMOTED — *"struck elements absent, refs demoted"*
+              (docs/RENDERER.md §5). In the cast a matched marker is
+              `<a class="noteref" epub:type="noteref" href="#fnN"><sup>n</sup></a>`
+              and an unmatched one falls through to the inline pass's own plain
+              `<sup>n</sup>`; the edition draws that plain superscript for every
+              number it has. NO JUMP, NO COUPLING, NO AMBER: the link is the
+              apparatus of a reader, and this is the page, not a reader.
+            -->
+            <sup
+              class="ref"
+              [class.bold]="piece.strong"
+              [class.italic]="piece.italic"
+            >{{ piece.text }}</sup>
+          } @else {
+            <span
+              class="marker"
+              [attr.data-note]="marker.note"
+              [class.unlinked]="marker.note === null"
+              [class.struck]="marker.struck"
+              [class.lit]="marker.note !== null && lit() === marker.note"
+              [class.bold]="piece.strong"
+              [class.italic]="piece.italic"
+              (pointerenter)="light(marker.note)"
+              (pointerleave)="light(null)"
+            >{{ piece.text }}</span>
+          }
+        } @else {
+          <!--
+            THE ANALYSIS'S LIGHT IS A CLASS ON THE RUN and nothing else — no extra
+            element, no `innerHTML`, no layer over the page. `cut()` already
+            closed the run wherever the light changes, so a lit stretch IS a run
+            and wearing the class is the whole of drawing it.
+
+            `data-hit` IS THE FINDING'S NAME AND NOT A LISTENER. Owen's
+            2026-08-25 sentence — *"as i scroll/click highlighted text, it should
+            jump to that spot in the analysis"* — needs a click on these words to
+            say WHICH passage, and the way this sheet has always answered that
+            kind of question is an attribute the press reads back off whatever it
+            landed on (`data-id`, `data-note`, `data-jump`). A binding per run
+            would be one listener per lit stretch on a page; one attribute is a
+            string the walk already computed.
+
+            THE BACKGROUND IS BOUND AND NOT DECLARED, because it is the
+            CATEGORY'S colour now (Owen, 2026-08-25: *"maybe make the text's
+            highlighted color the same color as the analysis block"*) and a
+            stylesheet cannot know twelve of them. The rule in the styles keeps
+            the geometry and the transition; `tintOf` decides the wash.
+
+            `on` IS THE SELECTED FINDING, PULSING. *"Have it pulse as long as
+            it's selected."* The emphasis is the tint itself breathing deeper in
+            its own hue — `--hit-deep` rides beside the resting wash so the
+            animation has both ends of the breath (Owen's second ruling; the
+            styles carry it in full).
+
+            `added` AND `removed` ARE THE COMPARISON'S LIGHT (Owen,
+            2026-09-08: *"highlight the changes on each side, like in analysis,
+            so I can see what it was before and what it is now"*) — the same
+            mechanism exactly: `cut()` closed the run where the change begins
+            and ends, and a class on it is the whole of the drawing. `hit` is
+            kept to the ANALYSIS's two values, so the analysis's geometry rule
+            and its pulse never reach a change run and the two lights cannot
+            wear each other's clothes.
+          -->
+          <span
+            class="run"
+            [class.bold]="piece.strong"
+            [class.italic]="piece.italic"
+            [class.hit]="piece.hit === 'lit'"
+            [class.added]="piece.hit === 'added'"
+            [class.removed]="piece.hit === 'removed'"
+            [class.on]="piece.hitKey !== null && chosenHit() === piece.hitKey"
+            [style.background]="piece.hitInk"
+            [style.--hit-deep]="piece.hitDeep"
+            [attr.data-hit]="piece.hitKey"
+          >{{ piece.text }}</span>
+        }
+      }
+    </ng-template>
+
+    <!--
+      THE WORDS AS THE BOOK SETS THEM — one block's prose, in the element its
+      category asks for.
+
+      IT IS A TEMPLATE BECAUSE THERE ARE TWO SHEETS NOW. The live column draws it
+      under the whole of §3's chrome and the SOURCE column draws it under none, and
+      the one thing that must not differ between them is the typography: a caption
+      set in italics on the right and roman on the left would be two books rather
+      than one book twice, and the scroll lock would be locking rows of different
+      heights together. So the element, the measured size and the marker cuts are
+      decided once, here, and what the two columns disagree about is only what is
+      drawn AROUND this.
+    -->
+    <ng-template #prose let-line let-plain="plain">
+      @switch (line.row.category) {
+        @case ('Title') {
+          <h1 [style.font-size.em]="line.size">
+            <ng-container
+              *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+            ></ng-container>
+          </h1>
+        }
+        @case ('Section-header') {
+          <h2 [style.font-size.em]="line.size">
+            <ng-container
+              *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+            ></ng-container>
+          </h2>
+        }
+        @case ('Quote') {
+          <blockquote>
+            <p [style.font-size.em]="line.size">
+              <ng-container
+                *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+              ></ng-container>
+            </p>
+          </blockquote>
+        }
+        @case ('Caption') {
+          <p class="caption" [style.font-size.em]="line.size">
+            <ng-container
+              *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+            ></ng-container>
+          </p>
+        }
+        @case ('Footnote') {
+          <p class="note" [style.font-size.em]="line.size">
+            <ng-container
+              *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+            ></ng-container>
+          </p>
+        }
+        @case ('Picture') {
+          <!--
+            THE PLATE IS THE ENGINE'S OWN CROP, cut once beside the bank when the
+            book was made (docs/BOOK-FILE.md §6) and served through the
+            allow-listed book host — the row names it, main resolves it, and this
+            pane composes a URL and nothing else. The empty frame remains the
+            honest state of a book none were cut for (no PDF at reflow): it
+            reserves the space a plate takes and names the page it came from, so a
+            book with plates reads as a book with plates rather than as a
+            paragraph gone missing. The alt is empty because the caption below IS
+            the description, and a reader hearing it twice was told nothing the
+            second time.
+          -->
+          <figure>
+            @if (plate(line.row); as src) {
+              <img class="plate-img" [src]="src" alt="" draggable="false">
+            } @else if (!edition()) {
+              <!--
+                AND THE EMPTY FRAME IS THE BENCH'S. It is a dashed rule and a page
+                number — an instrument mark saying "a plate belongs here and this
+                book was reflowed without the PDF to cut it from". The edition is
+                the finished book, the finished book has the plate, and drawing a
+                dashed box in its place would put a mark on the page that the
+                export will never write. What is left is the gap the missing plate
+                actually is.
+
+                THE SOURCE COLUMN KEEPS IT, which looks like an exception to
+                "chrome only on the live column" and is not: this frame is the
+                SPACE the picture occupies, and a context column that closed the
+                gap would stand a row taller than its twin all the way down the
+                page — which the scroll lock would then have to argue with.
+              -->
+              <div class="plate"><span class="plate-page">≈ {{ line.row.page }}</span></div>
+            }
+            @if (line.row.text.trim().length > 0) {
+              <figcaption [style.font-size.em]="line.size">
+                <ng-container
+                  *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+                ></ng-container>
+              </figcaption>
+            }
+          </figure>
+        }
+        @case ('Table') {
+          <!--
+            §18c — THE GRID, DRAWN. A Table block's text is the model's own HTML
+            and the export has always written a real table out of it
+            (`checkTableHtml`, src/vlm/dots.ts); the bench set it as a paragraph
+            and a person proofing their book saw angle brackets. It now draws.
+
+            NOT ONE CHARACTER OF THE MODEL'S STRING BECOMES MARKUP. `readTable`
+            (./table) reads the fragment into rows, cells and two clamped
+            integers, and every one of those crosses into this template as an
+            interpolation Angular escapes. There is no `innerHTML` here and
+            there must never be one: the string arrived from a language model
+            over a socket, and that we asked for it is not a provenance.
+
+            THIS IS NOT THE GRID EDITOR, which stays deferred out loud. Nothing
+            below is clickable and nothing below writes an op — the block goes on
+            being selected, struck and curated by the chrome around it, because
+            all of that is about the BLOCK and this is only what is inside it.
+          -->
+          @if (line.table; as grid) {
+            <!--
+              The wrapper scrolls, and it is the whole reason there is one: a
+              nine-column table in a book set to a reading measure is wider than
+              the paper, and a page that scrolls sideways as a whole would take
+              the margins, the gutters and every mark in them along with it.
+            -->
+            <div class="tablewrap">
+              <table [style.font-size.em]="line.size">
+                @for (row of grid; track $index) {
+                  <tr [class.head]="row.head">
+                    @for (cell of row.cells; track $index) {
+                      @if (cell.header) {
+                        <th
+                          [attr.colspan]="cell.colspan"
+                          [attr.rowspan]="cell.rowspan"
+                        >{{ cell.text }}</th>
+                      } @else {
+                        <td
+                          [attr.colspan]="cell.colspan"
+                          [attr.rowspan]="cell.rowspan"
+                        >{{ cell.text }}</td>
+                      }
+                    }
+                  </tr>
+                }
+              </table>
+            </div>
+          } @else {
+            <!--
+              THE REFUSAL, AND IT IS VISIBLE. A fragment with no rows this app
+              will read is printed as what it is — the model's own string, set as
+              prose, exactly as this block was drawn before it had a case. A
+              sanitiser whose rejection is a blank space would take a paragraph
+              of somebody's book off the page with nothing said about it.
+
+              The sentence beside it is BENCH CHROME and not part of the book, so
+              it is absent from the edition for the same reason the page ghosts
+              and the amber flags are: the edition is what the export will be,
+              and the export writes the model's fragment whatever this app made
+              of it.
+            -->
+            @if (!plain) {
+              <p class="table-refused">
+                This block is a table, and its markup could not be read as one. The words
+                are printed below as they arrived.
+              </p>
+            }
+            <p class="para set-off" [style.font-size.em]="line.size">
+              <ng-container
+                *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+              ></ng-container>
+            </p>
+          }
+        }
+        @default {
+          <!--
+            Text, and — with a class and nothing else — a formula and a list
+            item. Their own shapes are later waves; rendering what the model
+            read, plainly, is not a placeholder for that, it is what the words
+            are. TABLE HAS ITS OWN CASE NOW (§18c, above) and is no longer one
+            of the categories this paragraph stands in for.
+          -->
+          <p
+            class="para"
+            [class.indent]="line.indent"
+            [class.set-off]="line.row.category !== 'Text'"
+            [style.font-size.em]="line.size"
+          >
+            <ng-container
+              *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+            ></ng-container>
+          </p>
+        }
+      }
+    </ng-template>
+
+    <!--
+      ── §5 THE ALIGNED TRANSLATION VIEW — two columns, one book, twice ────────
+
+      *"Two scroll-locked columns over two book files with the same ids."*
+      (docs/RENDERER.md §5.) The SOURCE is on the left and the TRANSLATION on the
+      right, which is the order the work went in and the order a proof is read in.
+      The right-hand column IS the pane — every gesture, every mark, the stack, the
+      trays — untouched; the left is READ-ONLY CONTEXT and carries no chrome at
+      all, because there is nothing on that sheet a person can decide (source edits
+      stand ABOVE the translation, where changing the words changes the question
+      the records answered).
+
+      THE PAIR IS ALWAYS THIS ELEMENT, with one child or two. A wrapper that only
+      existed while two columns did would mean the bench's own box changed shape
+      when the toggle was pressed, and everything measured against it — the sticky
+      trays, the marquee's coordinates — would be measuring a different thing
+      depending on a mode.
+    -->
+    <!--
+      THE TWO REGISTERS — *"a two-segment control … `Workbench | Edition`,
+      styled like the app's existing acts"* (RENDERER-DESIGN.md §5).
+
+      ABOVE THE SCROLLER AND NOT IN IT, which reverses where this control
+      stood and is the user's own ruling (2026-08-17): the head used to open
+      the sheet's column and stick to the scrollport's top edge, and a stuck
+      tray is a tray the words pass UNDER — *"the workspace/final version
+      buttons at the top cover the file when i scroll down."* So the register
+      stands in a row of the host's own column above the pair, the book
+      scrolls in the box below it, and nothing the sheet says can arrive
+      beneath these buttons because they are not over the sheet at all. The
+      BOTTOM tray keeps its sticky edge: Apply is a verb somebody reaches for
+      mid-page, and it should ride the scroll; the head is a REGISTER — a
+      fact about the page rather than a verb on it — and a fact can hold
+      still.
+
+      A GROUP OF TWO BUTTONS AND NOT A CHECKBOX. `aria-pressed` on each says
+      which one is in force in the one vocabulary a screen reader already has
+      for a segmented control, and buttons are reachable, pressable and
+      focusable from a keyboard with nothing added.
+    -->
+    <!--
+      AN EXPORT VIEW HAS NO HEAD AT ALL: one register, no pair, no verbs —
+      a control whose every segment is refused is furniture explaining
+      itself, and the absence says "this is the finished file" better. A
+      problem and a load still in flight have none either, now that the head
+      stands outside the sheet's own column: a register over a bench holding
+      only a sentence would be a claim about a book that is not there.
+    -->
+    @if (!problem() && !loading()) {
+      <div class="tray head" [style.display]="viewing() ? 'none' : null">
+        <!--
+          ── APPLY, WHERE THE PERSON IS ALREADY LOOKING ───────────────────────
+
+          *"and maybe there should be another apply changes button somewhere
+          obvious. the button on the side of the workbench works but it isnt
+          obvious"* (Owen, 2026-08-22). The tray at the foot of the bench is
+          right where it is and it stays — a verb you reach for mid-page should
+          ride the scroll — but it is one small button in a corner of a wide
+          bench, in the same weight as Undo beside it, and a person with three
+          changes on the page and an export to run did not find it.
+
+          THIS IS THE HEAD ROW, WHICH IS A ROW OF FACTS, AND A VERB IS NOT ONE.
+          That objection is the head's own (see the register's comment below) and
+          it is answered rather than ignored: this button is not furniture that
+          sits here explaining itself. It EXISTS ONLY WHILE THERE IS SOMETHING TO
+          APPLY, which makes it the same kind of thing as the rest of the row —
+          a fact about this page, stated as the one press that changes it — and
+          absent the rest of the time, on the house's absent-not-disabled rule.
+          The tray's button is the opposite and deliberately so: it is DISABLED
+          at zero, so the affordance can be learnt before there is anything to
+          press it with. Learn it there; be caught by it here.
+
+          THE ACCENT IS THE POINT and it is spent once. Nothing else on this
+          surface is filled with it — the registers are the shell's greys, the
+          paper has its own inks — so the one accent-filled thing in the pane is
+          the one press that is waiting on somebody.
+
+          IT DRAWS IN THE EDITION TOO, unlike the foot tray (which the mode makes
+          `inert`). The argument there is that the tray is the bench's
+          furniture and the edition has none; the argument here is stronger the
+          other way. Looking at the finished book is exactly when somebody
+          discovers a change they meant to record, and a stack is
+          mode-independent — the edition is a projection of the same ops — so
+          the press means the same thing from either register.
+
+          THE COUNT IS THE TRAY'S OWN LABEL, not a second spelling of it. One
+          function, one wording, two places it is drawn; the card that main
+          composes says "Apply changes" without a number because its own title
+          carries the count, and that is the seam's copy rather than this one's.
+        -->
+        @if (waiting() > 0) {
+          <button
+            type="button"
+            class="act now"
+            [disabled]="applying()"
+            title="Record every change on this page as one row in Steps"
+            (click)="apply()"
+          >{{ applying() ? 'Applying…' : applyLabel() }}</button>
+        }
+        <!--
+          COMPARE SITS IN THE HEAD ROW, beside the registers, because this row is
+          already the answer to "what am I looking at, and how" — and a second
+          step beside this one is one more answer to that. It is drawn only where
+          this viewer is the LIVE one: the head is hidden entirely while
+          `viewing()` (an export view, and a compare column), so the control
+          cannot appear inside the very column it opens.
+        -->
+        <app-compare-picker />
+        <!--
+          AND THE ANALYSIS, BESIDE IT, because the two open the same slot: one
+          puts another step there and the other puts a report there, and the stage
+          holds one or the other by construction. It draws only where this book
+          HAS an analysis (the picker refuses to be a button with an empty menu),
+          and only on the live column for compare's own reason — the head is
+          hidden entirely while `viewing()`, so neither control can appear inside
+          the column it opens.
+        -->
+        <app-analysis-picker />
+        <div class="segments" role="group" aria-label="How this book is shown">
+          <button
+            type="button"
+            class="act segment"
+            [class.on]="!edition()"
+            [attr.aria-pressed]="!edition()"
+            (click)="show('workbench')"
+          >Workbench</button>
+          <button
+            type="button"
+            class="act segment"
+            [class.on]="edition()"
+            [attr.aria-pressed]="edition()"
+            (click)="show('edition')"
+          >Final version</button>
+        </div>
+        <!--
+          AND THE SECOND CONTROL, WHICH IS NOT A THIRD SEGMENT.
+
+          `Workbench | Edition` is the REGISTER — what kind of thing this page
+          is — and Aligned is not a third kind of page: it composes with the
+          workbench (chrome on the live column, the source beside it) and is
+          meaningless against the edition, which is the finished book and has one
+          column. A third segment would have said the three were alternatives and
+          put "the finished book, with a working column beside it" on the list of
+          things a person could ask for.
+
+          IT IS ONLY THERE ON A TRANSLATED POSITION. There is no source to set
+          beside a book in its own language, and a control that was permanently
+          dimmed on every ordinary book would be furniture nobody could ever use.
+
+          REFUSED RATHER THAN DISABLED. `aria-disabled` and not `disabled`,
+          because a control that cannot be reached cannot say why it cannot be
+          used: the title is for a pointer that pauses, and a PRESS puts the same
+          sentence on the window's notice strip, where the rest of this app says
+          what it would not do.
+        -->
+        @if (translation() !== null) {
+          <div class="segments" role="group" [attr.aria-label]="'Where the source of this ' + pass() + ' is shown'">
+            <button
+              type="button"
+              class="act segment"
+              [class.on]="!aligned()"
+              [attr.aria-pressed]="!aligned()"
+              (click)="align('alone')"
+            >Alone</button>
+            <button
+              type="button"
+              class="act segment"
+              [class.on]="aligned()"
+              [attr.aria-pressed]="aligned()"
+              [attr.aria-disabled]="alignRefusal() !== null ? 'true' : null"
+              [attr.title]="alignRefusal()"
+              (click)="align('aligned')"
+            >Aligned</button>
+          </div>
+          <!--
+            AND WHAT THE LIGHT COUNTS AS A CHANGE — Owen, 2026-09-08: *"lets put
+            a checkbox in that shows/doesnt show the apostrophe/quote fixes. the
+            apostrophe/quote fixes arent really what im looking for when im
+            scanning through the list of cleaning changes."*
+
+            OFF BY DEFAULT, which is the ask read plainly: a narration pass
+            curls every quote in the book, so hundreds of true edits stand
+            between somebody and the two or three they opened this view to find.
+            The text is untouched either way — the quotes are drawn exactly as
+            they are written on both sheets — and only the highlight moves
+            (`foldQuotes`, shared/word-diff.ts).
+
+            DRAWN ONLY WITH THE PAIR, because it is a fact about the pair's
+            light and means nothing beside a single sheet.
+          -->
+          @if (aligned()) {
+            <label class="act toggle" title="Count a straight quote turned curly as a change">
+              <input
+                type="checkbox"
+                [checked]="quoteFixes()"
+                (change)="showQuoteFixes(box.checked)"
+                #box
+              >
+              <span>Quote fixes</span>
+            </label>
+          }
+        }
+        <!--
+          THE ORIGINAL, AS A TOGGLE AND NOT A SEGMENT — it composes with either
+          register (a scan is worth checking against the bench AND the finished
+          page), so it is one pressed/unpressed control rather than a third
+          answer to "what kind of page is this". Owen's ask, and the correction
+          that names it: *"i want the original pdf comparison, so i know what
+          im looking at and how to correct it if dots makes a mistake."*
+          ./original-panel is the column it opens.
+        -->
+        <button
+          type="button"
+          class="act segment"
+          [class.on]="originalOpen()"
+          [attr.aria-pressed]="originalOpen()"
+          title="Show the original PDF beside the book"
+          (click)="toggleOriginal()"
+        >Original</button>
+      </div>
+    }
+    <div class="pair" [class.aligned]="aligned()" [class.original]="originalOpen()">
+      @if (aligned()) {
+        <!--
+          ITS OWN SCROLLER, which is the whole mechanism: two scrollable boxes are
+          what there is to lock together.
+
+          AND NO `(scroll)` BINDING ON IT, deliberately — the listeners are put on
+          the HOST in the capture phase instead, and the constructor says why: an
+          Angular event binding marks this view dirty every time it fires, and a
+          scroll fires every frame of every drag of every book, aligned or not.
+        -->
+        <div class="context">
+          @if (sourceProblem(); as reason) {
+            <div class="sheet context-sheet"><p class="failure">{{ reason }}</p></div>
+          } @else {
+            <!--
+              THE TITLE SAYS WHERE SOURCE EDITS LIVE, and it is the only thing this
+              sheet says about itself. A double-click here reaches no handler —
+              there is none bound on this sheet — so the sheet does not refuse the
+              gesture, it simply is not one of the surfaces that takes it, and the
+              sentence names the step where those words ARE editable.
+            -->
+            <div
+              class="sheet context-sheet"
+              [attr.title]="sourceTitle()"
+            >
+              @for (line of sourceLines(); track line.row.id) {
+                @if (line.opensNotes) { <div class="notes-rule"></div> }
+                <div
+                  class="block"
+                  [attr.data-id]="line.row.id"
+                  [style.color]="line.colour"
+                  [class.twin]="twinned() === line.row.id"
+                  (pointerenter)="twin(line.row.id)"
+                  (pointerleave)="twin(null)"
+                >
+                  <div class="body">
+                    <ng-container
+                      *ngTemplateOutlet="prose; context: { $implicit: line, plain: true }"
+                    ></ng-container>
+                  </div>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      }
+    <div class="bench" [class.edition]="edition()">
+      @if (problem(); as reason) {
+        <div class="sheet"><p class="failure">{{ reason }}</p></div>
+      } @else if (loading()) {
+        <div class="sheet"><p class="waiting">Opening the book…</p></div>
+      } @else {
+        <!--
+          WHAT AN OLD SAVE COULD NOT SAY ABOUT THIS BOOK — one line per decision,
+          and nothing at all in the ordinary case. See `unplaced` for why this is
+          on the paper rather than on the notice strip, and why it is a list of
+          sentences rather than a count.
+        -->
+        @if (unplaced().length > 0) {
+          <div class="sheet unplaced">
+            <p class="lede">
+              This row was saved before Foundry recorded changes against blocks, and most of what
+              it decided is on the page. These could not be placed:
+            </p>
+            <ul>
+              @for (said of unplaced(); track said) { <li>{{ said }}</li> }
+            </ul>
+          </div>
+        }
+        <!--
+          `tabindex="-1"` so the sheet can HOLD focus without being a tab stop.
+          The Delete key has to reach a selection that a marquee made over empty
+          paper, and a marquee focuses nothing; a press on the paper puts focus
+          here instead, and a press on a block focuses the block, whose keydown
+          bubbles to this handler anyway. One listener, both routes, and no
+          second tab stop in front of the book.
+        -->
+        <div
+          class="sheet"
+          tabindex="-1"
+          (pointerdown)="press($event)"
+          (pointermove)="drag($event)"
+          (pointerup)="release($event)"
+          (pointercancel)="release($event)"
+          (dblclick)="edit($event)"
+          (keydown.delete)="cancel($event)"
+          (keydown.backspace)="cancel($event)"
+          (keydown.escape)="dismissCards()"
+          (keydown.control.j)="joinChosen($event)"
+          (keydown.meta.j)="joinChosen($event)"
+        >
+          <!--
+            THE OPS THAT LANDED ON NOTHING — reported, never guessed at
+            (docs/RENDERER.md §3), on the paper's top edge where the reader meets
+            it before the book. MUTED AND NOT AMBER: the flags in the gutters are
+            amber because each of them is a decision somebody has to make, and
+            this is not one. It is a fact about the history of this book — a
+            change recorded against a paragraph that a later reading of the pages
+            no longer has — and there is nothing here to do.
+          -->
+          <!--
+            AND NOT IN THE EDITION. It is a report about this book's HISTORY —
+            changes recorded against paragraphs a later reading no longer has —
+            which makes it the most instrument-shaped mark on the sheet, and the
+            export writes nothing like it. The facts do not go away with the
+            register: one press of Workbench and the strip is back.
+          -->
+          @if (!edition() && (stranded() > 0 || refused().length > 0)) {
+            <div class="stranded">
+              @if (stranded(); as many) {
+                <p>
+                  {{ many }} recorded {{ many === 1 ? 'change names a block' : 'changes name blocks' }}
+                  this book no longer has, so {{ many === 1 ? 'it was' : 'they were' }} left out.
+                </p>
+              }
+              <!--
+                AND THE ONES THAT NAMED BLOCKS THIS BOOK HOLDS. A cut that would
+                leave one half empty, a second reference number on words another
+                already claims, a division asked to move from above a block that
+                has none: the replay refuses those on their merits and says why in
+                its own sentence (`MissingOp.why`). Saying "this book has no block
+                called that" about one would be a lie, and paraphrasing the replay
+                here would be a second account of a refusal that already has one.
+              -->
+              @for (said of refused(); track $index) {
+                <p>{{ said }}</p>
+              }
+            </div>
+          }
+          @for (line of sheetLines(); track line.row.id) {
+            <!--
+              THE PHANTOM — an empty editable block, drawn at the exact place
+              the inserted one will stand (insertFromMenu carries the whole
+              design). Above the line's own marks, because "above this block"
+              means above everything that introduces it.
+            -->
+            @if (inserting(); as add) {
+              @if (add.anchor === line.row.id && add.where === 'above') {
+                <ng-container *ngTemplateOutlet="phantom"></ng-container>
+              }
+            }
+            <!--
+              The seam sits FIRST in a line's group of marks so that in the DOM
+              it is the next sibling of the block ABOVE it — which is what lets
+              a hover on either neighbour reveal it with two CSS selectors and
+              no state. A chapter rule and a seam on one block cannot honestly
+              co-occur (the reflow never leaves a seam onto a chapter opening),
+              so the ordering costs nothing.
+            -->
+            @if (line.seamInto; as into) {
+              <!--
+                THE GHOST IS THE JOIN (RENDERER-DESIGN.md §4). A button because it
+                is one, which is also what makes it reachable from a keyboard —
+                and `pointerdown` is stopped for the margin chip's reason: a press
+                on the sheet takes pointer capture, and a captured pointer
+                retargets the click that follows to the sheet, where it would
+                arrive with no idea which seam it had been.
+              -->
+              <div class="seam">
+                <button
+                  type="button"
+                  class="seam-word"
+                  aria-label="Join these two paragraphs — the page turn between them was left unjoined"
+                  (pointerdown)="$event.stopPropagation()"
+                  (click)="join(line.row.id, into)"
+                >··· join ···</button>
+              </div>
+            }
+            @if (line.chapter; as title) {
+              <div class="chapter">
+                <div class="chapter-head">
+                  @if (renaming() === line.row.id) {
+                    <!--
+                      *"Double-click the chip to rename in place"* — §4, and the chip
+                      itself is the field, exactly as the block itself is the editor
+                      one level down. `plaintext-only` for the same reason: a title
+                      is characters, and a rich contenteditable would let a paste
+                      bring markup into one.
+                    -->
+                    <span
+                      class="chapter-chip naming"
+                      contenteditable="plaintext-only"
+                      (pointerdown)="$event.stopPropagation()"
+                      (blur)="commitChapter(line.row.id, title, $event)"
+                      (keydown.enter)="commitChapter(line.row.id, title, $event)"
+                      (keydown.escape)="abandonChapter(title, $event)"
+                    >{{ title }}</span>
+                  } @else {
+                    <!--
+                      Drag to move the division (§4: the rule lifts, the candidate
+                      seams glow, the drop settles it) — pointer-captured on the
+                      chip, engaged past the same slop that separates a click from
+                      a marquee, so the double-click rename underneath survives.
+                    -->
+                    <span
+                      class="chapter-chip"
+                      [class.grabbed]="draggingRule()?.id === line.row.id"
+                      (pointerdown)="grabRule($event, line.row.id)"
+                      (pointermove)="dragRule($event)"
+                      (pointerup)="dropRule($event)"
+                      (pointercancel)="dropRule($event)"
+                      (dblclick)="rename(line.row.id, $event)"
+                    >{{ title }}</span>
+                    <!--
+                      THE MARKER'S OWN ✕ — *"the green dotted line can have an X
+                      next to the text"* (user ruling, 2026-08-17). Removing a
+                      division used to live only in the Chapters panel, which made
+                      the one place a person SEES the rule the one place they could
+                      not take it away. Revealed on hover of the rule rather than
+                      always drawn, because the paper's marks stay quiet until the
+                      hand is near them — and the space is held either way, so
+                      nothing shifts under the pointer. `pointerdown` is stopped
+                      for the chip's own reason: a press on the sheet takes pointer
+                      capture, and a captured pointer retargets the click that
+                      follows to the sheet, where it would arrive with no idea
+                      which rule it had been about.
+                    -->
+                    <button
+                      type="button"
+                      class="chapter-x"
+                      aria-label="Remove this chapter marker — the text stays; the division goes"
+                      title="Remove this chapter marker"
+                      (pointerdown)="$event.stopPropagation()"
+                      (click)="dropChapter(line.row.id)"
+                    >✕</button>
+                  }
+                </div>
+              </div>
+            }
+            <!--
+              THE DIVISION, AS THE FINISHED BOOK SETS IT. The cast writes a
+              chapter opening as the block that was already there wearing the
+              chapter attribute — an `h1` for a Title, an `h2` for a
+              Section-header — so a heading is drawn HERE only where the block
+              below is not itself one and the division would otherwise have
+              nothing on the page saying its name (`EditionPlace.heading`,
+              ./edition). `h1` because that is the tag the cast gives a chapter
+              opener in the ordinary case.
+            -->
+            @if (line.heading; as title) {
+              <h1 class="division" [style.font-size.em]="headingSize()">{{ title }}</h1>
+            }
+            @if (line.opensNotes) { <div class="notes-rule"></div> }
+            <!--
+              THERE IS NO `animate.leave` HERE, AND ITS ABSENCE IS THE RULING.
+              The only thing that ever takes rows out of this list is the
+              register flip, and the flip takes out every struck block at once —
+              four hundred of them on a working book, because a working book is
+              what four hundred strikes look like. A leave binding is not free
+              per element: to know when a node may go, the framework reads that
+              node's own animations and computed style, one at a time, against a
+              sheet whose bodies are under `content-visibility: auto`. §6
+              carries the measurement and the arithmetic. The flip's motion is
+              §5's crossfade on the sheet itself; the blocks are simply not in
+              the list on the next frame, which is what a still would show.
+            -->
+            <div
+              class="block"
+              tabindex="0"
+              [attr.data-id]="line.row.id"
+              [attr.data-jump]="line.jump"
+              [attr.data-hit-key]="line.hitKey"
+              [style.color]="line.colour"
+              [class.opens]="line.opens"
+              [class.selected]="chosen().has(line.row.id)"
+              [class.struck]="line.row.struck === true"
+              [class.editing]="editingId() === line.row.id"
+              [class.lit]="lit() === line.row.id"
+              [class.pulse]="pulse() === line.row.id"
+              [class.spanned]="spans(line)"
+              [class.twin]="twinned() === line.row.id"
+              [class.drop-target]="draggingRule()?.over === line.row.id"
+              (pointerenter)="lightRow(line)"
+              (pointerleave)="dim()"
+              (contextmenu)="blockMenu($event, line)"
+            >
+              <span class="gutter rail"></span>
+              @if (!edition() && chosen().has(line.row.id)) {
+                <!--
+                  THE CHIP IS THE CATEGORY'S DOOR. It already names the category
+                  of the block it sits beside, so it is the one place in the
+                  margin where "and this is what it could be instead" belongs.
+                  IT OPENS A LIST rather than cycling: a chip that cycled would
+                  be undiscoverable — nothing about it says there are eleven
+                  answers behind it — and every misclick would mutate the
+                  document. A button because it is one, which is also what makes
+                  it reachable from a keyboard.
+                -->
+                <!--
+                  Inside a multi-selection the chip carries the selection's
+                  count, because pressing it will recategorise ALL of them
+                  (openCategories) — the count is the promise, made where the
+                  press happens rather than discovered after it.
+                -->
+                <button
+                  type="button"
+                  class="gutter chip"
+                  [attr.aria-label]="chosen().size > 1
+                    ? 'Category of the ' + chosen().size + ' selected blocks'
+                    : 'Category of this block: ' + line.label"
+                  (pointerdown)="$event.stopPropagation()"
+                  (click)="openCategories($event, line.row.id)"
+                >{{ line.label }}{{ chosen().size > 1 ? ' · ' + chosen().size : '' }}</button>
+              }
+              @if (line.ordinal !== null) {
+                <span class="gutter ordinal">{{ line.ordinal }}</span>
+              }
+              @if (line.ghost !== null) {
+                <span
+                  class="gutter ghost"
+                  (pointerenter)="haunt(line.ghost)"
+                  (pointerleave)="haunt(null)"
+                >≈ {{ line.ghost }}</span>
+              }
+              @if (line.flag; as said) {
+                <span class="gutter flag"><span class="pill">{{ said }}</span></span>
+              }
+
+              <div class="body">
+                <!--
+                  THE BLOCK ITSELF IS THE EDITOR (RENDERER-DESIGN.md §3): a caret
+                  in the words, a spruce rail and tint, no box and no textarea.
+                  `plaintext-only` because what is being edited is the model's
+                  SOURCE STRING — `*italics*` and superscript digits included
+                  (docs/RENDERER.md §2) — and a rich contenteditable would let a
+                  paste bring markup into a field whose whole content is meant to
+                  be characters. The marker cuts are gone for the duration and
+                  come back when the edit commits, which is the honest picture:
+                  while you are editing there are no resolved offsets, because
+                  the offsets are what the edit invalidates.
+                -->
+                @if (editingId() === line.row.id) {
+                  <p
+                    class="para editor"
+                    contenteditable="plaintext-only"
+                    [class.indent]="line.indent"
+                    [style.font-size.em]="line.size"
+                    (blur)="commit(line.row.id, $event)"
+                    (keydown.enter)="split(line.row.id, $event)"
+                    (keydown.escape)="revert(line.row.text, $event)"
+                  >{{ line.row.text }}</p>
+                } @else {
+                  <ng-container
+                    *ngTemplateOutlet="prose; context: { $implicit: line, plain: edition() }"
+                  ></ng-container>
+                }
+              </div>
+            </div>
+            @if (inserting(); as add) {
+              @if (add.anchor === line.row.id && add.where === 'below') {
+                <ng-container *ngTemplateOutlet="phantom"></ng-container>
+              }
+            }
+          }
+          <!--
+            The phantom's one body, outlet twice above so the two anchorings
+            cannot drift. The editor is commitInsert's editor with three
+            different endings: blur and Enter commit (Enter is not a split here
+            — there is nothing to cut yet), Escape empties and lets the blur
+            cancel.
+          -->
+          <ng-template #phantom>
+            <div class="block adding">
+              <span class="gutter rail"></span>
+              <div class="body">
+                <p
+                  class="para editor"
+                  contenteditable="plaintext-only"
+                  (pointerdown)="$event.stopPropagation()"
+                  (blur)="commitInsert($event)"
+                  (keydown.enter)="commitInsert($event)"
+                  (keydown.escape)="cancelInsert($event)"
+                ></p>
+              </div>
+            </div>
+          </ng-template>
+          @if (marquee(); as box) {
+            <div
+              class="marquee"
+              [style.left.px]="box.left"
+              [style.top.px]="box.top"
+              [style.width.px]="box.width"
+              [style.height.px]="box.height"
+            ></div>
+          }
+          <!--
+            THE PEEK CARD — the other half of an apparatus, brought to the hand
+            instead of the hand being dragged to it. Clicking a reference number
+            or a note used to scroll the sheet to the counterpart; the ruling is
+            that the scrollbar is the reader's and a click must not move it. So
+            the counterpart appears ON a card beside the click, joined to it by
+            a short sienna leader, and the one deliberate way to travel remains:
+            the card's own "Go there", which is the old jump, asked for by name.
+            Anchored in sheet coordinates, so it rides the scroll like any ink.
+          -->
+          @if (peeked(); as card) {
+            <svg
+              class="peek-line"
+              [style.left.px]="card.line.left"
+              [style.top.px]="card.line.top"
+              [attr.width]="card.line.width"
+              [attr.height]="card.line.height"
+            >
+              <circle [attr.cx]="card.line.x1" [attr.cy]="card.line.y1" r="2.5"></circle>
+              <line
+                [attr.x1]="card.line.x1" [attr.y1]="card.line.y1"
+                [attr.x2]="card.line.x2" [attr.y2]="card.line.y2"
+              ></line>
+            </svg>
+            <aside
+              class="peek"
+              [style.left.px]="card.x"
+              [style.top.px]="card.y"
+              (pointerdown)="$event.stopPropagation()"
+            >
+              <div class="peek-head">
+                <span class="peek-what">{{ card.label }} · ≈ {{ card.page }}</span>
+                <button type="button" class="peek-go" (click)="travel(card.target)">Go there</button>
+              </div>
+              <!--
+                THE CARD SETS THE COUNTERPART THE WAY THE PAGE SETS IT, emphasis
+                included. It draws the same `pieces` the sheet does, so the
+                asterisks are already gone from them; leaving the classes off
+                here would show a note in roman on the card and in italics eight
+                lines down, which is one book disagreeing with itself about a
+                title.
+              -->
+              <p class="peek-words" [class.struck-words]="card.struck">
+                @for (piece of card.pieces; track $index) {
+                  @if (piece.marker; as marker) {
+                    <span
+                      class="marker plain"
+                      [class.hot]="marker.note === peekFrom()"
+                      [class.bold]="piece.strong"
+                      [class.italic]="piece.italic"
+                    >{{ piece.text }}</span>
+                  } @else {
+                    <span
+                      class="run"
+                      [class.bold]="piece.strong"
+                      [class.italic]="piece.italic"
+                    >{{ piece.text }}</span>
+                  }
+                }
+              </p>
+            </aside>
+          }
+          <!--
+            ── GRAVESTONE: `app-page-glance` (2026-08-23) ─────────────────────
+
+            The card that showed a clicked block's printed page stood here —
+            15rem of fixed-position paper, placed by `placeGlance` against its
+            own measured width, aimed by the click that selected a block. Owen
+            retired it into the docked comparison column (./original-panel, at
+            the pair's right edge): *"instead of having a little preview pop
+            up, we should make it a full-page comparison that i can choose to
+            pop up to the right of the workspace."* The card's hard-won
+            machinery — the kept worker, the path-keyed open, the cancelled
+            renders — moved with it; what died here was only the placement
+            arithmetic, which a docked column does not have.
+          -->
+        </div>
+        <!--
+          APPLY — the stack, written down. ON THE BENCH AND NOT ON THE PAPER,
+          which is the design law working rather than a placement preference:
+          chrome lives in the paper's gutters and backgrounds, and a button is
+          neither. It is the app's own `.act` in the app's own dark tokens, in
+          the corner of the workbench, because that is where this app puts a verb.
+
+          THE COUNT IS IN THE LABEL rather than beside it, on `labelFor`'s rule
+          for a step row: "Apply" alone does not say whether it is about to record
+          one strike or forty. DISABLED AT ZERO rather than hidden, so the
+          affordance is somewhere a person can learn it is there before they have
+          anything to press it with.
+        -->
+        <!--
+          AND IN THE EDITION IT IS `inert`. The tray is the bench's furniture and
+          the edition has none of it, but a button faded to nothing is still a tab
+          stop and still takes a press — so the mode does not hide it, it takes it
+          out of the document. Apply is not gone, it is one press of Workbench
+          away, and the head that gets you there is the only thing on the bench
+          that stays.
+        -->
+        <div
+          class="tray"
+          [style.display]="viewing() ? 'none' : null"
+          [attr.inert]="edition() ? '' : null"
+        >
+          @if (waiting() > 0 || corrected() > 0) {
+            <!-- corrected() is the translated position's half: a records
+                 correction is not an op, so it moves no waiting count, and the
+                 button has to stand for it too or the one undoable thing on
+                 such a page would have no button. -->
+            <button type="button" class="act ghost" (click)="undo()">Undo</button>
+          }
+          <button
+            type="button"
+            class="act"
+            [disabled]="waiting() === 0 || applying()"
+            (click)="apply()"
+          >{{ applying() ? 'Applying…' : applyLabel() }}</button>
+        </div>
+      }
+      <!--
+        The category list — the app's own small menu, scrim and all
+        (open-documents' `.menu`, which is where this vocabulary is settled). It
+        is the SHELL's dark style and not the paper's, deliberately:
+        RENDERER-DESIGN.md §5 keeps the paper vocabulary on the paper, and an
+        overlay floating above the sheet is not part of it.
+      -->
+      @if (menu(); as open) {
+        <div class="menu-scrim" (click)="menu.set(null)" (contextmenu)="menu.set(null)"></div>
+        <div
+          class="menu"
+          role="menu"
+          aria-label="What kind of block this is"
+          [style.left.px]="open.x"
+          [style.top.px]="open.y"
+          (keydown.escape)="menu.set(null)"
+        >
+          <!--
+            The plural, said before it happens. A chip pressed inside a
+            multi-selection recategorises every selected block, and a list that
+            looked identical either way would make that discoverable only by
+            doing it.
+          -->
+          @if (open.ids.length > 1) {
+            <span class="menu-note">{{ open.ids.length }} selected blocks become:</span>
+          }
+          @for (candidate of categories; track candidate.id) {
+            <button
+              role="menuitem"
+              [class.current]="candidate.id === open.category"
+              (click)="relabel(open.ids, candidate.id)"
+            >
+              <span class="swatch" [style.background]="candidate.colour"></span>{{ candidate.label }}
+            </button>
+          }
+        </div>
+      }
+      <!--
+        THE BLOCK'S OWN MENU — right-click, the same small-menu vocabulary as
+        the category list above it. Two verbs about the whole CATEGORY of the
+        block under the pointer, because that is the book-wide gesture a
+        right-click reaches for (user ruling, 2026-08-16: select all the
+        footnotes, so they can go together). Select feeds the ordinary loop —
+        rails and chips come up, Delete strikes; Strike is the same destination
+        in one press. Both counts are in the labels, on the Apply button's rule:
+        a verb about forty rows says forty before it is pressed.
+      -->
+      @if (context(); as open) {
+        <div class="menu-scrim" (click)="context.set(null)" (contextmenu)="context.set(null)"></div>
+        <div
+          class="menu"
+          role="menu"
+          aria-label="About every block of this kind"
+          [style.left.px]="open.x"
+          [style.top.px]="open.y"
+          (keydown.escape)="context.set(null)"
+        >
+          <!--
+            The one verb about THIS block rather than its kind: the same editor
+            the double-click opens, offered where a double-click has neighbours
+            that mean other things (the chip renames, a note's click peeks).
+          -->
+          <button role="menuitem" (click)="editFromMenu()">
+            <span class="swatch" [style.background]="open.colour"></span>
+            Edit this block
+          </button>
+          <!--
+            THE JOIN, WHERE A HAND CAN FIND IT — *"give me the ability to merge
+            two body text blocks. there are some cases where they were split by
+            an image or something but that image has been removed."* (user
+            ruling, 2026-08-24.) Ctrl+J has said this since the structure
+            gestures landed, but a chord nobody is told about is a gesture that
+            does not exist; this is the same act on the menu, computed at open
+            (joinAbove) so it is only offered where the op would land. The
+            direction is fixed — this block onto the one above it — because the
+            asymmetry is the op's own: the earlier block keeps its name.
+          -->
+          @if (open.joinInto !== null) {
+            <button role="menuitem" (click)="joinFromMenu()">
+              <span class="swatch" [style.background]="open.colour"></span>
+              Join onto the block above
+            </button>
+          }
+          <!--
+            *"right-click a block and hit 'add chapter marker', and itll add a
+            chapter break above that block"* (user ruling, 2026-08-17). The
+            second block-scoped verb, beside Edit — the panel's "chapter starts
+            here" button said the same thing about a block picked on the paper,
+            and this is that verb offered where the block already is, without
+            the trip through a selection. The swatch wears the chapter ink
+            rather than the category's, because the verb is about the green
+            world of divisions and not about what kind of block this is.
+          -->
+          @if (!open.chapter) {
+            <button role="menuitem" (click)="chapterFromMenu()">
+              <span class="swatch" style="background: var(--ink-chapter)"></span>
+              Add a chapter marker above this block
+            </button>
+          }
+          <!--
+            THE BLOCK THE READING MISSED — Owen's case is a chapter title that
+            never came over (2026-08-23). Two verbs because the anchor is the
+            whole of the decision: the phantom editor opens exactly where the
+            words will stand. The swatch wears the edit ink — this is about
+            words being added, not about what kind of block the anchor is.
+          -->
+          <button role="menuitem" (click)="insertFromMenu('above')">
+            <span class="swatch" style="background: var(--ink-edit)"></span>
+            Add a block above this one
+          </button>
+          <button role="menuitem" (click)="insertFromMenu('below')">
+            <span class="swatch" style="background: var(--ink-edit)"></span>
+            Add a block below this one
+          </button>
+          <button role="menuitem" (click)="selectSimilar()">
+            <span class="swatch" [style.background]="open.colour"></span>
+            Select {{ open.ids.length === 1 ? 'the 1' : 'all ' + open.ids.length }} {{ open.plural }}
+          </button>
+          @if (open.unstruck.length > 0) {
+            <button role="menuitem" (click)="strikeSimilar()">
+              <span class="swatch" [style.background]="open.colour"></span>
+              Strike {{ open.unstruck.length === 1 ? 'the 1' : 'all ' + open.unstruck.length }} {{ open.plural }}
+            </button>
+          }
+        </div>
+      }
+    </div>
+    <!--
+      ── THE ORIGINAL PDF, DOCKED — the pair's third column ───────────────────
+
+      *"i want the original pdf comparison, so i know what im looking at and
+      how to correct it if dots makes a mistake."* (Owen, 2026-08-23.) The
+      page-glance card retired into this: a full-height column in the
+      workbench's gray, right of the paper, toggled from the head row and
+      following the reading. ./original-panel carries the design. "ORIGINAL"
+      AND NOT "COMPARE" IN EVERY NAME HERE, deliberately: compare is this
+      app's word for standing two STEPS of the book side by side
+      (compare-picker, the compare column), and one word must not mean two
+      things one head-row apart.
+
+      MOUNTED FOR THE LIFE OF THE PANE and closed with a class — the glance's
+      own measured lesson about the @if that rebuilt its worker and emptied
+      its cache every time the card blinked. A closed panel is handed a null
+      row, so it draws nothing and costs nothing while staying warm.
+    -->
+    <app-original-panel
+      [class.closed]="!originalOpen()"
+      [original]="original()"
+      [row]="originalOpen() ? originalRow() : null"
+    />
+    </div>
+  

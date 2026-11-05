@@ -1,0 +1,38 @@
+
+    :host { display: block; height: 100vh; }
+    /*
+      THE COLUMN THE DOCK LEFT BEHIND, PUT BACK TO WORK. `.shell` was a column —
+      the body above, the tool dock along the bottom — and the dock moved into the
+      left sidebar (Owen, 2026-08-17 22:30), leaving a one-child flex that was kept
+      rather than flattened, because the queue bar and the dialogs are its siblings
+      a `display: block` here would take the body's own height management with
+      it. It has a second child again: the host status chip's row, above the body,
+      which is nothing at all in a window nobody mounted and a top row when there
+      is one (`HostStatusComponent`).
+
+      `min-height: 0` still earns its place on the row: without it a flex item
+      does not shrink below its content, and a long tree would push the sidebar's
+      own pinned dock past the bottom of the window instead of scrolling inside
+      the panel.
+    */
+    .shell { display: flex; flex-direction: column; height: 100%; }
+    .body { display: flex; flex: 1; min-height: 0; }
+    .main { flex: 1; min-width: 0; height: 100%; overflow: hidden; }
+
+    .drop-veil {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-overlay);
+      backdrop-filter: blur(4px);
+      border: 2px dashed var(--accent);
+      color: var(--text-primary);
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 600;
+      pointer-events: none;
+    }
+  

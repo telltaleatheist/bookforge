@@ -14,13 +14,21 @@
     "target": "ES2022",
     "module": "preserve",
     "moduleResolution": "bundler",
-    // The wire shapes, compiled by BOTH programs — the renderer through this
-    // config, the main process through tsconfig.electron.json (which reaches
-    // them by relative path, since tsc does not rewrite aliases on emit). The
-    // substitution stays relative: a bare "shared/*" needs a baseUrl, and a
-    // baseUrl makes every typo resolvable against the project root.
+    // @owen/foundry-core BY SOURCE, for bun only (FOUNDRY-CORE-PLAN step 3).
+    // bun reads the nearest tsconfig.json's paths, so app-side code it runs —
+    // app/test/hosted-runner.test.ts importing electron/mount.ts — resolves the
+    // package to ../packages/foundry-core/src, the SAME module instances the
+    // test itself imports and spies on (one queue, one host record), and runs
+    // the library as it is on disk with no build. The Angular build does NOT
+    // use this: tsconfig.app.json empties paths, so the renderer takes the
+    // package's built ES modules out of node_modules, and the main process
+    // (tsconfig.electron.json, no paths) its CommonJS build.
     "paths": {
-      "@shared/*": ["./shared/*"]
+      "@owen/foundry-core/node/*": ["../packages/foundry-core/src/node/*"],
+      "@owen/foundry-core/host": ["../packages/foundry-core/src/node/host"],
+      "@owen/foundry-core/engine": ["../packages/foundry-core/src/node/engine"],
+      "@owen/foundry-core/shared/*": ["../packages/foundry-core/src/shared/*"],
+      "@owen/foundry-core/browser/*": ["../packages/foundry-core/src/shared-browser/*"]
     }
   },
   "angularCompilerOptions": {

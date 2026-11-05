@@ -1,6 +1,6 @@
 import { Injectable, computed, effect, inject, signal } from '@angular/core';
 
-import { fold } from '@shared/original';
+import { fold } from '@owen/foundry-core/shared/original';
 
 import { OpenDocumentsService, type Tab } from './documents.service';
 import { LedgerService } from './ledger.service';

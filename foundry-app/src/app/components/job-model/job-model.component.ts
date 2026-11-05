@@ -66,8 +66,8 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import type { JobModelOffer } from '@shared/job-model-offer';
-import { choiceOnServer, type JobModelKind } from '@shared/job-models';
+import type { JobModelOffer } from '@owen/foundry-core/shared/job-model-offer';
+import { choiceOnServer, type JobModelKind } from '@owen/foundry-core/shared/job-models';
 
 import { api, hosted } from '../../core/foundry';
 

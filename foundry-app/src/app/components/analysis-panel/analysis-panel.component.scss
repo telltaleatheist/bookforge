@@ -1,0 +1,289 @@
+
+    :host {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg-sunken);
+    }
+
+    /*
+      A QUIET BAR, NOT A TAB STRIP — the compare column's head, to the pixel,
+      because the two occupy one slot and a person switching between them should
+      not feel the furniture change.
+    */
+    .head {
+      flex: 0 0 auto;
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px 6px 10px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-default);
+    }
+    .tag {
+      flex: 0 0 auto;
+      font-family: var(--font-mono);
+      font-size: 8.5px; font-weight: 600;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--accent);
+    }
+    .counts {
+      flex: 1; min-width: 0;
+      font-size: 11.5px; color: var(--text-secondary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* ALWAYS VISIBLE, on the compare column's own rule: this is the only way out
+       of a mode, and a way out that has to be discovered by hovering is a mode
+       people feel stuck in. */
+    .x {
+      flex: 0 0 auto;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 10px;
+      padding: 3px 5px; border-radius: var(--radius-sm);
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    /*
+      ── The legend, which is the filter ──────────────────────────────────────
+
+      CHIPS THAT WRAP rather than a column of rows: a report names three or four
+      categories in the ordinary case and twelve at the outside, and twelve rows
+      would push the first card off the screen. The dot is the colour, the name is
+      the identity, the count is the size — and the whole chip is the switch.
+    */
+    .legend {
+      flex: 0 0 auto;
+      display: flex; flex-wrap: wrap; gap: 4px;
+      padding: 2px 10px 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .key {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 7px 2px 5px;
+      border-radius: 999px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-input);
+      color: var(--text-secondary);
+      font-size: 10.5px; line-height: 1.5;
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  opacity 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .key:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    /*
+      SWITCHED OFF IS FADED AND STILL READABLE, which is the shown-but-inert
+      register this app uses everywhere for a thing that is present and not
+      counting (a struck row). A chip that vanished would take
+      its own count and its own way back with it.
+    */
+    .key.off { opacity: 0.4; }
+    .key.off .key-name { text-decoration: line-through; }
+    .dot {
+      flex: 0 0 auto;
+      width: 7px; height: 7px; border-radius: 50%;
+    }
+    .key-name { max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .key-count {
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .problem {
+      margin: 0; padding: 8px 10px;
+      font-size: 11.5px; line-height: 1.5; color: var(--warn);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    /* ── The findings, one card each ────────────────────────────────────────── */
+    .list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px 14px; }
+    .none {
+      margin: 0; padding: 28px 16px;
+      text-align: center;
+      font-size: 12px; color: var(--text-tertiary);
+    }
+
+    /*
+      THE CARD. A rail in the category's colour down the left edge — the block
+      chrome's own idiom, one surface over — then the category and the page on one
+      line, then the quotation as the body, then the verifier's reason. It reads
+      in that order because that is the order somebody scans it: what kind of
+      thing, where, what it says, and why it was flagged.
+    */
+    .card {
+      position: relative;
+      display: block;
+      width: 100%;
+      text-align: left;
+      margin: 0 0 5px;
+      padding: 7px 9px 7px 13px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    /*
+      A SUBTLE RAISE, because a card that is a button has to say so. It is 1px and
+      a border, not a shadow and a scale: the list is scanned by running an eye
+      down it, and a card that leapt under the pointer would be the "rows that
+      grow under the hand" fault Owen ruled against on the sweep (2026-08-24)
+      arriving in a different costume.
+    */
+    .card:hover {
+      background: var(--bg-hover);
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+    .card:active { transform: translateY(0); }
+
+    .rail {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      border-radius: var(--radius-md) 0 0 var(--radius-md);
+    }
+
+    /* A struck block's findings are listed and are inert: seeing that a passage
+       the analysis found is one you already cancelled is half of trusting it. */
+    .card.ghost { opacity: 0.45; }
+
+    /*
+      ── THE SELECTED CARD, PULSING ──────────────────────────────────────────
+
+      It was a 700ms flash. Owen, watching it: *"when i click a highlighted block,
+      the corresponding analysis block only blinks for about 1/4 of a second. can
+      we make it pulse? on either side. have it pulse as long as it's selected."*
+      A blink announces and is gone; a pulse is a STATE, which is what this
+      gesture actually needs — the whole point of clicking a passage on the page
+      is to then look over here, by which time a flash has finished.
+
+      1.9 SECONDS, matching the paper's breath exactly. The two marks are one
+      selection seen from two sides, and two pulses at different rates would read
+      as two different things happening.
+    */
+    /*
+      THE CARD BREATHES IN ITS OWN CATEGORY'S SHADE — the accent ring went the
+      way the paper's ring went, and on the same word (Owen, 2026-08-25: *"its
+      just blinking an ugly outline. can we make it actually pulse darker and
+      lighter for that particular shade?"*). The card's hue rides in as
+      `--card-ink` (the rail's own colour), and the breath is a wash of it
+      mixed into the card's ground — darker and lighter of the one shade, never
+      a second colour fighting the rail two pixels away. The border takes the
+      ink too, steadily: the moving part is the wash, the standing part says
+      which card is selected even mid-breath.
+    */
+    /*
+      THE PAPER'S OWN MECHANISM, COPIED EXACTLY, because the paper's breath works
+      and this one's did not. The first cut mixed the two ends in the keyframes
+      (`color-mix` over `var()`), and the engine refused to interpolate
+      between them — the card snapped instead of breathing (Owen, 2026-08-26:
+      *"the analysis block isnt pulsing, its blinking. can you make it pulse in
+      sync with the highlight on the page"*). The paper never blinked, and the
+      difference was mechanism, not taste: a plain colour bound per element,
+      the resting value as the underlying style, ONE midpoint keyframe. So:
+      `--card-rest` is the selected card's standing background, the keyframe
+      names only `--card-deep`, and the browser draws the breath between them.
+
+      IN SYNC WITH THE PAGE BY CONSTRUCTION: same 1900ms, same easing curve
+      (the literal below IS book-view's `--ease` — that token lives on the
+      paper's host and cannot be read from here, so the number is copied and
+      this sentence is the tether), and both sides' `.on` flip on the same
+      signal in the same change-detection pass, so the two animations start on
+      the same frame and never drift.
+    */
+    .card.on {
+      border-color: color-mix(in srgb, var(--card-ink) 55%, var(--border-strong));
+      background: var(--card-rest);
+      animation: card-breathe 1900ms cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+    }
+    @keyframes card-breathe {
+      50% { background-color: var(--card-deep); }
+    }
+    /*
+      AND IT HOLDS STILL WHERE MOTION IS UNWELCOME, at the breath's own midpoint.
+      The book view's glide sets the precedent: reduced motion means the movement
+      is skipped, not that the destination is refused — so the emphasis stays and
+      only the breathing stops.
+    */
+    @media (prefers-reduced-motion: reduce) {
+      .card.on {
+        animation: none;
+        background: var(--card-deep);
+      }
+    }
+
+    .top {
+      display: flex; align-items: baseline; gap: 6px;
+      margin-bottom: 3px;
+    }
+    /*
+      THE CATEGORY IN ITS OWN COLOUR, quietly. The rail carries the identity at a
+      glance; this carries it in words, and giving the words the same hue is what
+      ties the two together without a third mark.
+    */
+    .cat {
+      flex: 1; min-width: 0;
+      font-family: var(--font-mono);
+      font-size: 8.5px; font-weight: 600;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /*
+      THE PAGE, WITH THE SHEET'S OWN ≈. It is an ESTIMATE and not an address
+      (`BookRow.page`), which is why it wears the tilde the page ghosts in the
+      book's gutter wear. It is NOT a block id: a page is where a person would
+      look in the physical book, which is the one coordinate a reader has any use
+      for.
+    */
+    .at {
+      flex: 0 0 auto;
+      font-size: 9.5px; color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /*
+      THE PASSAGE AS PLAIN PROSE — Owen's ruling: *"they shouldnt be highlighted
+      inside the analysis, they should be highlighted inside the document viewer
+      (as they are)."* The flagged words are a shade brighter and a little heavier
+      so the eye finds them inside the sentence; there is NO marker-pen background
+      here, and there is not going to be. Two surfaces painting one highlight makes
+      the panel look like a second copy of the page rather than an index into it.
+    */
+    .quote {
+      display: block;
+      font-size: 12px; line-height: 1.55;
+      color: var(--text-tertiary);
+      white-space: normal;
+    }
+    .q-side { color: var(--text-tertiary); }
+    .q-hit { color: var(--text-primary); font-weight: 500; }
+
+    /* The verifier's reason: the card's second voice, quieter than the book's. */
+    .why {
+      display: block;
+      margin-top: 6px;
+      font-size: 11px; line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    .also {
+      display: block;
+      margin-top: 4px;
+      font-size: 10.5px; line-height: 1.45; color: var(--text-tertiary);
+    }
+    .also-name { font-weight: 500; }
+
+    /* ── The caveats, at the foot ───────────────────────────────────────────── */
+    .foot {
+      padding: 10px 4px 0;
+      font-size: 11px; line-height: 1.5;
+      color: var(--text-tertiary);
+    }
+    .foot-lede { margin: 0 0 4px; }
+    .foot ul { margin: 0; padding-left: 1.1rem; }
+    .foot li { margin: 0 0 2px; }
+  

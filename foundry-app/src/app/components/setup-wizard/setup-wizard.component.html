@@ -1,0 +1,257 @@
+
+    @if (up()) {
+      <div class="scrim"></div>
+      <div class="card" role="dialog" aria-modal="true" aria-label="First-run setup">
+        <!-- ── The rail of dots ────────────────────────────────────────── -->
+        <div class="rail">
+          @for (step of visible(); track step.id) {
+            <span
+              class="dot"
+              [class.here]="step.id === current()"
+              [class.past]="indexOf(step.id) < index()"
+              [title]="step.title"
+            ></span>
+          }
+          <span class="spacer"></span>
+          <button class="shut" type="button" title="Close setup (everything here is in Settings)" (click)="dismiss()">✕</button>
+        </div>
+
+        <div class="head">
+          <h2 class="title">{{ def().title }}</h2>
+          <p class="blurb">{{ def().blurb }}</p>
+        </div>
+
+        <div class="body">
+          <!-- ── Welcome ─────────────────────────────────────────────────── -->
+          @if (current() === 'welcome') {
+            <p class="lead">
+              Foundry turns a scanned or PDF book into text you can read, translate, simplify and
+              search for claims. The book itself is made on this computer; anything that meets a
+              language model is sent to a GPU engine, which is the one thing here worth setting up
+              carefully.
+            </p>
+            <!--
+              THIS SAID *"Nothing on the next screens downloads until you press
+              the button that downloads it, and the size is always beside the
+              button"* — a promise about the Pythons step and the page-reader
+              step, neither of which exists. Nothing here downloads to THIS
+              machine any more. What can still take minutes is installing the
+              engine, so that is what the sentence is about now.
+            -->
+            <p class="line">
+              Nothing here downloads a model to this computer. If you ask Foundry to install the
+              GPU engine, that runs Crucible's own installer and takes a few minutes — and it is
+              the only thing on these screens that does.
+            </p>
+          }
+
+          <!-- ── Library ─────────────────────────────────────────────────── -->
+          @if (current() === 'library') {
+            <p class="line">
+              Every conversion lands under this folder, and the Save dialogs open on it. Changing it
+              later affects new work only — nothing is moved behind your back.
+            </p>
+            <div class="field">
+              <span class="label">Library folder</span>
+              <div class="row">
+                <span class="path mono">{{ libraryDir() || 'Reading…' }}</span>
+                <button class="ghost" type="button" (click)="pickLibrary()">Choose…</button>
+              </div>
+            </div>
+          }
+
+          <!-- ── The engine, in two faces ────────────────────────────────── -->
+          <!--
+            OWEN OPENED THIS STEP ON A MACHINE ALREADY RUNNING AN ENGINE AND WAS
+            SHOWN THREE DOORS AND THEN A REFUSAL: *"i tried to connect to the
+            crucible server but it gave me an error. this should be idiot proof…
+            it shouldnt talk about crucible unless it needs to, or to ask the
+            user to add a crucible server."* So the step has two faces and the
+            connected one is the common case: main connects the engine on this
+            machine at startup without being asked (connectLocalEngine in main), and
+            what is left to show is what he asked for — the card, what it can
+            do, and what it cannot.
+
+            THE WORD "CRUCIBLE" IS IN THE SECOND FACE ONLY. A person with a
+            working engine never needs it; a person who has to install one is
+            about to run an installer with that name on it, and hiding it there
+            would be hiding the one word they need to search for.
+          -->
+          @if (current() === 'crucible') {
+            @if (engineProbe(); as engine) {
+              <p class="lead">
+                Ready. Translation, simplification, cleanup, analysis and page reading run on
+                <strong>{{ engine.serverName }}</strong>, and nothing here needs setting up.
+              </p>
+              <div class="engine">
+                <p class="engine-card">{{ cardWords(engine) }}</p>
+                <p class="small">
+                  {{ engine.backend }} · version {{ engine.version }}
+                  @if (engine.via; as via) { · reached through {{ via }} }
+                </p>
+              </div>
+
+              @if (engineActs().length > 0) {
+                <p class="line">What it can do with that card:</p>
+                <div class="acts">
+                  @for (act of engineActs(); track act.act) {
+                    <div class="act" [attr.data-ok]="act.enabled">
+                      <span class="dotstate" [attr.data-ok]="act.enabled"></span>
+                      <span class="act-name">{{ act.act }}</span>
+                      @if (act.enabled) {
+                        <span class="act-by mono">{{ act.by }}</span>
+                      } @else if (act.shortfall; as short) {
+                        <span class="act-by">needs {{ short }}</span>
+                      } @else {
+                        <span class="act-by">will not run here</span>
+                      }
+                    </div>
+                    @if (!act.enabled) { <p class="act-why small">{{ act.reason }}</p> }
+                  }
+                </div>
+              }
+
+              <!--
+                ── THE OFFER BECAME A READOUT (crucible PHASE19 section 0) ────
+
+                What stood here was a button offering to set WSL acceleration up, with a
+                paragraph explaining vLLM to somebody who has not asked. Owen
+                ruled it out on 2026-09-18 -- "we should assume the user doesn't
+                know how to do it, and we shouldn't offer to let them do it
+                themselves ... it should do it automatically". So the Linux
+                engine now arrives by itself as the last step of the install,
+                decided by Crucible's own tray at every start (section 2.3), and
+                this card's job is to say what came of it.
+
+                THE CONDITION IS UNCHANGED AND STILL RIGHT. An outcome is about
+                a machine that has a native Windows engine and could have a
+                Linux one; on a Mac, or on a machine already serving through the
+                guest, there is nothing here to report. Section 2.5: on a done
+                machine there is no control at all.
+
+                (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
+              -->
+              @if (engine.backend === 'llama-windows') {
+                <div class="wsl">
+                  <app-crucible-install-outcome />
+                </div>
+              }
+
+              @if (engineNeedsAccount()) {
+                <!--
+                  OWEN'S OWN EXAMPLE, AND THE OFFER HE ASKED FOR: *"if the
+                  crucible server isnt powerful enough to run translate, because
+                  it's running on an 8 gb gpu and cant run the 27b, it can prompt
+                  them for claude or chatgpt api key for that."* It POINTS at the
+                  next step instead of growing a key box, because that step is
+                  PHASE15 §5.2's panel and the key belongs in the engine, once.
+                -->
+                <!--
+                  IT SAID "the next step is where that key goes" and there is no
+                  next step: the routes step was deleted on 2026-09-17 because
+                  Settings > AI asks the same question better. A wizard pointing
+                  at a screen that does not exist is worse than one that points
+                  at the screen that does.
+                -->
+                <p class="line">
+                  What this card cannot run, an Anthropic or OpenAI account can. Settings > AI is
+                  where that key goes — it is stored in the engine, not in Foundry, so BookForge
+                  uses the same one.
+                </p>
+              }
+
+              <!--
+                STILL REACHABLE, NEVER IN THE WAY. A second machine is a second
+                GPU slot in the queue and is the whole reason somebody buys a Mac
+                Studio; a person who has one working engine is not looking for it
+                on this screen.
+              -->
+              @if (moreDoors()) {
+                <app-crucible-doors (changed)="loadCrucible()" />
+              } @else {
+                <div class="actions">
+                  <button class="ghost" type="button" (click)="moreDoors.set(true)">
+                    Add another machine
+                  </button>
+                </div>
+              }
+            } @else if (engineAsking()) {
+              <p class="lead">Looking for an engine…</p>
+            } @else {
+              <p class="lead">
+                Translation, simplification, cleanup, analysis and page reading run on a GPU
+                engine — a program called Crucible, on this machine or another one.
+                @if (crucibleHere()) {
+                  There is one on this machine, and Foundry could not connect to it yet.
+                } @else {
+                  Foundry looked and found none here.
+                }
+                Compiling a book and exporting it never need one.
+              </p>
+              <p class="line">
+                An engine on a machine with a bigger card runs the work there; one on this
+                machine runs it here and holds its models properly instead of loading and
+                unloading per job. Registering both gives the queue two GPU slots and it will
+                use whichever is free.
+              </p>
+              @if (crucibleServers().length > 0) {
+                <!--
+                  A REGISTERED SERVER THAT WOULD NOT ANSWER. It is named, with
+                  whatever the last coordination sweep said about it, because
+                  "foundry found none here" beside a row somebody added by hand
+                  would read as the app having forgotten it.
+                -->
+                <p class="ok-note">
+                  Registered but not answering just now: {{ crucibleNames() }}. Settings › Servers
+                  tests these and says why.
+                </p>
+                @for (server of crucibleServers(); track server.name) {
+                  @if (coordinationOf(server.name); as said) {
+                    <p class="small">{{ server.name }} — {{ said }}</p>
+                  }
+                }
+              }
+              <app-crucible-doors (changed)="loadCrucible()" />
+            }
+          }
+
+
+          <!-- ── Done ────────────────────────────────────────────────────── -->
+          @if (current() === 'done') {
+            <p class="lead">Your choices are saved. Foundry will prepare the selected models before opening.</p>
+            @if (finishing()) {
+              @for (server of crucibleServers(); track server.name) {
+                <p class="line">{{ server.name }}: {{ coordinationOf(server.name) }}</p>
+              }
+            }
+            @if (finishError()) { <p class="line bad">{{ finishError() }}</p> }
+            @if (skipped().length > 0) {
+              <p class="line">
+                Skipped: {{ skippedTitles() }}. Settings has a button that opens this again, and
+                each of those steps has its own card there.
+              </p>
+            } @else {
+              <p class="line">Nothing was skipped. Settings holds all of it if you want to change something.</p>
+            }
+            <p class="line">Open a PDF or a folder of photographs from Home to start a book.</p>
+          }
+        </div>
+
+        <!-- ── The feet ────────────────────────────────────────────────── -->
+        <div class="foot">
+          @if (index() > 0 && current() !== 'done') {
+            <button class="ghost" type="button" (click)="back()">Back</button>
+          }
+          <span class="spacer"></span>
+          @if (current() === 'done') {
+            <button class="primary" type="button" [disabled]="finishing()" (click)="finish()">{{ finishing() ? 'Preparing models…' : finishError() ? 'Retry preparation' : 'Start using Foundry' }}</button>
+          } @else {
+            @if (skippable()) {
+              <button class="ghost" type="button" (click)="skip()">Skip this</button>
+            }
+            <button class="primary" type="button" (click)="next()">Next</button>
+          }
+        </div>
+      </div>
+    }
+  

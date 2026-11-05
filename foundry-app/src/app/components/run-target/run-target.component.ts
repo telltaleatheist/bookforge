@@ -55,10 +55,10 @@ import {
   ChangeDetectionStrategy, Component, computed, effect, input, model, output, signal,
 } from '@angular/core';
 
-import type { CapabilityRecord } from '@shared/engine-settings';
-import { defaultEngineServer } from '@shared/engine-settings';
-import type { CrucibleServerView } from '@shared/slots';
-import type { ModelClass } from '@shared/types';
+import type { CapabilityRecord } from '@owen/foundry-core/shared/engine-settings';
+import { defaultEngineServer } from '@owen/foundry-core/shared/engine-settings';
+import type { CrucibleServerView } from '@owen/foundry-core/shared/slots';
+import type { ModelClass } from '@owen/foundry-core/shared/types';
 
 /**
  * WHAT EACH ACT IS CALLED when telling somebody a machine cannot do it.
@@ -88,136 +88,8 @@ import { api, hosted } from '../../core/foundry';
 @Component({
   selector: 'app-run-target',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @if (servers().length === 0) {
-      <!--
-        NOT A PICKER WITH NOTHING IN IT. Owen, 2026-09-15: "if theres no
-        connected crucible server then tiles should be disabled" -- and the same
-        rule one screen in. The dialog's Start is off (ready is false), so this
-        says what is missing rather than offering a press that cannot work.
-      -->
-      <p class="none">
-        No Crucible server is connected, and every page is read on one. Add an engine under
-        Settings › Crucible Servers and this fills itself in.
-      </p>
-    } @else if (hosted()) {
-      <!--
-        ── HOSTED, THE PLACEMENT IS NOT OURS TO OFFER ────────────────────────
-
-        Vendored into BookForge, a queued job goes to the HOST's queue and the
-        host's pump decides which of its engines takes it. Foundry's own
-        setWaitFor looks in Foundry's job array, which holds none of the host's
-        rows, so it finds nothing and silently does nothing.
-
-        Chips here would therefore be a control that changes nothing -- pressed,
-        ticked, and ignored -- which is the exact defect this component exists to
-        remove one screen along. So hosted it says who decides and offers no
-        press.
-
-        Owen, 2026-09-17: "when it goes to the queue when vendored in bookforge
-        it should go to bookforge's queue, not ours." It does; this is the half
-        that makes the screen agree with it.
-      -->
-      <p class="says">Runs on one of BookForge's engines — it chooses which when the job starts.</p>
-    } @else {
-      <div class="target">
-        <!--
-          ── THE ENGINES, ALWAYS, AS BUTTONS ACROSS THE TOP ──────────────────
-
-          It used to HIDE this at one server and print a sentence instead, on the
-          rule that a one-item list is not a choice. Owen, 2026-09-17: *"the
-          modal should let the user pick along the top. One crucible server has a
-          button along the top, already selected. Can't be de-selected."*
-
-          He is right and the earlier rule was over-applied. A lone button that
-          is already pressed is not asking anything — it is showing WHERE this is
-          going to run, in the same place and the same shape it will appear the
-          day a second engine is added. Hiding it taught the layout to somebody
-          once and then rearranged it under them.
-
-          THE ROWS ARE BALANCED AND CAP AT THREE -- see the rows() computed. Owen gave the
-          shape by enumeration: one across, two across, three across, then 2+2,
-          then 2+3, then 3+3.
-        -->
-        @for (row of rows(); track $index) {
-          <div class="chips">
-            @for (entry of row; track entry.name) {
-              <button class="chip" type="button"
-                      [class.chosen]="entry.name === server()"
-                      (click)="server.set(entry.name)">
-                <span class="tick">{{ entry.name === server() ? '✓' : '' }}</span>
-                <span class="chip-name">{{ entry.name }}</span>
-              </button>
-            }
-          </div>
-        }
-
-        <!--
-          ── TWO LINES WHEN IT CANNOT RUN, AND THE ORDER MATTERS ─────────────
-
-          It was one line carrying the engine's own reason verbatim, on the
-          rule act-gates follows: a server says things this app could not have
-          composed, so do not reword them. That rule is right about a reason
-          somebody can ACT on and wrong about this one. Owen, picking the Mac for
-          an OCR, got:
-
-              disabled: reading page images (the VLM door) needs page readers,
-              and this build ships none with a mlx-darwin block
-
-          Every clause of which is true and three of them are Crucible's
-          internals — a door, a build, a manifest block. It also opens with a
-          LABEL ("disabled:") rather than a sentence.
-
-          So the first line is this app's, in the words of what it means to the
-          person: this machine cannot do this. The engine's own sentence stays,
-          underneath and quieter, because it is still the only thing that says
-          WHY and somebody diagnosing it needs exactly those words. Nothing is
-          discarded and nothing is reworded; the two are put in the order a
-          person reads them in.
-        -->
-        @if (runnable()) {
-          @if (says(); as line) { <p class="says">{{ line }}</p> }
-        } @else {
-          <p class="says warn">{{ cannot() }}</p>
-          @if (reason(); as why) { <p class="because">{{ why }}</p> }
-        }
-      </div>
-    }
-  `,
-  styles: [`
-    :host { display: block; }
-
-    .none { margin: 0; font-size: 12px; line-height: 1.5; color: var(--warn); }
-
-    .target { display: flex; flex-direction: column; gap: 6px; }
-    /* NO WRAP: the rows are composed in the class, so letting flex re-break them
-       would be a second opinion about the layout and the two would disagree at
-       exactly the widths where it matters. Each button takes an equal share. */
-    .chips { display: flex; gap: 6px; }
-    .chips .chip { flex: 1 1 0; min-width: 0; justify-content: center; }
-
-    /* Selected is a tick and a border; the text never changes colour against its
-       background. A sibling of this control shipped as text on a solid accent
-       and could not be read. */
-    .chip {
-      display: inline-flex; align-items: baseline; gap: 6px;
-      font: inherit; font-size: 12px;
-      background: var(--bg-sunken); color: var(--text-primary);
-      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-      padding: 4px 10px; cursor: pointer;
-    }
-    .chip:hover { border-color: var(--text-tertiary); }
-    .chip.chosen { border-color: var(--accent); }
-    .tick { font-size: 10px; color: var(--accent); width: 8px; flex: none; }
-
-    .says { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
-    .says.warn { color: var(--warn); }
-    /* The engine's own words: kept, and quieter than the sentence above them. */
-    .because {
-      margin: 0; font-size: 11px; line-height: 1.5;
-      color: var(--text-muted); font-style: italic;
-    }
-  `],
+  templateUrl: './run-target.component.html',
+  styleUrl: './run-target.component.scss',
 })
 export class RunTargetComponent {
   /** Read in the template: hosted, the host's queue owns the placement. */

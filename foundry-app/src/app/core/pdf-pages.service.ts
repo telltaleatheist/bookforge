@@ -20,7 +20,7 @@ import { Injectable, inject, signal } from '@angular/core';
  */
 import type { PDFDocumentProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-import { pdfPageName, pdfPageScale, pdfStem } from '@shared/capture';
+import { pdfPageName, pdfPageScale, pdfStem } from '@owen/foundry-core/shared/capture';
 
 import { api } from './foundry';
 import { NoticeService } from './notice.service';

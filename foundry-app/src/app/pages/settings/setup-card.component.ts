@@ -33,7 +33,7 @@
  */
 import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
 
-import type { SetupState } from '@shared/types';
+import type { SetupState } from '@owen/foundry-core/shared/types';
 import { api } from '../../core/foundry';
 
 @Component({

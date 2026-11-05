@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
 
-import type { FoundryApi } from '@shared/api';
+import type { FoundryApi } from '@owen/foundry-core/shared/api';
 
 declare global {
   interface Window {

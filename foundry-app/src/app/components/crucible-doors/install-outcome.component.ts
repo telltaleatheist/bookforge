@@ -34,7 +34,7 @@
  */
 import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
 
-import type { CrucibleInstallOutcome } from '@shared/crucible-install-wire';
+import type { CrucibleInstallOutcome } from '@owen/foundry-core/shared/crucible-install-wire';
 import { api } from '../../core/foundry';
 
 @Component({

@@ -1,0 +1,208 @@
+
+    <div class="scrim" (click)="ui.closeExport()"></div>
+
+    <div class="card" role="dialog" aria-modal="true" aria-label="Export this book">
+      <header class="head">
+        <span class="title">Export</span>
+        <button class="x" (click)="ui.closeExport()" title="Close">✕</button>
+      </header>
+
+      @if (source(); as input) {
+        <div class="body">
+          <!--
+            A FACT, NOT A FIELD. A read-only input is a control that looks
+            pressable and is not — Owen, 2026-09-17: *"if an option is impossible
+            to click … dont present it as an option. it isnt an option. present
+            it as information or dont present it at all."* The dialog was opened
+            ON this document; there was never a second one to pick.
+          -->
+          <p class="fact" [title]="input">{{ optionFor(input) }}</p>
+
+          @if (canMake()) {
+            <!--
+              THE THREE FORMATS AS CARDS rather than a select, because this is the
+              whole question the dialog asks and a drop-down would hide two thirds
+              of the answer behind a click. Each one says what it IS.
+            -->
+            <div class="kinds" role="radiogroup" aria-label="What to make">
+              @for (choice of choices; track choice.kind) {
+                <button
+                  class="kind"
+                  role="radio"
+                  [attr.aria-checked]="kind() === choice.kind"
+                  [class.on]="kind() === choice.kind"
+                  [disabled]="noFacsimile() && choice.kind === 'pdf'"
+                  (click)="kind.set(choice.kind)"
+                >
+                  <span class="kind-name">{{ choice.label }}</span>
+                  <span class="kind-note">{{ choice.blurb }}</span>
+                </button>
+              }
+            </div>
+
+            @if (noFacsimile()) {
+              <!--
+                THE BOUND, SAID RATHER THAN JUST APPLIED. A dead card with no
+                sentence beside it is an app that has decided something and will
+                not say what. Main refuses the same pair for the same reason
+                (planExport), and the engine refuses it again underneath — this is
+                the courtesy, not the rule.
+
+                IT USED TO SAY "the EPUB only", and it was true of a translated
+                export while that job ended in a run that reads a book and writes a
+                book. A translation is a records file now and the words go into the
+                blocks as the book is assembled, upstream of the format fork — so
+                plain text works from here too, and only the facsimile cannot.
+
+                TWO REASONS, TWO SENTENCES. The card is dead for a book that
+                arrived as a book as well, and "click back to the reading" is
+                advice to nowhere for a project that has no reading and no scan to
+                have one of. A bound that names the wrong reason is a bound the
+                person will try to work around.
+              -->
+              @if (arrivedAsBook()) {
+                <p class="note">
+                  No facsimile of this one. A facsimile reprints a scan's own photographed pages as
+                  real text, and this book came to you as a book — there are no pages of it anywhere,
+                  only its words. The EPUB and the plain text are made from those.
+                </p>
+              } @else {
+                <p class="note">
+                  No facsimile, standing here. You are on a translation, and a facsimile reprints the
+                  scan's own photographed pages — there is nowhere on a photograph of a German page to
+                  put a Hungarian paragraph. Click back to the reading for a facsimile of the original.
+                </p>
+              }
+            }
+
+            @if (kind() === 'txt') {
+              <p class="note">
+                Plain text is the book with the markup taken off — headings, paragraphs, and
+                footnotes as [1] at the end of each chapter. Pictures do not survive it, and
+                Foundry cannot open a text file in a tab: it lands under this project, and its
+                row in the library reveals the file.
+              </p>
+            } @else if (kind() === 'pdf') {
+              <p class="note">
+                The same pages, reprinted as real text: same page size, same layout, every line
+                set where it was printed — but as type rather than as a photograph. It stays
+                crisp at any zoom, copies as words, and is a fraction of the size. Pictures are
+                cut out of the scan and kept. A page the model could not read keeps its
+                photograph so nothing is lost. Your original scan is never touched.
+              </p>
+            } @else {
+              <p class="note">
+                The book, rebuilt into chapters with its footnotes linked. It opens here the
+                moment it is done, and it stays filed under this project.
+              </p>
+            }
+
+            <!--
+              WHAT THIS IS MADE FROM, said plainly, because it is the reassurance
+              that makes exporting a second time feel free rather than reckless.
+
+              A TRANSLATION POSITION USED TO GET A SECOND SENTENCE HERE, admitting
+              that the export could spend model time: it ran the translator over
+              whatever the bank could not answer, and a job like that starts from
+              the queue rather than from this button. A translated export is one
+              rendering now — the words are read out of the translation's records
+              file, which is on disk — so the plain sentence is true everywhere and
+              the caveat is gone rather than merely unshown.
+
+              A BOOK THAT ARRIVED AS A BOOK GETS THE TRUE VERSION OF THE SAME
+              REASSURANCE. No model has read anything here and none ever will, so
+              naming pages that were never read would be this app claiming work it
+              did not do — in the one sentence whose entire job is to make
+              exporting a second time feel free.
+            -->
+            @if (arrivedAsBook()) {
+              <p class="note quiet">
+                Made from the book you imported, taken apart into its own chapters and paragraphs.
+                Nothing is read and no GPU is used.
+              </p>
+            } @else {
+              <p class="note quiet">
+                Made from the {{ pages() > 0 ? pages().toLocaleString() + ' pages' : 'pages' }} the
+                model has already read.
+                Nothing is read again and no GPU is used.
+              </p>
+            }
+
+            <!--
+              A FINISHED EXPORT IS NOT A STEP, and saying so is what stops the
+              next question. Everything else this app makes appears in the Steps
+              ledger and can be built on; this one is the end of the line, which
+              is exactly why it is safe to make ten of them.
+            -->
+            <p class="note quiet">
+              It is filed under this project, beside the other things you have exported. It never
+              becomes a step, so nothing you do later is built on it — make another whenever the
+              book has moved on.
+            </p>
+
+            @if (problem(); as reason) {
+              <p class="problem">{{ reason }}</p>
+            }
+          } @else if (readingDone()) {
+            <!--
+              READ, BUT STANDING ON THE SCAN. Not an error and not a missing
+              step: the user is looking at the pages the book was read from, and
+              the honest answer is where to stand rather than a button that
+              would quietly export the book they stepped back from.
+            -->
+            <p class="unread">You are standing on the scan.</p>
+            <p class="note">
+              An export is made from the book, so stand on the book in the library first — it
+              hangs under the scan, along with everything you have done to it — and this offers
+              all three formats from wherever you are standing.
+            </p>
+          } @else {
+            <!--
+              The whole of the no-reading state. Two options, because there is no
+              third: nothing in this engine turns a scanned book into a readable
+              one without the model reading it first.
+
+              AND IT IS ABOUT A SCAN, WHICH IS WHAT IT ALWAYS MEANT. Every project
+              that had not been read landed here, including the ones that never had
+              pages to read — so a person who imported an EPUB was told their book
+              had not been read yet and offered a vision model for it, which is a
+              false sentence about a finished book and a bill for nothing. Those go
+              to the cards now (`canMake`) and this is left saying exactly what it
+              was written to say, to the people it was written for.
+            -->
+            <p class="unread">This book has not been read yet.</p>
+            <p class="note">
+              An export is built out of what the vision model read off the pages, and nobody has
+              read these pages. That is the one step that costs anything — after it, you can make
+              any of the three from the same reading, as often as you like, for nothing.
+            </p>
+          }
+        </div>
+
+        <!--
+          NO PRIMARY WHERE THERE IS NOTHING TO PRESS. Standing on the scan the
+          only thing this card can offer is a sentence and a way out; a dead
+          Export button beside it would be the app inviting a gesture it has
+          just explained it will not take.
+        -->
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeExport()">Cancel</button>
+          @if (canMake()) {
+            <button class="primary" [disabled]="busy()" (click)="run()">
+              {{ busy() ? 'Exporting…' : 'Export' }}
+            </button>
+          } @else if (!readingDone()) {
+            <button class="primary" (click)="ui.openOcr()">Read the pages…</button>
+          }
+        </footer>
+      } @else {
+        <div class="body empty">
+          <p>Open a book first — exporting is a thing you do to the document you have in front of you.</p>
+        </div>
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeExport()">Close</button>
+          <button class="primary" (click)="openDocument()">Open a document…</button>
+        </footer>
+      }
+    </div>
+  

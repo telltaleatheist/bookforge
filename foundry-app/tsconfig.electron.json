@@ -3,10 +3,11 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
-    // rootDir is app/, not app/electron, because this program also compiles
-    // app/shared (the wire shapes the renderer compiles too). The emit layout is
-    // electron/x.ts -> dist/electron/x.js and shared/y.ts -> dist/shared/y.js,
-    // which is what dist/electron/*.js requires at runtime.
+    // rootDir is app/ so the emit layout stays electron/x.ts -> dist/electron/x.js
+    // (package.json "main"). Everything that is not the shell, the window, the
+    // preload, Crucible's UI window and the IPC/mount/documents wiring is
+    // @owen/foundry-core, required by package name from node_modules at runtime
+    // and typed by the package's own .d.ts (FOUNDRY-CORE-PLAN step 3).
     "outDir": "./dist",
     "rootDir": ".",
     "strict": true,
@@ -20,8 +21,7 @@
     "types": ["node"]
   },
   "include": [
-    "electron/**/*.ts",
-    "shared/**/*.ts"
+    "electron/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

@@ -1,0 +1,66 @@
+
+    :host { display: block; height: 100%; overflow: hidden; }
+    .page { display: grid; grid-template-columns: 200px minmax(0, 1fr); height: 100%; }
+
+    /* No divider rule: the rail is set apart by its own width and the pane's
+       indentation, and a line down the middle of a wide window reads as a seam.
+       Owen: "dont give it a border". */
+    .rail {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 16px 8px;
+      overflow-y: auto;
+    }
+    .rail h1 { margin: 0 0 10px 10px; font-size: 18px; font-weight: 600; }
+    .section-list { display: flex; flex-direction: column; gap: 2px; }
+
+    .section-item {
+      display: flex; align-items: center; gap: 8px;
+      width: 100%; padding: 7px 10px;
+      font: inherit; font-size: 13px; text-align: left;
+      background: transparent; color: var(--text-secondary);
+      border: none; border-radius: var(--radius-sm);
+      cursor: pointer;
+    }
+    .section-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /*
+      ACTIVE IS A BACKGROUND AND A WEIGHT, AND THE TEXT COLOUR ONLY GOES UP.
+      bookforge-02 shipped the sibling of this control with the accent used as a
+      fill behind the ordinary foreground and Owen could not read it. Nothing
+      here puts text on the accent; the accent is a bar at the edge.
+    */
+    .section-item.active {
+      background: var(--bg-sunken); color: var(--text-primary); font-weight: 600;
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+    .section-icon { font-size: 14px; line-height: 1; }
+    .section-name { min-width: 0; }
+
+    /* Set apart from the section list: it acts rather than navigates. */
+    .section-item.guided-setup {
+      margin-top: 10px; padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+      border-radius: 0;
+      opacity: 0.8;
+    }
+    .section-item.guided-setup:hover { opacity: 1; }
+
+    /* The scroller. Full width, so its scrollbar is the window's right edge. */
+    .pane { overflow-y: auto; padding: 20px 24px 60px; }
+    /* The content. Centred, and it re-centres as the window resizes because the
+       margin is auto rather than a computed offset. */
+    .pane-inner {
+      display: flex; flex-direction: column; gap: 10px;
+      max-width: 860px; margin: 0 auto;
+    }
+    .pane-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+    .pane-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .pane-detail { margin: 0; font-size: 12px; color: var(--text-tertiary); }
+
+    @media (max-width: 720px) {
+      .page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+      .rail { flex-direction: row; align-items: center; overflow-x: auto; }
+      .rail h1 { display: none; }
+      .section-list { flex-direction: row; }
+      .section-item.guided-setup { margin-top: 0; padding-top: 7px; border-top: none; }
+    }
+  

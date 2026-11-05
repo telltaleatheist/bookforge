@@ -1,0 +1,98 @@
+
+    :host { display: block; }
+
+    .empty { display: flex; flex-direction: column; gap: 6px; }
+    .lead { margin: 0; font-size: 13px; font-weight: 600; }
+
+    .detail { margin: 0 0 4px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    .small { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
+    .warn { margin: 0; font-size: 12px; color: var(--error); }
+    .warnish { color: var(--warn); }
+    .bad { color: var(--error); }
+    .mono { font-family: var(--font-mono); }
+
+    .group {
+      margin: 18px 0 8px;
+      font-family: var(--font-display); font-size: 13px; font-weight: 600;
+      display: flex; align-items: baseline; gap: 10px;
+    }
+    .group:first-of-type { margin-top: 10px; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chips.servers { margin-bottom: 12px; }
+
+    /*
+      SELECTED IS A TICK AND A BORDER, AND THE TEXT NEVER CHANGES COLOUR.
+      bookforge-02 shipped this control with the accent used as a background
+      behind the ordinary text colour and Owen could not read it. A chosen chip
+      here keeps its own foreground and gains a mark plus an edge, which cannot
+      go wrong against any theme because nothing about the contrast moves.
+    */
+    /*
+      ONE LINE, NOT TWO. The tick used to sit ABOVE the name in a column, which
+      made a chosen chip taller than its neighbours and the whole row ragged —
+      Owen: "the buttons are oddly shaped". The tick is inline now and its slot
+      is reserved whether or not it is filled, so pressing one does not resize
+      it or shift the chips beside it.
+    */
+    .chip {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      font: inherit; font-size: 12px; text-align: left; white-space: nowrap;
+      background: var(--bg-sunken); color: var(--text-primary);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      padding: 4px 10px; cursor: pointer;
+    }
+    .chip:hover:not(:disabled) { border-color: var(--text-tertiary); }
+    .chip.chosen { border-color: var(--accent); }
+    .chip:disabled { cursor: default; opacity: 0.6; }
+    /* Expect the engine to refuse this, or it is not downloaded yet. Pressable. */
+    .chip.dim .chip-name { color: var(--text-tertiary); }
+    .chip-detail { font-size: 10px; color: var(--text-tertiary); }
+    /* A fixed slot, so a chip is the same size ticked and unticked. */
+    .tick { font-size: 10px; color: var(--accent); width: 8px; flex: none; }
+    /* The server chips DO stack, because their second line is a fact about the
+       machine rather than a mark on a choice. */
+    .chip.server { flex-direction: column; align-items: flex-start; gap: 1px; min-width: 140px; }
+
+    .job {
+      background: var(--bg-raised);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .job-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    .job-who { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 160px; }
+    .job-title { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .job-sub { font-size: 11px; color: var(--text-tertiary); }
+
+    .typed { display: flex; align-items: center; gap: 6px; }
+    .wide { flex: 1; min-width: 0; }
+    input {
+      font: inherit; font-size: 12px;
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      padding: 4px 6px;
+    }
+
+    .primary {
+      display: inline-flex; align-items: center; justify-content: center;
+      align-self: flex-start;
+      height: 26px; padding: 0 12px; border: none;
+      border-radius: var(--radius-sm);
+      background: var(--accent); color: var(--text-inverse);
+      font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer;
+    }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    button.ghost {
+      font: inherit; font-size: 11px;
+      background: transparent; color: var(--text-secondary);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      padding: 2px 8px; cursor: pointer;
+    }
+    button.ghost:hover:not(:disabled) { background: var(--bg-sunken); }
+    button.ghost:disabled { opacity: 0.5; cursor: default; }
+  

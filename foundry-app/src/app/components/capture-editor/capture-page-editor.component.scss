@@ -1,0 +1,198 @@
+
+    :host { display: flex; height: 100%; min-height: 0; }
+    .editor { display: flex; flex: 1; min-width: 0; gap: 16px; padding: 12px; }
+
+    .picture-column { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1 1 0; gap: 8px; }
+
+    /*
+     * THE FRAME, AND WHY THE TOP TWO CORNERS COULD NOT BE GRABBED.
+     *
+     * The picture used to be a direct child of the column, sized with a
+     * max-height of 100% and centred with an auto margin. That 100% resolves
+     * against THE WHOLE COLUMN, which also holds the gestures row and a gap --
+     * so the picture was allowed to be as tall as everything, the column
+     * overflowed, and the auto margin split the overflow evenly above and below.
+     *
+     * CONTENT PUSHED ABOVE A CONTAINERS START EDGE CANNOT BE SCROLLED TO. So the
+     * top of the photograph, and the two corner handles on it, were off screen
+     * and unclickable while the bottom two were reachable. Owen found it as
+     * "cant grab the top two", which is exactly what that looks like from the
+     * outside: a hit test that works at one end of the picture and not the
+     * other. The hit test was never wrong.
+     *
+     * The frame takes the leftover height as a flex item, so the max-height on
+     * the picture now resolves against the space that is actually free, and the
+     * centring is done by the container rather than by an auto margin that can
+     * push its own item out of reach.
+     */
+    .frame {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      /*
+       * ROOM FOR THE HANDLES TO HANG OVER THE EDGE. Half a handle is 9px, so 12
+       * leaves a margin for the hand as well as for the dot. Without it a
+       * picture that exactly fills the frame would put its edge handles hard
+       * against the clip again, and moving the listeners here would have bought
+       * nothing at the one place it was needed.
+       */
+      padding: 12px;
+      touch-action: none;
+    }
+    /*
+     * THE CURSOR, AND THERE WAS NONE IN THIS COMPONENT AT ALL UNTIL WAVE 24.
+     *
+     * Not a preference: with nothing here, a picture whose every corner and
+     * whose whole gutter can be dragged looked exactly like a picture. The
+     * corners at least LOOK like handles -- round, raised, the shape everything
+     * uses -- and the cut's ends borrow that shape, so the one thing with no
+     * sign whatever was the LINE, which slides from a grab anywhere along it.
+     *
+     * "grabbing" beats "can-grab" by coming later at equal specificity, which is
+     * the right way round: a hand that has hold of something is past being
+     * offered it. Both are on the frame because the frame is what the pointer is
+     * actually over -- see the template.
+     */
+    .frame.can-grab { cursor: grab; }
+    .frame.grabbing { cursor: grabbing; }
+
+    /*
+      The box IS the picture — see the class docblock. `max-height: 100%` with
+      `aspect-ratio` set from the working copy lets it letterbox itself inside
+      whatever room the pane has, without anything measuring it.
+    */
+    .picture {
+      position: relative;
+      max-width: 100%;
+      max-height: 100%;
+      user-select: none;
+      background: var(--bg-sunken);
+    }
+    /*
+     * Laid out at the PHOTOGRAPH's aspect and rotated onto the slot, exactly as
+     * the card's .spun is -- see the template. Centred, because a rotation
+     * about a corner would swing the picture out of the box.
+     */
+    .spun { position: absolute; top: 50%; left: 50%; transform-origin: center; }
+    .picture img { display: block; width: 100%; height: 100%; }
+
+    /*
+     * THE SPLIT PASS'S STAGE.
+     *
+     * A ground of its own, because the thing on it is a PAGE: the shot's edges
+     * are gone, so there is nothing left to explain the dark surround a raw
+     * photograph brings with it, and this is also what is shown for the frame or
+     * two between the picture decoding and the rectify landing.
+     */
+    .picture.page { background: var(--bg-sunken); }
+    /*
+     * The photograph is the TEXTURE now, not the picture. Invisible rather than
+     * absent -- `display: none` would be a picture the browser never decodes and
+     * a canvas that never gets anything to draw -- and inert, so the layout it
+     * keeps for the crop pass cannot catch a pointer here.
+     */
+    .spun.texture { opacity: 0; pointer-events: none; }
+    /*
+     * It fades in rather than appearing, for the reason the cards do: the page is
+     * drawn a frame or two after the photograph loads, and a hard swap at that
+     * distance reads as a flicker in the stage rather than as a picture arriving.
+     */
+    .face {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      display: block;
+      opacity: 0;
+      transition: opacity 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .face.drawn { opacity: 1; }
+
+    .handles { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .outline { fill: none; stroke: var(--accent, #4c9aff); stroke-width: 2; }
+    /*
+     * THE BOOK'S CROP: the same shape, said quietly. Dashed and half-faded and
+     * ONE pixel where the real outline is two, so at a glance there is never a
+     * question about which line is the page -- the solid one is what gets minted,
+     * on every photograph, in every state. Drawn first, so the outline that
+     * matters is the one on top.
+     */
+    .ghost {
+      fill: none;
+      stroke: var(--text-tertiary, #8a837a);
+      stroke-width: 1;
+      stroke-dasharray: 5 4;
+      opacity: 0.6;
+    }
+    .split { stroke: var(--warn, #d08770); stroke-width: 2; stroke-dasharray: 6 4; }
+    /*
+     * THICKER UNDER THE HAND — the other half of the affordance, and the half
+     * that says WHICH thing the cursor is about.
+     *
+     * A grab cursor over a picture full of handles does not say what would be
+     * grabbed. The line answering to the hand does, and it answers for its whole
+     * length, which is the fact that was invisible: slideSplit has always taken
+     * a grab anywhere along the cut, and only the two end dots looked like they
+     * could be held.
+     *
+     * On the frame rather than on the line, because the line cannot be hovered
+     * -- it is pointer-events:none like every handle here, so the hit test is
+     * under() and the class it sets is the only thing that knows.
+     */
+    .frame.on-cut .split { stroke-width: 3.5; stroke-dasharray: none; }
+
+    .handle {
+      position: absolute;
+      width: 18px; height: 18px;
+      margin: -9px 0 0 -9px;
+      border: 2px solid var(--accent, #4c9aff);
+      border-radius: 50%;
+      background: var(--bg-raised, #fff);
+      pointer-events: none;
+    }
+    /*
+     * THE CORNER MARK, CARRIED IN FROM THE CARD (Wave 21 point 5).
+     *
+     * A quarter turn permutes the corner assignment WITHOUT MOVING ANY OF THEM,
+     * so the outline is identical before and after and four identical handles
+     * say nothing about which way the page comes out. The card already solved
+     * this with a filled dot on the corner that becomes the minted page's
+     * top-left; this is the same device in the same colour, so the mark means
+     * one thing in both places rather than two things that resemble each other.
+     *
+     * It matters most on exactly this shoot: every spread of the 1876 volume
+     * lies sideways and wants THREE quarter turns, and without the mark the
+     * only way to see that a turn happened is to look away at the preview.
+     */
+    .handle.first { background: var(--accent, #4c9aff); }
+
+    /*
+     * HELD IS A RING AND A LIFT, not a fill, now that a fill means something
+     * else. Filling on grab would have made every held corner look like the
+     * first one -- two things sharing a name, in a colour.
+     */
+    .handle.held {
+      transform: scale(1.15);
+      box-shadow: 0 0 0 3px var(--accent-faint);
+    }
+
+    /* The gutter's ends take the split line's own colour, so the line and the
+       thing that moves it read as one object rather than two controls. */
+    .gutter {
+      position: absolute;
+      width: 16px; height: 16px;
+      margin: -8px 0 0 -8px;
+      border: 2px solid var(--warn, #d08770);
+      border-radius: 50%;
+      background: var(--bg-raised, #fff);
+      pointer-events: none;
+    }
+    .gutter.held { background: var(--warn, #d08770); }
+
+    .previews { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; flex: 0 0 220px; }
+    .previews figure { margin: 0; }
+    .previews canvas { width: 100%; height: auto; background: var(--bg-sunken); }
+    figcaption { font-size: 11px; color: var(--text-tertiary); }
+    .outside { color: var(--warn); }
+  

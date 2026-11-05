@@ -1,0 +1,690 @@
+
+    /*
+      WIDER THAN IT WAS, TWICE OVER.
+
+      220px held an indented line of text. The card redesign needed more — a card
+      holds a sentence, a lineage line under it and a state on the right, and at
+      220 the titles this panel writes ("Translated into German") ellipsed into
+      "Translated int…", which is the old notation with worse manners — so it went
+      to 288, the width that fits the longest ordinary title at 12.5px with the
+      dot column and one level of indent.
+
+      346 IS THE USER ASKING FOR ROOM RATHER THAN A MEASUREMENT: *"lets make the
+      library list on the left side nav bigger. it only takes up a sliver right
+      now. lets expand its width by about 20% of what it is now to make a bit more
+      room for the tree by default"* (2026-08-17). 288 was the FLOOR under which
+      a card stops reading, and a floor is not a default — a tree four levels deep
+      spends 72 of those pixels on lanes before a word of a title. So the number
+      was 288 plus the fifth the user asked for.
+
+      384 IS THE SAME PERSON ASKING AGAIN, HOURS LATER, FOR THE SAME REASON:
+      *"the tree is getting bigger and requires a bit more space"* (2026-08-17
+      22:30). And it had: exports moved under their provenance step and host
+      nodes moved under the exports, so the deepest ordinary book went from three
+      levels of indent to five — 90 pixels of lane before a title, on cards that
+      now also carry a footer of buttons and, at the bottom of this same panel, a
+      dock that used to have a row of the window to itself. TWICE-WIDENED IS
+      WORTH NAMING AS SUCH rather than quietly re-deriving: this panel is the
+      app's navigator, it has grown what it draws twice, and both numbers came
+      from the person using it. It is still put away with one click on the corner
+      button, which is what keeps a widening cheap.
+
+      AND NOW IT IS A SHARE OF THE WINDOW (Owen, 2026-11-03: *"no matter how
+      big it is, the left side nav can take 20% - 25% of the screen maybe"*).
+      22%, so the 78% left splits evenly between the book and the inspector
+      (whose default is 39%). 384px was right for one window and wrong for every
+      other: on a wide screen it was a sliver, and the book and inspector fought
+      over the rest. 288px stays the floor, the width under which a card stops
+      reading.
+    */
+    :host {
+      display: flex;
+      flex-direction: column;
+      width: 22%;
+      min-width: 288px;
+      flex-shrink: 0;
+      height: 100%;
+    }
+    /*
+      THE TREE TAKES WHAT IS LEFT AND THE DOCK KEEPS ITS OWN HEIGHT — which is
+      the whole of "pinned to the top… the user can scroll down to see more".
+      `min-height: 0` is what makes the scrolling happen INSIDE the panel
+      rather than pushing the dock off the bottom of the window: a flex item does
+      not shrink below its content without it, and the tree's content is
+      unbounded.
+    */
+    .panel, .stub { flex: 1; min-height: 0; }
+    app-action-menu { flex: 0 0 auto; }
+    /* Collapsed, the HOST narrows to the stub's width, because the shell's flex
+       row measures the host and not the panel inside it — a stub drawn inside a
+       384px host would be 30 pixels of button beside 354 of nothing. The class
+       is put on by the shell (see App's template) rather than by a host binding
+       here, so the element carrying it is invalidated by the same change
+       detection pass that reads the flag. */
+    :host(.shut) { width: 30px; min-width: 30px; }
+    /* The stub is a column too, so its one button sits at the top and the
+       compact dock keeps the foot. */
+    .stub { display: flex; flex-direction: column; }
+
+    .stub {
+      align-items: center;
+      padding-top: 8px;
+      background: var(--bg-elevated);
+      border-right: 1px solid var(--border-default);
+    }
+
+    /*
+      THE TOP-LEFT CORNER OF THE WINDOW, in both states: shown, it is the first
+      thing in the panel's own header; collapsed, it is the only thing in the
+      stub. A collapse button that moves when you press it is a button people
+      press once.
+    */
+    .collapse {
+      flex: 0 0 auto;
+      width: 20px; height: 20px;
+      padding: 0;
+      background: transparent; border: none; border-radius: var(--radius-sm);
+      color: var(--text-tertiary); font-size: 12px; line-height: 1;
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .collapse:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    /*
+      THE PANEL DROPPED A LAYER so the cards could have one. It used to be
+      --bg-elevated because it was a rail of text against the workspace; now the
+      cards are the elevated things and a card on a surface of its own colour is
+      an invisible card. Base underneath, elevated on top, the divider unchanged.
+    */
+    .panel {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--bg-base);
+      border-right: 1px solid var(--border-default);
+    }
+
+    /* Present so the symbols resolve; never drawn. Not display:none — a hidden
+       subtree still defines its <defs>, but zero-sized is the form every icon
+       sheet uses and the one browsers agree about. Absolute is what keeps it out
+       of the host's flex column now that it is a child of the host rather than
+       of the panel: a zero-height flex item would still take a gap. */
+    .sheet { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+    .head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px 8px 5px;
+      background: var(--bg-sunken);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .label {
+      flex: 1;
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-tertiary);
+    }
+    .count { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+    .list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 16px; }
+    /* Where a dragged row would land, when it is past the last one. */
+    .list.landing { background: var(--accent-faint); }
+
+    /* Each book is a run; the space between two of them is what says where one
+       ends. The head above it now says the same thing louder, so the margin is
+       what separates the CARDS from their own head rather than one book from
+       the next — see `.accordion`, which carries the between-books space. */
+    .group { margin-bottom: 4px; }
+
+    /*
+      ── THE ACCORDIONS ────────────────────────────────────────────────────────
+
+      THE INSPECTOR'S IDIOM, ON PURPOSE AND MEASURED AGAINST IT: a head row with
+      a twist on the left, a small-caps label, a count on the right, and a body
+      that is simply not rendered when shut. The numbers are that panel's —
+      9px twist, 10px/600 label at 0.08em, an 11px tabular count — because two
+      accordions in one window that differ by a pixel read as a bug.
+
+      WHAT IS NOT COPIED IS THE FLEX. The inspector's sections SHARE a fixed
+      column height (`flex: 1 1 0` with each body scrolling itself), which is
+      right for three sections that are always the same three. Here the number of
+      sections is the number of open books, and giving each of them an equal
+      share of the panel would make every book's tree shorter as another book
+      opened. This list scrolls as one, which is what it has always done.
+
+      THE HEAD IS A ROW OF TWO CONTROLS AND NOT ONE, which is why `.ahead` is a
+      div holding buttons rather than being a button itself: a ✕ nested inside a
+      button is invalid markup, and the version of it that "works" is a click
+      handler racing its own parent.
+    */
+    .accordion { margin-bottom: 14px; }
+    .accordion.shut { margin-bottom: 6px; }
+
+    .ahead { display: flex; align-items: baseline; gap: 2px; }
+    .atwist {
+      flex: 1; min-width: 0;
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 6px 4px 6px 6px;
+      background: transparent; border: none; border-radius: var(--radius-sm);
+      text-align: left; cursor: pointer;
+    }
+    .atwist:hover { background: var(--bg-hover); }
+    /*
+      NAMED `acaret` AND NOT `twist`, WHICH IS THE WHOLE OF THE REASON IT HAS
+      AN AWKWARD NAME. `.twist` is already taken in this stylesheet — it is the
+      CARD's expander arrow, ten pixels wide with a fixed line box so that the
+      marks to its right line up whether or not a node has children — and a
+      second rule of the same name at the same specificity is decided by
+      declaration order, which is a coin flip dressed as a cascade. The two
+      arrows look alike because they are the same idea at two scales; they are
+      not the same rule and must not share a selector.
+    */
+    .acaret { flex: 0 0 auto; color: var(--text-tertiary); font-size: 9px; line-height: 1; }
+    .alabel {
+      flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-tertiary);
+    }
+    .atwist:hover .alabel { color: var(--text-secondary); }
+
+    /* The head's own ✕ — the card's `.x` at the head's smaller weight. Quiet
+       until the pointer is on it, like every other ✕ in this panel. */
+    .ax {
+      flex: 0 0 auto;
+      padding: 4px 6px;
+      background: transparent; border: none; border-radius: var(--radius-sm);
+      color: var(--text-muted); font-size: 10px; line-height: 1; cursor: pointer;
+    }
+    .ax:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .ax.danger:hover { background: var(--error-soft); color: var(--error); }
+
+    /*
+      ── THE WORKSPACE'S GRID ──────────────────────────────────────────────────
+
+      `auto-fill` at a 96px minimum, so the panel decides how many columns it
+      has rather than this file guessing: three at the sidebar's 384px, and still
+      a grid rather than a broken row if that number ever moves again (it has
+      moved twice already — see the `:host` docblock).
+
+      A FIXED-HEIGHT PICTURE WITH `object-fit: contain`, because a shoot is
+      portrait pages and screenshots in whatever the screen was: cropping to fill
+      would cut the top off every page, and letting each card take its own aspect
+      would make a grid that steps up and down like a broken staircase.
+    */
+    .shots {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+      gap: 6px;
+      padding: 2px 2px 6px;
+    }
+    .shot {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 4px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .shot:hover { border-color: var(--border-strong); }
+    /* Chosen is the accent, which is this app's one word for "this one" — the
+       same statement the standing card makes with the same colour. */
+    .shot.chosen { border-color: var(--accent); background: var(--accent-faint); }
+    .shot img {
+      display: block; width: 100%; height: 72px;
+      object-fit: contain;
+      background: var(--bg-sunken);
+      border-radius: var(--radius-sm);
+    }
+    /* The stand-in, at the picture's exact size so a grid of mixed formats does
+       not step up and down where the HEICs are. */
+    .noshot {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; height: 72px;
+      background: var(--bg-sunken);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+    }
+    .noshot svg { width: 22px; height: 22px; }
+    .sname {
+      font-size: 10px; color: var(--text-tertiary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .shot.chosen .sname { color: var(--text-secondary); }
+
+    .ahint {
+      margin: 0; padding: 0 4px 4px;
+      font-size: 11px; line-height: 1.45; color: var(--text-muted);
+    }
+
+    /*
+      ── THE DRAWN LINEAGE ─────────────────────────────────────────────────────
+
+      A row is [one lane per ancestor][the rail][the card], and every number
+      below is one of three: the LANE is 18px (one indent), the RAIL is 26px, and
+      the vertical thread sits at 12px inside whichever of them it belongs to, so
+      an ancestor's line and its own rail's line are the same line at the same x.
+      The 10px gap under a card is bridged by the thread's negative bottom —
+      without that the spine would be a dotted column of segments.
+    */
+    .step { display: flex; position: relative; margin-bottom: 10px; }
+    .lane { position: relative; flex: 0 0 18px; }
+    .rail { position: relative; flex: 0 0 26px; }
+
+    .thread { position: absolute; left: 12px; width: 2px; background: var(--border-default); }
+    .lane .thread { top: 0; bottom: -10px; }
+    /* 22px is the dot's centre: 8px of card padding plus half of the 26px icon
+       square, which is what the dot is vertically aligned to. */
+    .rail .thread.up { top: 0; height: 22px; }
+    .rail .thread.down { top: 22px; bottom: -10px; }
+    /*
+      SOLID IS WHAT EXISTS, DASHED IS THE PLAN — the grammar the whole panel now
+      reads by, and the reason a queued act can be drawn at all. Border rather
+      than background, because a dashed background does not exist.
+    */
+    .thread.dashed { width: 0; background: none; border-left: 2px dashed var(--border-default); }
+
+    /* The curve out of a parent's line into an indented lane. Drawn in the last
+       lane so it starts on the PARENT's thread, and ending under the dot, which
+       is painted over it. */
+    .elbow {
+      position: absolute; left: 12px; top: 0;
+      width: 14px; height: 22px;
+      border-left: 2px solid var(--border-default);
+      border-bottom: 2px solid var(--border-default);
+      border-bottom-left-radius: 10px;
+    }
+    .elbow.dashed { border-style: dashed; }
+
+    .dot {
+      position: absolute; left: 5px; top: 14px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      z-index: 2;
+    }
+    .dot .mark { width: 9px; height: 9px; }
+    /* The origin: a filled neutral disc wearing the mark of what arrived. It is
+       not "done" — nothing was run to make it — and it is not pending either. */
+    .dot.source { background: var(--border-strong); color: var(--bg-base); }
+    .dot.done { background: var(--accent-strong); color: var(--text-inverse); }
+    .dot.running { background: var(--bg-base); border: 2px solid var(--accent); }
+    .dot.running::after {
+      content: '';
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent);
+      animation: node-pulse 1.4s ease-in-out infinite;
+    }
+    .dot.queued { background: var(--bg-base); border: 2px dashed var(--text-muted); }
+    .dot.failed { background: var(--error); color: var(--bg-base); }
+    /* A file — an export, a facsimile, a copy somebody opened. Small and hollow:
+       it is on the tree because it belongs to the book, not because it is a
+       moment in its history. */
+    .dot.file {
+      width: 8px; height: 8px;
+      left: 9px; top: 18px;
+      background: var(--border-strong);
+    }
+    @keyframes node-pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.75); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+
+    /*
+      ── THE CARD ──────────────────────────────────────────────────────────────
+    */
+    .card {
+      flex: 1; min-width: 0;
+      position: relative;
+      padding: 8px 10px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: default;
+      user-select: none;
+      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .card:hover { border-color: var(--border-strong); }
+
+    .row1 { display: flex; align-items: center; gap: 8px; }
+    .kind {
+      flex: 0 0 auto;
+      width: 26px; height: 26px;
+      display: grid; place-items: center;
+      border-radius: var(--radius-md);
+      background: var(--bg-input);
+      color: var(--text-secondary);
+    }
+    .kind svg { width: 14px; height: 14px; }
+    /*
+      TWO TINTS AND ONE MEANING EACH. The accent is this app's word for its own
+      work — reading, editing, translating, exporting. Amber is the HOST's:
+      narration, enhancement, assembly. A person looking at a branch can see
+      where the words stop and the audio starts without reading a title.
+    */
+    .kind.text-op { background: var(--accent-faint); color: var(--accent); }
+    .kind.audio-op { background: var(--audio-soft); color: var(--audio); }
+
+    .words { flex: 1; min-width: 0; }
+    .name {
+      font-size: 12.5px; font-weight: 600; line-height: 1.35;
+      color: var(--text-primary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .from {
+      font-size: 10.5px; line-height: 1.35;
+      color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .from b { color: var(--text-secondary); font-weight: 500; }
+
+    .state {
+      flex: 0 0 auto;
+      max-width: 88px;
+      color: var(--text-tertiary); font-size: 10.5px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /*
+      THE ROOT IS THE BOOK. Its title is the book's name — the one thing this
+      panel must never stop saying, since the group header that used to say it is
+      gone — and what KIND of thing it started as goes on the lineage line
+      underneath, where every other card keeps its second fact.
+    */
+    .card.root .name { font-size: 13px; }
+
+    /*
+      THE STANDING CARD, in the same accent and the same faint wash the inspector
+      marks its current category with. One word for "this is the one the book is
+      on" across the whole app; inventing a second is how a palette stops meaning
+      anything. It is NOT the same statement the ring below makes — see the
+      class docblock on standing against selected.
+    */
+    /* Quiet, and a word rather than a dot: a dot would need a legend, and this
+       appears beside rows whose own names are identical -- the one place in this
+       list where a reader is actively asking which is which. */
+    .shelf {
+      flex: 0 0 auto;
+      align-self: center;
+      padding: 1px 7px;
+      border-radius: 99px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .card.standing { background: var(--accent-faint); }
+    .card.standing .name { color: var(--accent); }
+
+    /*
+      THE SELECTED CARD — the one whose "from here" footer is open. A ring rather
+      than a wash, so a card that is both standing and selected (the ordinary
+      case, since clicking stands) reads as one thing with two marks rather than
+      as two competing highlights.
+    */
+    .card.selected {
+      border-color: var(--accent-strong);
+      box-shadow: 0 0 0 1px var(--accent-strong), 0 6px 18px -8px rgba(6, 182, 212, 0.5);
+    }
+
+    /*
+      A STALE STEP IS DIMMED AND STILL CLICKABLE, which was the ruling. Its
+      payload is a true record of what was made — a translation of a bank that
+      has since been re-read still holds the blocks it translated — so it opens,
+      it renders, and only its currency is in question. The reason is on hover,
+      where an explanation nobody needs stays out of the way of a list.
+    */
+    .card.stale .name, .card.stale .from, .card.stale .state, .card.stale .kind { opacity: 0.55; }
+
+    /*
+      PLAIN TEXT HAS NO TAB IN THIS APP, and the card says so by not lighting up.
+      It is still listed, because it is a thing the user made and a thing they can
+      reveal or delete; what it does not do is pretend a click will open it.
+    */
+    .card.inert { opacity: 0.65; }
+    .card.inert:hover { border-color: var(--border-default); }
+
+    /*
+      AN EXPORT NOBODY HAS OPENED — dimmed and nothing else. The list's language
+      for "on screen" is the accent bar (.on), so the honest opposite is simply
+      not having it.
+    */
+    .card.available .name { color: var(--text-secondary); }
+    .card.available:hover .name { color: var(--text-primary); }
+
+    /*
+      THE DOCUMENT YOU ARE LOOKING AT — one mark, where there were two.
+
+      "On screen somewhere" and "in the FOCUSED column" were two different facts
+      and got two different strengths, because the rail, the menu and Ctrl+S all
+      acted on the focused column and which it was had to be visible without
+      being loud. One viewer makes them one fact, so the card takes the STRONGER
+      of the two marks: the accent bar and the faint wash, which is what a person
+      was reading anyway when they wanted to know where a chord would land.
+    */
+    .card.on {
+      background: var(--accent-faint);
+      box-shadow: inset 2px 0 0 0 var(--accent);
+    }
+    .card.on .name { color: var(--text-primary); }
+
+    /*
+      The insertion point: a line along the edge the dragged row would land on.
+      Spelled out against the on-screen selector as well, because it sets the
+      same property at a higher specificity — without this the line would be
+      invisible on exactly the cards a person is most likely to be dragging.
+    */
+    .card.before,
+    .card.on.before { box-shadow: inset 0 2px 0 0 var(--accent); }
+
+    /*
+      ── THE THREE HOST STATES ─────────────────────────────────────────────────
+
+      PENDING is drawn as an outline of a card rather than a card: no fill, a
+      dashed border, an untinted mark. *"a queued step should look grayed out"* —
+      and the reason it is an outline and not a grey fill is that the fill is what
+      the eye reads as "this is a thing"; a plan is the shape of one.
+    */
+    .card.pending { background: transparent; border-style: dashed; }
+    .card.pending .name { color: var(--text-secondary); font-weight: 500; }
+    .card.pending .kind { background: transparent; border: 1px dashed var(--border-default); color: var(--text-tertiary); }
+    .card.running { border-color: var(--accent-soft); }
+    /*
+      A RUNNING PROMISE IS RED AND LOCKED — Owen, 2026-09-08: *"maybe we turn it
+      red while its running and lock it. the user has to remove it from the queue
+      itself."* The card is the one thing on this tree that cannot be deleted
+      where it stands (`refuseRunningGhost`, electron/ipc.ts, which is the
+      sentence the press gets), so it says so before the press rather than after:
+      the warm border and the tinted mark are the difference between a plan that
+      can still be called off here and one that has started and belongs to the
+      queue. NOT the failure red (`.card.failed` fills with `--error-soft`) —
+      this is a run in good health, and a card that looked failed while it was
+      working would be the worse lie of the two.
+    */
+    .card.locked {
+      border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+      border-style: solid;
+    }
+    .card.locked .kind {
+      border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+      color: var(--warn);
+    }
+    .card.locked .state { color: var(--warn); }
+    .card.failed { border-color: rgba(248, 113, 113, 0.45); background: var(--error-soft); }
+    .card.failed .state { color: var(--error); }
+
+    .progress { margin-top: 8px; }
+    .pbar { height: 4px; border-radius: 2px; background: var(--bg-input); overflow: hidden; }
+    .pbar i {
+      display: block; height: 100%; border-radius: 2px;
+      background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+    }
+    .pmeta {
+      display: flex; justify-content: space-between; gap: 8px;
+      margin-top: 4px;
+      font-size: 10.5px; color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+    }
+    .pmeta .doing {
+      color: var(--text-secondary);
+      min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .why { margin-top: 6px; font-size: 10.5px; line-height: 1.4; color: var(--error); }
+
+    .meter { display: inline-flex; align-items: flex-end; gap: 2px; height: 9px; margin-left: 6px; }
+    .meter i {
+      width: 2px; border-radius: 1px;
+      background: var(--audio);
+      animation: node-eq 1s ease-in-out infinite;
+    }
+    .meter i:nth-child(1) { height: 55%; animation-delay: -0.2s; }
+    .meter i:nth-child(2) { height: 100%; animation-delay: -0.55s; }
+    .meter i:nth-child(3) { height: 40%; animation-delay: -0.8s; }
+    @keyframes node-eq {
+      0%, 100% { transform: scaleY(0.4); }
+      50% { transform: scaleY(1); }
+    }
+
+    /*
+      SOMEBODY WHO HAS ASKED FOR LESS MOTION GETS THE SAME TWO FACTS, HELD STILL.
+      The pulsing core stays a core and the meter stays three bars — both of them
+      say "running" by existing at all, and the animation was only ever the
+      emphasis. Nothing else in this panel moves.
+    */
+    @media (prefers-reduced-motion: reduce) {
+      .dot.running::after { animation: none; opacity: 1; transform: none; }
+      .meter i { animation: none; }
+    }
+
+    /*
+      ── "FROM HERE" ───────────────────────────────────────────────────────────
+
+      Bled to the card's own edges (the negative margins) so it reads as a
+      drawer inside the card rather than as a second card in a stack, and washed
+      in the accent so that it is legible as an offer rather than as more of the
+      description above it.
+    */
+    .ops {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+      margin: 8px -10px -8px;
+      padding: 7px 10px 8px;
+      background: var(--accent-faint);
+      border-top: 1px solid var(--accent-soft);
+      border-radius: 0 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px);
+    }
+    .ops .lbl {
+      font-family: var(--font-mono);
+      font-size: 8.5px; font-weight: 600;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--accent);
+      margin-right: 2px;
+    }
+    .op {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 8px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    .op svg { width: 12px; height: 12px; }
+    /*
+      THE RECOVERY PAIR wears the failure's own colour rather than the accent
+      wash the offer footer has: it is not an offer, it is what is left when the
+      work did not happen, and a red-bordered card whose only controls looked
+      like invitations would be two moods in one place.
+    */
+    .ops.recovery { background: var(--error-soft); border-top-color: rgba(248, 113, 113, 0.35); }
+    .ops.recovery .op:hover { color: var(--error); border-color: rgba(248, 113, 113, 0.55); }
+    .op:hover { color: var(--text-primary); border-color: var(--accent-strong); }
+    /*
+      A DEFERRED TILE WEARS THE PENDING CARD'S OWN GRAMMAR — dashed and faint, the
+      same two marks that say "this has not happened" everywhere else in this panel.
+      It keeps its cursor and its hover, because it IS pressable: what the dim says
+      is that the work it starts will start later, not that the button is dead.
+    */
+    .op.deferred { border-style: dashed; opacity: 0.6; }
+    .op.deferred:hover { opacity: 1; }
+    /* Already made here (HostOperationState.done): still pressable — it opens what
+       was made — and drawn settled rather than as work waiting to be ordered. */
+    .op.done { border-style: solid; opacity: 0.75; }
+    .op.done:hover { opacity: 1; }
+    /* The host's acts wear the host's colour, here as well as on the cards they
+       make, so pressing one is visibly ordering a different KIND of work. */
+    .op.audio-op { color: var(--audio); border-color: rgba(240, 168, 96, 0.35); }
+    .op.audio-op:hover { color: var(--audio-bright); border-color: var(--audio); }
+
+    /*
+      THE ARROW, AND THE SPACE WHERE AN ARROW WOULD BE. Both are 10px wide so the
+      marks to their right line up whether or not a node has anything under it.
+    */
+    .twist {
+      flex: 0 0 auto;
+      width: 10px; height: 14px;
+      padding: 0; margin: 0;
+      background: transparent; border: none;
+      color: var(--text-tertiary); font-size: 9px; line-height: 14px;
+      text-align: left;
+    }
+    button.twist { cursor: pointer; }
+    button.twist:hover { color: var(--text-primary); }
+
+    .mark-dot { flex: 0 0 auto; color: var(--accent); font-size: 9px; line-height: 1; }
+    .pencil { flex: 0 0 auto; color: var(--warn); font-size: 11px; line-height: 1; }
+
+    /*
+      Hidden until the card is under the pointer or the button is keyboard-focused.
+      Visibility rather than display, so the card's width does not change when it
+      appears and the title does not re-truncate under the mouse.
+    */
+    .x {
+      flex: 0 0 auto;
+      visibility: hidden;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 10px;
+      padding: 2px 3px; border-radius: var(--radius-sm);
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .card:hover .x, .x:focus-visible { visibility: visible; }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /* The button that ends something wears the error colour on hover, and only
+       on hover — the same rule Home's delete follows. A permanently red control
+       on every row of a document list reads as a warning about the documents. */
+    .x.danger:hover { background: var(--error-soft); color: var(--error); }
+
+    /* Above the panel and below the dialogs; the scrim is what makes the next
+       click dismiss it exactly once. */
+    .menu-scrim { position: fixed; inset: 0; z-index: 1000; }
+    .menu {
+      position: fixed;
+      z-index: 1001;
+      min-width: 180px;
+      padding: 4px;
+      display: flex; flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      box-shadow: 0 10px 20px -6px rgba(0, 0, 0, 0.35);
+    }
+    .menu button {
+      display: block; width: 100%;
+      padding: 6px 10px;
+      background: transparent; border: none; border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-size: 12px; text-align: left; cursor: pointer;
+    }
+    .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .menu button.danger:hover { background: var(--error-soft); color: var(--error); }
+  

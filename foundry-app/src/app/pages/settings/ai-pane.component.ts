@@ -69,6 +69,7 @@
  * group headed "Cloud — costs credits" — and only the card is gone. Restoring
  * it is one import.
  */
+import { capabilityRowFor } from '@owen/foundry-core/shared/types';
 import {
   ChangeDetectionStrategy, Component, computed, signal,
 } from '@angular/core';
@@ -85,12 +86,12 @@ import {
   type CapabilityRecord,
   type SettingsDocument,
   type SettingsPatch,
-} from '@shared/engine-settings';
-import type { CruciblePullProgress } from '@shared/model-wire';
-import type { CrucibleServerView } from '@shared/slots';
-import { MODEL_CLASSES, type ModelClass } from '@shared/types';
-import { actWords, shortfallWords, sizeWords } from '../../core/crucible-words';
-import { api } from '../../core/foundry';
+} from '@owen/foundry-core/shared/engine-settings';
+import type { CruciblePullProgress } from '@owen/foundry-core/shared/model-wire';
+import type { CrucibleServerView } from '@owen/foundry-core/shared/slots';
+import { MODEL_CLASSES, type ModelClass } from '@owen/foundry-core/shared/types';
+import { actWords, HOSTED_ONLY_ACTS, shortfallWords, sizeWords } from '../../core/crucible-words';
+import { api, hosted } from '../../core/foundry';
 import {
   EngineUpstreamsComponent,
   type UpstreamApply,
@@ -190,250 +191,8 @@ interface JobRow {
   selector: 'app-ai-pane',
   imports: [EngineUpstreamsComponent, FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @if (servers().length === 0) {
-      <!--
-        NOTHING TO DRAW A WINDOW ONTO. Owen, 2026-09-15: "if theres no connected
-        crucible server then tiles should be disabled" — and a page of dead
-        pickers over an absent engine is the same failure one screen along. It
-        says what is missing and where the door is, and offers nothing to press
-        that cannot work.
-      -->
-      <div class="empty">
-        <p class="lead">No Crucible server is connected.</p>
-        <p class="detail">
-          Every model Foundry uses runs on a Crucible server, so there is nothing to configure
-          until one is added. Add one under Crucible Servers and this page fills itself in from
-          whatever that machine turns out to hold.
-        </p>
-      </div>
-    } @else {
-      <!--
-        WHICH ENGINE — chips rather than a select, and drawn even when there is
-        only one. The old cards hid the control at one server on the grounds
-        that a select with one option teaches somebody there is something to
-        choose. A chip is not a select: it is a label that happens to be
-        pressable, so at one server it reads as a statement of which machine
-        this page is about, which is worth saying on a page that writes to it.
-      -->
-      <div class="chips servers">
-        @for (server of servers(); track server.name) {
-          <button class="chip server" type="button"
-                  [class.chosen]="server.name === chosen()"
-                  [disabled]="working()"
-                  (click)="choose(server.name)">
-            <span class="chip-name">{{ server.name }}</span>
-            <span class="chip-detail">{{ serverWords(server) }}</span>
-          </button>
-        }
-      </div>
-
-      @if (problem(); as why) { <p class="warn">{{ why }}</p> }
-
-      @if (doc(); as settings) {
-        @for (group of grouped(); track group.title) {
-          <h3 class="group">{{ group.title }}</h3>
-          @for (row of group.rows; track row.cls) {
-            <div class="job">
-              <div class="job-head">
-                <div class="job-who">
-                  <span class="job-title">{{ row.title }}</span>
-                  <span class="job-sub">{{ row.subtitle }}</span>
-                </div>
-                <div class="chips">
-                  @for (chip of row.chips; track chip.key) {
-                    <!--
-                      DIMMED IS NOT DISABLED, and the distinction is the whole
-                      honesty of this control. The fit figure excludes the KV
-                      cache so it is not a verdict; somebody may be about to
-                      free memory; and the ENGINE refuses by name
-                      (local_model_does_not_fit, 409). Greying says "expect this
-                      to be refused", never "you may not ask".
-                    -->
-                    <button class="chip" type="button"
-                            [class.chosen]="chip.chosen"
-                            [class.dim]="chip.dim"
-                            [disabled]="working() || (chip.action === 'fetch' && pulling())"
-                            [title]="chip.detail"
-                            (click)="press(row, chip)">
-                      <span class="tick">{{ chip.chosen ? '✓' : '' }}</span>
-                      <span class="chip-name">{{ chip.label }}</span>
-                    </button>
-                  }
-                </div>
-              </div>
-
-              @if (row.pull; as running) { <p class="small">{{ running }}</p> }
-              @if (row.shortfall; as short) { <p class="small warnish">{{ short }}</p> }
-              @if (row.reason; as why) { <p class="small">{{ why }}</p> }
-
-              @if (row.routable) {
-                <!--
-                  THE POINTER DOWNWARDS, on every routable row. It is the line
-                  BookForge's rows carry and it is doing real work: the accounts
-                  are the answer for a card nothing fits, and a person staring at
-                  a row of models that will not run needs to be told there is
-                  another kind of answer further down the page.
-                -->
-                <p class="small">
-                  To run this on Anthropic, OpenAI or an Ollama server instead, set one up under
-                  Accounts below and press Test.
-                </p>
-                @if (custom() === row.cls) {
-                  <div class="typed">
-                    <input class="wide" type="text" [name]="'c-' + row.cls"
-                           placeholder="anthropic/claude-sonnet-5"
-                           [ngModel]="typed()"
-                           (ngModelChange)="typed.set($event)">
-                    <button class="primary" type="button"
-                            [disabled]="working() || typed().trim().length === 0"
-                            (click)="routeTyped(row.cls)">Use it</button>
-                  </div>
-                }
-              }
-            </div>
-          }
-        }
-
-        <!-- ── What the engine is, under everything it was asked to do ──── -->
-        <p class="small">{{ backendLine(settings) }}</p>
-        <!--
-          ── THE WSL OFFER IS GONE FROM THIS PAGE (crucible PHASE19 section 0) ──
-
-          It offered to set WSL acceleration up beside the backend line, which is
-          the button Owen ruled out on 2026-09-18: the Linux engine arrives by
-          itself now, as the last step of the install, and nobody is asked. What
-          replaces it is a READOUT of the outcome, and it lives on the Servers
-          card (Settings, Servers) rather than here -- this page is about which
-          model answers which class, and a restart prompt among the routes would
-          be a second screen about the machine underneath them.
-
-          (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
-        -->
-
-        <p class="small">
-          The sizes above are the engine's estimate of the WEIGHTS only — they do not include the
-          KV cache, which a long context on a large model adds several gigabytes to. A model can
-          be offered as fitting and still run out of memory when it loads.
-        </p>
-
-        <!-- ── Accounts: the engine's own, configured once ──────────────── -->
-        <h3 class="group">Accounts</h3>
-        <p class="detail">
-          An account the engine forwards to. The key is stored in the engine, never here — the
-          box below is empty every time this page is drawn, and the engine will only ever say
-          the last four characters of what it holds. BookForge, pointed at the same server,
-          shows the same accounts.
-        </p>
-        <app-engine-upstreams
-          [serverName]="chosen()"
-          [doc]="settings"
-          [busy]="working()"
-          (apply)="applyUpstream($event)" />
-
-      } @else if (problem() === null) {
-        <p class="small">Asking the engine…</p>
-      }
-    }
-  `,
-  styles: [`
-    :host { display: block; }
-
-    .empty { display: flex; flex-direction: column; gap: 6px; }
-    .lead { margin: 0; font-size: 13px; font-weight: 600; }
-
-    .detail { margin: 0 0 4px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
-    .small { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
-    .warn { margin: 0; font-size: 12px; color: var(--error); }
-    .warnish { color: var(--warn); }
-    .bad { color: var(--error); }
-    .mono { font-family: var(--font-mono); }
-
-    .group {
-      margin: 18px 0 8px;
-      font-family: var(--font-display); font-size: 13px; font-weight: 600;
-      display: flex; align-items: baseline; gap: 10px;
-    }
-    .group:first-of-type { margin-top: 10px; }
-
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-    .chips.servers { margin-bottom: 12px; }
-
-    /*
-      SELECTED IS A TICK AND A BORDER, AND THE TEXT NEVER CHANGES COLOUR.
-      bookforge-02 shipped this control with the accent used as a background
-      behind the ordinary text colour and Owen could not read it. A chosen chip
-      here keeps its own foreground and gains a mark plus an edge, which cannot
-      go wrong against any theme because nothing about the contrast moves.
-    */
-    /*
-      ONE LINE, NOT TWO. The tick used to sit ABOVE the name in a column, which
-      made a chosen chip taller than its neighbours and the whole row ragged —
-      Owen: "the buttons are oddly shaped". The tick is inline now and its slot
-      is reserved whether or not it is filled, so pressing one does not resize
-      it or shift the chips beside it.
-    */
-    .chip {
-      display: inline-flex; align-items: baseline; gap: 6px;
-      font: inherit; font-size: 12px; text-align: left; white-space: nowrap;
-      background: var(--bg-sunken); color: var(--text-primary);
-      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-      padding: 4px 10px; cursor: pointer;
-    }
-    .chip:hover:not(:disabled) { border-color: var(--text-tertiary); }
-    .chip.chosen { border-color: var(--accent); }
-    .chip:disabled { cursor: default; opacity: 0.6; }
-    /* Expect the engine to refuse this, or it is not downloaded yet. Pressable. */
-    .chip.dim .chip-name { color: var(--text-tertiary); }
-    .chip-detail { font-size: 10px; color: var(--text-tertiary); }
-    /* A fixed slot, so a chip is the same size ticked and unticked. */
-    .tick { font-size: 10px; color: var(--accent); width: 8px; flex: none; }
-    /* The server chips DO stack, because their second line is a fact about the
-       machine rather than a mark on a choice. */
-    .chip.server { flex-direction: column; align-items: flex-start; gap: 1px; min-width: 140px; }
-
-    .job {
-      background: var(--bg-raised);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      padding: 10px 12px;
-      margin-bottom: 8px;
-      display: flex; flex-direction: column; gap: 6px;
-    }
-    .job-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-    .job-who { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 160px; }
-    .job-title { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-    .job-sub { font-size: 11px; color: var(--text-tertiary); }
-
-    .typed { display: flex; align-items: center; gap: 6px; }
-    .wide { flex: 1; min-width: 0; }
-    input {
-      font: inherit; font-size: 12px;
-      background: var(--bg-input); color: var(--text-primary);
-      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-      padding: 4px 6px;
-    }
-
-    .primary {
-      display: inline-flex; align-items: center; justify-content: center;
-      align-self: flex-start;
-      height: 26px; padding: 0 12px; border: none;
-      border-radius: var(--radius-sm);
-      background: var(--accent); color: var(--text-inverse);
-      font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer;
-    }
-    .primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    button.ghost {
-      font: inherit; font-size: 11px;
-      background: transparent; color: var(--text-secondary);
-      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-      padding: 2px 8px; cursor: pointer;
-    }
-    button.ghost:hover:not(:disabled) { background: var(--bg-sunken); }
-    button.ghost:disabled { opacity: 0.5; cursor: default; }
-  `],
+  templateUrl: './ai-pane.component.html',
+  styleUrl: './ai-pane.component.scss',
 })
 export class AiPaneComponent {
   protected readonly servers = signal<CrucibleServerView[]>([]);
@@ -497,10 +256,13 @@ export class AiPaneComponent {
     const settings = this.doc();
     if (settings === null) return [];
     const cap = this.capability();
+    // A standalone window draws no row for an act it does not offer
+    // (`HOSTED_ONLY_ACTS`): a model picker for Clean text is a door to it.
+    const offered = (cls: ModelClass): boolean => hosted() || !HOSTED_ONLY_ACTS.has(cls);
     return MODEL_CLASSES
-      .filter((cls) => classes.includes(cls))
+      .filter((cls) => classes.includes(cls) && offered(cls))
       .map((cls) => {
-        const klass = cap?.classes.find((row) => row.capability === cls) ?? null;
+        const klass = (cap === null || cap === undefined ? undefined : capabilityRowFor(cap.classes, cls)) ?? null;
         /*
          * THE REASON IS DRAWN ONLY WHEN IT IS NEWS. On a class that runs, the
          * server's sentence restates the row above it ("X fits: it needs 20.1

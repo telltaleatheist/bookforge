@@ -1,0 +1,108 @@
+
+    <button
+      type="button"
+      class="page"
+      [class.struck]="struck()"
+      [class.chosen]="chosen()"
+      (click)="choose.emit($event)"
+      (dblclick)="open.emit()"
+      (keydown)="activate($event)"
+    >
+      <!--
+        `loading="lazy"` because a shoot is dozens of these and the grid scrolls:
+        the thumbnails below the fold are fetched when they are approached rather
+        than all at once on open. They are 640 px JPEGs served through the
+        capture door, so each is a small read (docs/CAPTURE.md, thumbnails).
+      -->
+      <!--
+        THE CARD DRAWS THE PHOTOGRAPH THE WAY ROUND IT WILL PRINT.
+
+        Owen turned twenty-five spreads upright, went back to the table, and the
+        table looked exactly as it had -- so he reported that the turn had not
+        stuck. It had: every one of them is turned in the file. The only sign
+        the grid gave was the dot below, four hundredths of a card wide, and
+        that dot had been added the LAST time he reported this same class.
+
+        THE PICTURE AND ITS OUTLINE TURN AS ONE ELEMENT, which is not a
+        convenience. The crop is drawn in the thumbnail's own fraction space, so
+        anything that turns one without the other puts a sideways crop over a
+        correctly turned photograph -- worse than no indicator, because it reads
+        as a bug in the crop rather than as an absence.
+      -->
+      <span class="shot" [class.registered]="projecting()" [style.aspect-ratio]="box()">
+        @if (projecting()) {
+          <!--
+            THE REGISTERED PAGE. The <img> is still here and still lazy — it is
+            the TEXTURE, so it has to load, and `loading="lazy"` is what keeps a
+            table of fifty from fetching fifty thumbnails at once. It is
+            invisible rather than absent, because `display: none` would be a
+            picture the browser never decodes and a canvas that never gets
+            anything to draw.
+          -->
+          <img
+            #source
+            class="source"
+            [src]="thumb()"
+            [alt]="label()"
+            loading="lazy"
+            draggable="false"
+            (load)="arrived.set(arrived() + 1)"
+          />
+          <canvas #face class="face" [class.drawn]="drawn()"></canvas>
+        } @else {
+          <span
+            class="spun"
+            [style.width]="turned().width"
+            [style.height]="turned().height"
+            [style.transform]="turned().spin"
+          >
+            <img [src]="thumb()" [alt]="label()" loading="lazy" draggable="false" />
+            <svg class="crop" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+              <polygon [attr.points]="outline()" />
+              <!--
+                The corner that becomes the minted page's top-left. KEPT even now
+                that the card turns, because it is what makes the turn checkable:
+                after the draw this dot sits at the card's top-left on every card,
+                which is what it MEANS. Anywhere else and the two halves have
+                disagreed.
+              -->
+              <circle [attr.cx]="corner()[0]" [attr.cy]="corner()[1]" r="0.04" />
+            </svg>
+          </span>
+        }
+        <!--
+          THE COMPLETE MARK, AND WHY IT IS NOW A DOT WHERE WAVE 24 ARGUED FOR A
+          WORD.
+
+          The word was right while the rail said "2 by hand" and the card had to
+          echo the rail's exact phrase to be findable at all — the objection to a
+          pip was that a pip needs a legend. Wave 25 supplies the legend and
+          makes it a control: the rail's population counts are PRESSABLE, and
+          pressing "3 complete" lights exactly these cards on the table. A mark
+          you can ask the surface to find for you does not need a caption on
+          every card.
+
+          ONE DOT, ONE MEANING, which is the whole reason the mark changed hands
+          from `byHand` to `isComplete`: the book stops moving this photograph.
+          Not "you dragged this one" and not "this one is frozen" — every global
+          act skips it, Finish never does, and release puts it back in the flow.
+
+          Top-LEFT, because the strike control owns the top-right corner. Over
+          the picture rather than in the label line, and that is a reversal too:
+          at fifty registered pages the label line is where you read a number,
+          and the corner is where the eye sweeps.
+        -->
+        @if (complete()) {
+          <span class="mark" title="Complete — the book leaves this one alone. Right-click to release it.">✓</span>
+        }
+      </span>
+      <span class="label">{{ label() }}</span>
+    </button>
+
+    <button
+      type="button"
+      class="strike"
+      [title]="struck() ? 'Put this page back in the book' : 'Leave this page out of the book'"
+      (click)="strike.emit()"
+    >{{ struck() ? '↺' : '⌦' }}</button>
+  

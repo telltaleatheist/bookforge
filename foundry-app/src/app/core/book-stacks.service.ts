@@ -1,9 +1,9 @@
 import { Injectable, inject, signal } from '@angular/core';
 
-import { unwritten } from '@shared/ops';
-import type { AskStackInput } from '@shared/ask-history';
-import type { BookOp, PendingStack, Replayed } from '@shared/ops';
-import { fold } from '@shared/original';
+import { unwritten } from '@owen/foundry-core/shared/ops';
+import type { AskStackInput } from '@owen/foundry-core/shared/ask-history';
+import type { BookOp, PendingStack, Replayed } from '@owen/foundry-core/shared/ops';
+import { fold } from '@owen/foundry-core/shared/original';
 
 import { LedgerService } from './ledger.service';
 import { NoticeService } from './notice.service';

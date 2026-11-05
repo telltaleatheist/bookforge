@@ -1,0 +1,155 @@
+
+    <div class="scrim" (click)="ui.closeHostOp()"></div>
+
+    <div class="card" role="dialog" aria-modal="true" [attr.aria-label]="title()">
+      <header class="head">
+        <span class="title">{{ title() }}</span>
+        <button class="x" (click)="ui.closeHostOp()" title="Close">✕</button>
+      </header>
+
+      @if (fields(); as form) {
+        <div class="body">
+          <!--
+            THE HOST'S FIELDS, IN THE HOST'S OWN ORDER. Nothing is sorted,
+            grouped or renamed: the order a form is declared in is the order the
+            person who wrote it meant it to be read in, and an app that does not
+            understand the questions is in no position to rearrange them. The
+            rows below are that same sequence with line breaks in it — see
+            `rows`, which decides only where a line ends.
+          -->
+          @for (row of rows(); track row.key) {
+            <div class="row" [class.two]="row.two">
+              @for (field of row.fields; track field.key) {
+                <div class="cell">
+                  @if (field.kind === 'toggle') {
+                    <!--
+                      A YES-OR-NO READS ON ONE LINE, IN THE HOST'S OWN WORDS. The
+                      other three kinds are a question with an answer box under
+                      it, so their words go above as a small caps label; a
+                      checkbox IS its answer, and the sentence beside it is what
+                      the box means when it is ticked. Put above instead, the
+                      label became a heading over an unlabelled square — and
+                      because a checkbox will not fill a row, the row split.
+
+                      The `<label>` spans the line so the words are the hit
+                      target, which is the size a person actually aims at; the
+                      box keeps its natural 16px against the global rule that
+                      stretches every input to the full width.
+                    -->
+                    <label class="check">
+                      <input
+                        type="checkbox"
+                        [ngModel]="answers()[field.key]"
+                        (ngModelChange)="answer(field.key, $event)"
+                        [name]="field.key">
+                      <span>{{ field.label }}</span>
+                    </label>
+                  } @else {
+                    <label class="field">
+                      <span class="label">{{ field.label }}</span>
+
+                      @switch (field.kind) {
+                        @case ('select') {
+                          <select
+                            [ngModel]="answers()[field.key]"
+                            (ngModelChange)="answer(field.key, $event)"
+                            [name]="field.key"
+                          >
+                            @for (choice of field.options ?? []; track choice.value) {
+                              <option [value]="choice.value">{{ choice.label }}</option>
+                            }
+                          </select>
+                        }
+                        @case ('number') {
+                          <input
+                            type="number"
+                            [attr.min]="field.min"
+                            [attr.max]="field.max"
+                            [ngModel]="answers()[field.key]"
+                            (ngModelChange)="answerNumber(field.key, $event)"
+                            [name]="field.key">
+                        }
+                        @case ('text') {
+                          <input
+                            type="text"
+                            [ngModel]="answers()[field.key]"
+                            (ngModelChange)="answer(field.key, $event)"
+                            [name]="field.key">
+                        }
+                      }
+                    </label>
+                  }
+                  <!--
+                    THE HOST'S OWN SENTENCE UNDER THE CONTROL, where this app
+                    puts its own explanations. Drawn only when there is one — an
+                    empty note is a row of space saying nothing — and inside the
+                    cell, so that on a two-up row it stays under the half it
+                    belongs to rather than under both.
+
+                    OUTSIDE THE `<label>`, WHICH MATTERS FOR THE TOGGLE: a note
+                    the label swallowed would flip the checkbox when somebody
+                    clicked into the sentence explaining it.
+                  -->
+                  @if (field.help) {
+                    <p class="note">{{ field.help }}</p>
+                  }
+                </div>
+              }
+            </div>
+          }
+
+          @if (form.length === 0) {
+            <!--
+              A FORM WITH NO FIELDS IS A HOST BUG, and this says so rather than
+              drawing an empty card with a Start button. An operation with
+              nothing to ask should declare no `form` at all and be invoked on
+              the click (see `HostOperationOffer.form`) — so an empty array is
+              the one shape that cannot have been meant.
+            -->
+            <p class="note">
+              This act has no settings to choose. Starting it runs it as it is.
+            </p>
+          }
+
+          @if (problem(); as reason) {
+            <p class="problem">{{ reason }}</p>
+          }
+        </div>
+
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeHostOp()">Cancel</button>
+          <!--
+            THE HOST'S OWN WORD FOR WHAT PRESSING DOES, where it declared one.
+            Owen: *"the button shouldnt say start if it isnt going to start, it
+            should say add to queue"* — and only the host knows which of those
+            its invoke will do (`HostOperationOffer.submitLabel`).
+
+            THE DEFAULT IS STILL "START", AND STILL NOT THE ACT'S OWN NAME.
+            "Narrate" is already the title of this card and the label of the
+            button that opened it; a third copy on the primary would be the same
+            word three times, and the fallback has to be true of an operation
+            this app has never heard of.
+          -->
+          <button class="primary" [disabled]="busy()" (click)="start()">
+            {{ busy() ? working() : submit() }}
+          </button>
+        </footer>
+      } @else {
+        <!--
+          THE OPERATION IS NOT REGISTERED. Reachable only if a host re-registered
+          between the button being drawn and this card opening, which is a state
+          worth naming rather than a blank card: the id is the whole of what this
+          window has, and an id nothing answers to cannot be run.
+        -->
+        <div class="body empty">
+          <p>
+            The app Foundry is running inside no longer offers this act. It may have been
+            restarted since this window drew the button — close this and try again.
+          </p>
+        </div>
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeHostOp()">Close</button>
+        </footer>
+      }
+    </div>
+  

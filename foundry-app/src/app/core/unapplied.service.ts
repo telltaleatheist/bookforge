@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 
-import { fold } from '@shared/original';
-import type { UnappliedAct } from '@shared/types';
+import { fold } from '@owen/foundry-core/shared/original';
+import type { UnappliedAct } from '@owen/foundry-core/shared/types';
 
 import { BookStacksService } from './book-stacks.service';
 import { OpenDocumentsService, type Tab } from './documents.service';

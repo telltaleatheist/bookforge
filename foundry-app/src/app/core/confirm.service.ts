@@ -1,6 +1,6 @@
 import { Injectable, effect, inject, signal } from '@angular/core';
 
-import type { AppQuestion, DeletionPrompt, QuestionAnswer } from '@shared/types';
+import type { AppQuestion, DeletionPrompt, QuestionAnswer } from '@owen/foundry-core/shared/types';
 
 import { api } from './foundry';
 import { UiService } from './ui.service';

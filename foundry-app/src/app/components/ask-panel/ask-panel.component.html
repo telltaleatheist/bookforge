@@ -1,0 +1,215 @@
+
+    <div class="top">
+      <button class="head" (click)="open.set(!open())">
+        <span class="twist">{{ open() ? '▾' : '▸' }}</span>
+        <span class="label">Ask</span>
+      </button>
+      @if (open() && tab() !== null) {
+        <button class="plus" title="New conversation — the ones before it are kept" [disabled]="busy()" (click)="newConversation()">+</button>
+      }
+    </div>
+    @if (open()) {
+      <div class="body">
+        <!--
+          THE BOOK'S CONVERSATIONS (Owen, 2026-11-02), newest first, folded to
+          the one in front. A row goes back to it; its runs are drawn below and
+          the next message continues it. Delete asks first, on the app's own
+          card, and never undoes what its runs put on the book.
+        -->
+        @if (conversationList().length > 0) {
+          <div class="convs">
+            <button class="conv-head" (click)="listOpen.set(!listOpen())">
+              <span class="twist">{{ listOpen() ? '▾' : '▸' }}</span>
+              <span class="conv-now">{{ continuing()?.title ?? 'New conversation' }}</span>
+              <span class="conv-count">{{ conversationList().length }}</span>
+            </button>
+            @if (listOpen()) {
+              <ul class="conv-list">
+                @for (one of conversationList(); track one.id) {
+                  <li class="conv" [class.on]="one.id === continuing()?.id">
+                    <button class="conv-pick" [disabled]="busy()" (click)="openConversation(one.id)" [title]="one.title">
+                      <span class="conv-title">{{ one.title }}</span>
+                      <span class="conv-meta">{{ dated(one.updatedAt) }} · {{ one.turns }} {{ one.turns === 1 ? 'question' : 'questions' }}</span>
+                    </button>
+                    <button class="conv-x" title="Delete this conversation" [disabled]="busy()" (click)="deleteConversation(one.id, one.title)">✕</button>
+                  </li>
+                }
+              </ul>
+            }
+          </div>
+        }
+        <div class="thread" #thread>
+          @if (exchanges().length === 0 && live() === null) {
+            <p class="empty">
+              Ask for something to be done to this book ("strike the study questions") or ask
+              about it. The model works through the book and marks what to remove or change;
+              everything it does waits with your other edits, and you can review it after.
+            </p>
+          }
+          @for (one of exchanges(); track one.session.id) {
+            <div class="msg person" [title]="one.session.request">{{ one.session.chain?.step ?? one.session.preset ?? one.session.request }}</div>
+            <button class="working" (click)="toggle(one.session.id)">
+              <span class="twist">{{ unfolded().has(one.session.id) ? '▾' : '▸' }}</span>
+              Worked for {{ duration(one.session.seconds) }} · {{ one.session.rounds }} {{ one.session.rounds === 1 ? 'round' : 'rounds' }}
+            </button>
+            @if (unfolded().has(one.session.id)) {
+              <ol class="steps">
+                @for (step of one.steps; track $index) {
+                  <li>{{ step.status }}@if (step.says; as said) {<span class="says">{{ said }}</span>}</li>
+                } @empty {
+                  <li class="quiet">The rounds of an earlier run are not kept, only what it came to.</li>
+                }
+              </ol>
+            }
+            <div class="msg model">
+              @if (one.session.summary.length > 0) {
+                {{ one.session.summary }}
+              } @else {
+                <span class="quiet">The model wrote no reply.</span>
+              }
+            </div>
+            @if (one.session.highlights; as places) {
+              @if (places.length > 0) {
+                <p class="places-head">Found {{ places.length }} {{ places.length === 1 ? 'place' : 'places' }}</p>
+                <ul class="places">
+                  @for (place of places; track $index) {
+                    <li>
+                      <button class="place" [class.on]="isPointed(one.session.id, $index)" (click)="point(one.session.id, $index, place)">
+                        <span class="place-note">{{ place.note }}</span>
+                        <span class="place-quote">{{ place.quote === null ? place.id : '“' + place.quote + '”' }}</span>
+                      </button>
+                    </li>
+                  }
+                </ul>
+              }
+            }
+            @if (one.closing; as closing) {
+              <p class="note">{{ closing }}</p>
+            }
+            @if (one.latest && one.session.hitLimit === true && live() === null) {
+              <button class="ghost review" [disabled]="busy() || !modelReady() || server() === null" title="Send a follow-up that carries on from the model's note" (click)="keepGoing()">Keep going</button>
+            }
+            @if (one.session.items.length > 0) {
+              <button class="ghost review" (click)="review(one.session.id)">
+                Review changes ({{ one.session.items.length }})
+              </button>
+            }
+          }
+          @if (chainOver(); as over) {
+            <p class="note">{{ over }}</p>
+          }
+          @if (live(); as now) {
+            @if (chainSaid(); as step) {
+              <p class="chain">{{ step }}</p>
+            }
+            <div class="msg person" [title]="now.request">{{ now.chain?.step ?? now.preset ?? now.request }}</div>
+            @if (now.phase === 'running' || now.phase === 'landing') {
+              <button class="working active" (click)="liveFolded.set(!liveFolded())">
+                <span class="spinner" aria-hidden="true"></span>
+                Working… {{ now.round > 0 ? 'round ' + now.round + ' of ' + now.maxRounds : '' }}
+                @if (now.tally.length > 0) {
+                  · {{ now.tally }}
+                }
+              </button>
+              @if (liveOpen()) {
+                <ol class="steps">
+                  @for (step of now.steps; track $index) {
+                    <li>{{ step.status }}@if (step.says; as said) {<span class="says">{{ said }}</span>}</li>
+                  }
+                  <li class="quiet">{{ now.status }}</li>
+                </ol>
+              } @else {
+                <p class="status">{{ now.status }}</p>
+              }
+            } @else {
+              <button class="working" (click)="liveFolded.set(!liveFolded())">
+                <span class="twist">{{ liveOpen() ? '▾' : '▸' }}</span>
+                {{ now.phase === 'cancelled' ? 'Stopped' : 'Stopped with a problem' }} after {{ elapsed(now) }}
+              </button>
+              @if (liveOpen()) {
+                <ol class="steps">
+                  @for (step of now.steps; track $index) {
+                    <li>{{ step.status }}@if (step.says; as said) {<span class="says">{{ said }}</span>}</li>
+                  } @empty {
+                    <li class="quiet">It stopped before its first round.</li>
+                  }
+                </ol>
+              }
+              <div class="msg model" [class.problem]="now.phase === 'failed'">{{ now.message }}</div>
+            }
+          }
+        </div>
+
+        <div class="composer">
+          @if (continuing(); as on) {
+            <p class="continuing" [title]="on.title">
+              Continuing “{{ clipped(on.title) }}” · {{ on.turns }} {{ on.turns === 1 ? 'question' : 'questions' }} so far
+            </p>
+          }
+          <!--
+            THE PRESETS, ONE PRESS EACH (Owen, 2026-11-02) — the kept list, in its
+            order and with its names, so an edit in the Presets modal is an edit
+            here. A press runs that one at once; the modal is where several run
+            in order and where they are edited. The question is on hover.
+          -->
+          @if (presetRow().length > 0) {
+            <div class="presets">
+              @for (preset of presetRow(); track preset.id) {
+                <button class="preset" [disabled]="!canRunPreset()" [title]="preset.question" (click)="runPreset(preset)">{{ preset.label }}</button>
+              }
+            </div>
+          }
+          <textarea
+            #box
+            class="request"
+            rows="2"
+            placeholder="Ask about this book, or say what to change…"
+            aria-label="Your message"
+            [value]="draft()"
+            [disabled]="busy()"
+            (input)="draft.set(box.value)"
+            (keydown.enter)="enter($event)"
+          ></textarea>
+          <!--
+            SERVER, THEN MODEL, EACH THE PANEL'S WIDTH (Owen, 2026-11-02). They
+            used to share the button row, which squeezed the model dropdown to
+            nothing and wrapped its billing line a word a line over the buttons.
+            The model list is the chosen server's own (app-job-model, reading
+            main's one list); changing the server reads it again.
+          -->
+          <div class="pick">
+            <div class="field">
+              <label class="label" for="ask-server">Server</label>
+              @if (servers().length > 0) {
+                <select id="ask-server" [disabled]="busy()" [value]="server() ?? ''" (change)="choose($any($event.target).value)">
+                  @for (one of servers(); track one) {
+                    <option [value]="one" [selected]="one === server()">{{ one }}</option>
+                  }
+                </select>
+              } @else {
+                <select id="ask-server" disabled [title]="serversProblem() ?? 'Add one under Settings › Crucible Servers.'"><option>{{ serversProblem() === null ? 'No Crucible server' : 'Servers could not be read' }}</option></select>
+              }
+            </div>
+            <app-job-model
+              kind="ask"
+              [topRanked]="true"
+              [server]="pinned()"
+              [value]="model()"
+              (valueChange)="model.set($event)"
+              (ready)="modelReady.set($event)"
+              (listedOn)="server.set($event)"
+            />
+          </div>
+          <div class="bar">
+            <span class="spacer"></span>
+            @if (busy()) {
+              <button class="ghost" [disabled]="live()?.runId === null || live()?.phase === 'landing'" (click)="stop()">Stop</button>
+            } @else {
+              <button class="ghost" title="Run kept questions on this book, one after another" (click)="ui.openAskPresets()">Presets</button>
+              <button class="primary" [disabled]="!canSend()" (click)="send()">Send</button>
+            }
+          </div>
+        </div>
+      </div>
+    }
+  

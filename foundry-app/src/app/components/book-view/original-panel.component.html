@@ -1,0 +1,53 @@
+
+    <div class="strip">
+      <button
+        type="button"
+        class="step"
+        aria-label="Previous page"
+        [disabled]="shown() <= 1"
+        (click)="flip(-1)"
+      >‹</button>
+      <span class="foot">{{ caption() }}</span>
+      @if (browse() !== null) {
+        <button
+          type="button"
+          class="step"
+          aria-label="Back to the reading position"
+          title="Back to the reading position"
+          (click)="home()"
+        >⌖</button>
+      }
+      <button
+        type="button"
+        class="step"
+        aria-label="Next page"
+        [disabled]="count() !== null && shown() >= count()!"
+        (click)="flip(1)"
+      >›</button>
+    </div>
+    @if (sentence(); as said) {
+      <p class="says">{{ said }}</p>
+    } @else if (row() !== null) {
+      <!--
+        THE PAGE SCROLLS INSIDE ITS OWN BOX. The panel is a column of the
+        pane's height and a printed page at reading width is taller than it,
+        so the scroller is where the rest of the page lives — a plain
+        overflow, so the mouse wheel over the panel does what a wheel over a
+        tall thing does everywhere, with no listener written for it.
+      -->
+      <div class="frames" #frames>
+        <div class="frame" [style.aspect-ratio]="ratio()">
+          <canvas #sheet></canvas>
+          @if (mark(); as box) {
+            <div
+              class="box"
+              [style.left.%]="box.left"
+              [style.top.%]="box.top"
+              [style.width.%]="box.width"
+              [style.height.%]="box.height"
+            ></div>
+          }
+        </div>
+      </div>
+    }
+  

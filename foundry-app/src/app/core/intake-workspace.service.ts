@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import { isPhotographName } from '@shared/capture';
+import { isPhotographName } from '@owen/foundry-core/shared/capture';
 
 import { api, hosted } from './foundry';
 import { CaptureService } from './capture.service';

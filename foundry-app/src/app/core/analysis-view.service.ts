@@ -1,7 +1,7 @@
 import { Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
 
-import type { AnalysisReading } from '@shared/types';
-import type { ReplayedRow } from '@shared/ops';
+import type { AnalysisReading } from '@owen/foundry-core/shared/types';
+import type { ReplayedRow } from '@owen/foundry-core/shared/ops';
 
 import { BookStacksService } from './book-stacks.service';
 import { StageService } from './stage.service';
@@ -14,7 +14,7 @@ import {
   type AnalysisHit,
   type AnalysisLegendEntry,
   type LitRange,
-} from './analysis';
+} from '@owen/foundry-core/shared/analysis';
 
 /**
  * THE ANALYSIS BEING LOOKED AT — the report, and the one placement both surfaces

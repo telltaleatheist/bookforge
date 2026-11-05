@@ -1,6 +1,6 @@
 import { DestroyRef, Injectable, effect, inject, signal, untracked } from '@angular/core';
 
-import type { Job, JobProgress } from '@shared/types';
+import type { Job, JobProgress } from '@owen/foundry-core/shared/types';
 
 import { QueueService } from './queue.service';
 

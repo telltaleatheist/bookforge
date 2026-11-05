@@ -1,0 +1,526 @@
+
+    @if (!hosted()) {
+    <div class="page">
+      <!--
+        THE HEAD, and the two controls that act on the whole queue. Start is
+        last and on the right because it is the primary action, and it carries
+        the COUNT for the same reason it does everywhere else: the number is the
+        thing being committed to.
+      -->
+      <header class="page-head">
+        <h1>Queue</h1>
+        <span class="head-note">{{ view.busySlots() }} of {{ view.slots().length }} slots in use</span>
+        <button class="btn" [disabled]="queue.finished().length === 0"
+                (click)="queue.clearFinished()">Clear finished</button>
+        <button class="primary" [disabled]="queue.held().length === 0"
+                [attr.aria-label]="view.startLabel()"
+                [title]="view.startLabel()"
+                (click)="queue.start()">
+          Start@if (queue.held().length > 0) { <span>&nbsp;{{ queue.held().length }}</span> }
+        </button>
+      </header>
+
+      <!-- ── Needs you ───────────────────────────────────────────────────── -->
+      <!--
+        FAILURES FIRST, because they are the only rows on this page that are
+        waiting on the PERSON rather than on the machine. There is no per-row
+        control: main will not remove a settled job (its own `remove` takes
+        held and queued only), so the one honest gesture is Clear finished in
+        the head, and inventing a button that main refuses would be worse than
+        having none.
+      -->
+      @if (queue.failed().length > 0) {
+        <section class="band">
+          <header class="band-head bad">
+            <h2>Needs you · {{ queue.failed().length }}</h2>
+          </header>
+          @for (job of queue.failed(); track job.id) {
+            <article class="card failed">
+              <div class="card-head">
+                <div class="min">
+                  <h3>{{ view.label(job) }}</h3>
+                  <p class="sub">{{ kindLine(job) }}</p>
+                </div>
+              </div>
+              <!--
+                THE ENGINE'S OWN SENTENCE, not this app's paraphrase of it, and
+                the whole of its stderr on the hover. The line is chosen by the
+                same rule the dropdown uses — the argument lives with the rule,
+                in QueueViewService.failureLine.
+              -->
+              <p class="error" [title]="job.error ?? ''">{{ view.failureLine(job.error) }}</p>
+            </article>
+          }
+        </section>
+      }
+
+      <!-- ── On the bench ────────────────────────────────────────────────── -->
+      <section class="band">
+        <header class="band-head">
+          <h2>On the bench</h2>
+          <!--
+            THE LIVE QUEUE'S OWN MACHINE — Owen's *"on a global queue level,
+            theres a crucible server option, too"*, and it lives HERE because
+            this band is the machines: a dial about where work goes, drawn over
+            the cards it sends work to.
+
+            IT RESTRICTS RATHER THAN REDIRECTS, which is why the label says
+            "runs on" and not "prefers". A row that named a different machine
+            waits for this dial to widen (Owen: *"the queue doesnt process it
+            until the global queue unlocks the 3090 ti"*) — it is not quietly
+            sent somewhere else.
+          -->
+          @if (dialOptions().length > 1) {
+            <label class="dial">
+              <span class="dial-label">Live queue runs on</span>
+              <select [ngModel]="dial()" (ngModelChange)="setDial($event)">
+                @for (option of dialOptions(); track option) {
+                  <option [value]="option">{{ dialLabel(option) }}</option>
+                }
+              </select>
+            </label>
+          }
+          <span class="note">{{ view.busySlots() }} of {{ view.slots().length }} slots in use</span>
+        </header>
+
+        <!--
+          ONE CARD PER SLOT, ALWAYS ALL OF THEM — a machine per GPU card since
+          Package G, and the two CPU slots after them. The GPU cards are the
+          widest because the card is the resource a person schedules their day
+          around, and because that is the lane that costs hours, which is the
+          same fact the chip's progress hairline follows.
+
+          A slot is drawn free when it is free, in words. That is the fact a
+          board exists to show at a glance: "the card is idle while these two
+          compile" is exactly as interesting as knowing what is running — and
+          with two machines it is the fact that makes the second one worth
+          having, because an idle Mac beside a busy desk is a job that could be
+          moving.
+        -->
+        <!--
+          WHY THERE ARE NO GPU CARDS, in the two sentences that answer it.
+
+          THE FIRST is the hosted one: a window whose host offers no registry, or
+          whose host could not be asked. The person cannot fix that from here, so
+          the sentence is the host's own (SlotRefusal, shared/slots.ts) and says
+          which half of the queue is affected.
+
+          THE SECOND is the ordinary empty state, and since Wave 66 it IS
+          ordinary rather than an edge: there is no local GPU slot any more, so a
+          machine with no engine registered has no GPU side to its board at all.
+          A board that simply drew nothing would leave somebody looking for the
+          card they used to have; this says where it went and what to press.
+        -->
+        @if (view.slotRefusal(); as refusal) {
+          <p class="slot-refusal">{{ refusal.sentence }}</p>
+        } @else if (view.noEngineNote(); as note) {
+          <p class="slot-refusal">{{ note }}</p>
+        }
+        <div class="slots" [class.wide]="view.slots().length > 3">
+          @for (slot of view.slots(); track slot.key) {
+            <article class="slot-card"
+                     [class.gpu]="slot.lane === 'gpu'"
+                     [class.leaving]="slot.leaving"
+                     [class.idle]="slot.occupant === null">
+              <div class="slot-strip" [title]="slot.hint">
+                <span class="slot-name">{{ slot.title }}</span>
+                <!--
+                  WHOSE MACHINE THIS IS, beside its name. The name is whatever
+                  somebody typed into the Servers card; this says what it is,
+                  which is the difference between "the GPU in this box" and "a
+                  Crucible in another room" (docs/SLOTS.md §3).
+
+                  THE "on <slot>" TAG IS GONE, and the ruling took it. It survived
+                  on the CPU card, where it answered "which machine did this run
+                  go to" for a row whose lane is a count rather than a name — and
+                  the answer was always "This computer", the local slot's name,
+                  written onto every unplaced run. There is no local slot now
+                  (Owen: *"cpu slots are always local. we dont outsource simple
+                  cpu work to crucible"*), such a run records no machine at all,
+                  and a CPU card that said "on" nothing would be furniture. The
+                  CPU lane is this computer, always, and the band says so.
+                -->
+                @if (whose(slot); as kind) { <span class="on">{{ kind }}</span> }
+                <!--
+                  WHO IS ACTUALLY ANSWERING, on the card that is a server sending
+                  the work on. The head names the machine; this names the service
+                  its settings route this class to, which is the half a person is
+                  owed because it is the half that is billed (Job.ranVia, and
+                  crucible docs/PHASE15-HOST.md section 3.3).
+                -->
+                @if (slot.occupant?.ranVia; as via) { <span class="on">via {{ via }}</span> }
+                @if (slot.occupant; as busy) {
+                  <button class="btn stop" (click)="queue.cancel(busy.id)"
+                          [attr.aria-label]="'Cancel ' + view.label(busy)"
+                          title="Stop this run and free the slot. A cancelled job is recorded as cancelled; the rest of the queue carries on.">
+                    ✕ Cancel this run
+                  </button>
+                }
+              </div>
+
+              @if (slot.occupant; as busy) {
+                <div class="slot-book">
+                  <div class="min grow">
+                    <div class="act">{{ view.label(busy) }}</div>
+                    <div class="sub" [title]="view.paths(busy)">{{ kindLine(busy) }}</div>
+                  </div>
+                  @if (view.determinate(busy)) {
+                    <!--
+                      HOW FAR, AND HOW MUCH LONGER, stacked in the same corner
+                      because they are two readings of one thing and the page has
+                      the width to give them both. The percentage is the
+                      measurement and stays the big number; the estimate sits
+                      under it small and grey, which is the weighting the two
+                      deserve — one is what has happened, the other is a forecast
+                      of what has not.
+
+                      It is drawn only when there is one. `QueueEtaService`
+                      says nothing until it has watched the count move, starts a
+                      new clock at every phase boundary, and takes the estimate
+                      away when the count stops — so this corner is a percentage
+                      alone for the first stretch of every run, and again the
+                      moment a run goes quiet.
+
+                      ON A RUN WITH TWO STAGES BOTH NUMBERS ARE THE STAGE THAT
+                      IS COUNTING, which is the one thing they could honestly be:
+                      ranking sentences and verifying passages are unrelated
+                      quantities (the estimate drops its clock at the boundary
+                      for exactly that reason), so a combined percentage would be
+                      an average of two things that do not average. The corner
+                      therefore agrees with whichever of the two bars below is
+                      moving.
+                    -->
+                    <div class="right">
+                      <div class="pct">{{ view.percent(busy) }}%</div>
+                      @if (view.timeLeft(busy); as left) {
+                        <div class="eta">{{ left }}</div>
+                      }
+                    </div>
+                  }
+                </div>
+
+                @if (view.stageBars(busy); as stages) {
+                  <!--
+                    TWO STAGES, TWO BARS — Owen's ruling, and the argument is in
+                    `stageBars`: an analysis ranks every sentence and then
+                    verifies the survivors, and one bar over both filled to the
+                    end and started again, which reads as a fault rather than as
+                    a second pass. The stage that has not started is drawn dimmed
+                    rather than left out, because an empty bar with a name on it
+                    is how the run says there is another pass coming.
+
+                    The count rides the stage it belongs to and the sentence
+                    below is dropped for these rows: it would say the same words
+                    the moving stage's own line already says.
+                  -->
+                  <div class="stages">
+                    @for (stage of stages; track stage.key) {
+                      <div class="stage" [class.idle]="!stage.active && !stage.done">
+                        <span class="stage-name">{{ stage.label }}</span>
+                        <div class="bar"><i [style.width.%]="stage.percent"></i></div>
+                        @if (stage.count) {
+                          <span class="stage-count">{{ stage.count }}</span>
+                        }
+                      </div>
+                    }
+                  </div>
+                } @else {
+                  <div class="bar" [class.indeterminate]="!view.determinate(busy)">
+                    <i [style.width.%]="view.percent(busy)"></i>
+                  </div>
+
+                  <!--
+                    THE FULL PROGRESS SENTENCE, both halves of it. The count says
+                    how far; the line under it is whatever the engine last said
+                    that was NOT a count — the retry, the fallback, the block it is
+                    chewing on. A count alone cannot tell working from wedged, and
+                    a person who believes a job is hung kills it: an hour of GPU
+                    thrown away by the progress display. The page has room, so it
+                    spends more of the sentence than the dropdown can.
+                  -->
+                  <p class="step">{{ view.stepLine(busy) }}</p>
+                }
+                @if (view.stepDetail(busy, 400); as detail) {
+                  <p class="note-line" [title]="busy.note ?? busy.message ?? ''">{{ detail }}</p>
+                }
+                <!--
+                  WHAT THIS RUN HAS SPENT, on a card whose slot is a cloud
+                  provider — and on any other card whose server happened to
+                  count, because the fact is the fact. It appears at the END of
+                  the run rather than climbing, since the engine prints its one
+                  usage line last (usageLine, src/translate/transport.ts); a
+                  card that showed a token counter ticking would be inventing a
+                  measurement the engine does not publish. No price: Foundry
+                  does not price it (docs/VLLM.md §2a).
+                -->
+                @if (view.spent(busy); as spent) {
+                  <p class="spent" [title]="view.spentDetail(busy)">{{ spent }}</p>
+                }
+              } @else {
+                <div class="free">
+                  <div class="free-head">Free</div>
+                  <div class="free-sub">Nothing running in this slot</div>
+                </div>
+              }
+
+              <!--
+                WHAT IS WAITING FOR THIS MACHINE, in dispatch's own sentence —
+                "busy: bookforge, tts qwen3.5-9b 62% done", "someone is
+                narrating on X", "X is unreachable". It is drawn under an
+                occupied card as well as a free one, because the two say
+                different things and both are worth knowing: over a free card it
+                is why nothing has started, and over a busy one it is what is
+                next in line for it.
+
+                It is never this app's paraphrase. The sentence is the one main
+                already put on the row (electron/crucible-dispatch.ts renders
+                every refusal by name), and the row itself is down in Up next.
+              -->
+              @if (slot.waiting) {
+                <p class="waiting" [title]="slot.waiting">{{ slot.waiting }}</p>
+              }
+            </article>
+          }
+        </div>
+      </section>
+
+      <!-- ── The sections that are not lanes ─────────────────────────────── -->
+      <!--
+        AN INSTALL HOLDS THE WHOLE MACHINE AND A MINT HOLDS NOTHING, so neither
+        belongs in a slot and neither has an occupancy to report. They draw only
+        when they have rows — the shared table is what decides which is which
+        (shared/queue-board.ts), the same table the scheduler rations by. Their
+        heads are named for what they DO to the board, because that is the fact
+        a person reading a queue needs: one of them is why nothing else is
+        moving, the other is why something is moving that no slot accounts for.
+      -->
+      @for (section of view.board(); track section.key) {
+        @if (section.head === 'The whole machine' || section.head === 'Beside the lanes') {
+          <section class="band">
+            <header class="band-head">
+              <h2>{{ section.head }}</h2>
+              <span class="note" [title]="section.hint">what this does to the board</span>
+            </header>
+            <article class="card">
+              @for (job of section.rows; track job.id) {
+                <div class="qrow">
+                  <div class="min grow">
+                    <div class="qname" [title]="view.paths(job)">{{ view.label(job) }}</div>
+                    <div class="sub">{{ stateLine(job) }}</div>
+                  </div>
+                  <div class="qright">
+                    @if (picking(job)) {
+                      <select class="slotpick" [ngModel]="job.waitFor ?? anySlot"
+                              [name]="'slot' + job.id"
+                              [title]="'Which machine this runs on. A job never moves once it has started.'"
+                              (ngModelChange)="sendTo(job, $event)">
+                        @for (group of pickerGroups(job); track group.key) {
+                          @if (group.label === null) {
+                            @for (option of group.options; track option) {
+                              <option [value]="option">{{ optionLabel(option) }}</option>
+                            }
+                          } @else {
+                            <optgroup [label]="group.label">
+                              @for (option of group.options; track option) {
+                                <option [value]="option">{{ optionLabel(option) }}</option>
+                              }
+                            </optgroup>
+                          }
+                        }
+                      </select>
+                    }
+                    @if (job.state === 'held' || job.state === 'queued') {
+                      <button class="btn stop" (click)="queue.remove(job.id)"
+                              [attr.aria-label]="'Remove ' + view.label(job) + ' from the queue'"
+                              title="Take this out of the queue. It never ran, so there is nothing to undo.">✕ Remove</button>
+                    } @else if (job.state === 'running') {
+                      <button class="btn stop" (click)="queue.cancel(job.id)"
+                              [attr.aria-label]="'Cancel ' + view.label(job)"
+                              title="Stop this run. A cancelled job is recorded as cancelled.">✕ Cancel</button>
+                    }
+                  </div>
+                </div>
+              }
+            </article>
+          </section>
+        }
+      }
+
+      <!-- ── Up next ─────────────────────────────────────────────────────── -->
+      @if (view.waitingBooks().length > 0) {
+        <section class="band">
+          <header class="band-head">
+            <h2>Up next</h2>
+            <span class="note">{{ waitingCount() }} waiting across {{ view.waitingBooks().length }} books</span>
+          </header>
+
+          <!--
+            GROUPED BY THE BOOK, because that is how a batch is assembled: a
+            person adds work a book at a time, and a flat list of eleven rows is
+            eleven readings of the same four titles. The rows inside a group are
+            in QUEUE ORDER, which is the order Start will release them in — the
+            grouping is presentation and never a re-sort.
+          -->
+          @for (group of view.waitingBooks(); track group.key) {
+            <article class="card">
+              <div class="card-head">
+                <div class="min">
+                  <h3>{{ group.title }}</h3>
+                  <p class="sub">{{ groupLine(group.rows) }}</p>
+                </div>
+              </div>
+
+              <div class="chain">
+                @for (job of group.rows; track job.id) {
+                  <div class="cstep">
+                    <span class="spine" aria-hidden="true"></span>
+                    <span class="sdot" [class.held]="job.state === 'held'" aria-hidden="true"></span>
+                    <span class="cname">{{ kindLine(job) }}</span>
+                    <span class="cmid">
+                      <!--
+                        WHY THIS ROW IS STILL, and the difference is the user.
+                        "Waiting for Start" is a job behind a button nobody has
+                        pressed; "Queued" is a job behind a machine that is busy
+                        and will reach it. A page that called both "Queued" would
+                        leave somebody watching a still list wondering whether
+                        the app had hung — which is the whole reason the held
+                        state exists.
+                      -->
+                      @if (job.state === 'held') {
+                        <span class="why hold"><span class="dot" aria-hidden="true"></span>Waiting for Start</span>
+                      } @else {
+                        <span class="why"><span class="dot" aria-hidden="true"></span>{{ job.message ?? 'Queued' }}</span>
+                      }
+                    </span>
+                    <span class="cright">
+                      <!--
+                        WHERE THIS ONE GOES — drawn only when there is more than
+                        one slot to choose from, which is the friend with a GPU
+                        and no Crucible never seeing it at all (docs/SLOTS.md §1).
+                        Not drawn on a running row either: a job is atomic on one
+                        slot, and a control that cannot do anything is worse than
+                        no control.
+                      -->
+                      @if (picking(job)) {
+                        <select class="slotpick xs" [ngModel]="job.waitFor ?? anySlot"
+                                [name]="'cslot' + job.id"
+                                [title]="'Which machine this runs on. A job never moves once it has started.'"
+                                (ngModelChange)="sendTo(job, $event)">
+                          @for (group of pickerGroups(job); track group.key) {
+                            @if (group.label === null) {
+                              @for (option of group.options; track option) {
+                                <option [value]="option">{{ optionLabel(option) }}</option>
+                              }
+                            } @else {
+                              <optgroup [label]="group.label">
+                                @for (option of group.options; track option) {
+                                  <option [value]="option">{{ optionLabel(option) }}</option>
+                                }
+                              </optgroup>
+                            }
+                          }
+                        </select>
+                      }
+                      <!--
+                        REMOVE, and never "Cancel": these rows have not run. Same
+                        ✕ as the dropdown's, same call, and the same verb — a
+                        "Cancelled" row for a batch item somebody changed their
+                        mind about is residue in exactly the list they are using
+                        to see what they have assembled.
+                      -->
+                      <button class="btn stop xs" (click)="queue.remove(job.id)"
+                              [attr.aria-label]="'Remove ' + view.label(job) + ' from the queue'"
+                              title="Take this step out of the queue. It never ran, so nothing is undone.">✕ Remove</button>
+                    </span>
+                  </div>
+                }
+              </div>
+            </article>
+          }
+        </section>
+      }
+
+      @if (queue.jobs().length === 0) {
+        <section class="band">
+          <div class="empty">
+            <h2>Nothing is queued</h2>
+            <!-- An export is deliberately not named here: it runs on the spot,
+                 under the Export dialog, and never waits in this list (2026-08-23). -->
+            <p>
+              Read the pages of a book, or translate one, and the work is scheduled
+              here — one run on the graphics card at a time, two on the processor.
+            </p>
+          </div>
+        </section>
+      }
+
+      <!-- ── Finished ────────────────────────────────────────────────────── -->
+      <!--
+        HISTORY, DRAWN AS HISTORY. A table rather than more cards, because a
+        finished job is a fact you scan a column of, and rows that kept the live
+        rows' shape would keep asking to be read as live. The controls that
+        survive are the ones a finished job actually has: the PDF opens, an
+        export offers itself, and everything shows itself where it landed.
+      -->
+      @if (queue.finished().length > 0) {
+        <section class="band">
+          <header class="band-head">
+            <h2>Finished · {{ queue.finished().length }}</h2>
+            <span class="note">{{ queue.failed().length }} failed</span>
+          </header>
+
+          <table class="ftable">
+            <thead>
+              <tr>
+                <th>Book</th><th>Act</th><th>Outcome</th><th></th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (job of queue.finished(); track job.id) {
+                <tr>
+                  <td class="b" [title]="view.paths(job)">{{ view.label(job) }}</td>
+                  <td>{{ kindLine(job) }}</td>
+                  <!--
+                    THE OUTCOME, AND UNDER IT WHAT THE RUN SPENT where a server
+                    counted — which is a cloud provider and nothing else today
+                    (Ollama reports no usage, so the engine prints none and the
+                    row has none). In the same cell rather than a sixth column,
+                    because a column that is empty on every local run would be
+                    four fifths of a table of blanks. No price on it: Foundry
+                    does not price it (docs/VLLM.md §2a).
+                  -->
+                  <td class="outcome">
+                    {{ outcome(job) }}
+                    @if (view.spent(job); as spent) {
+                      <span class="spent" [title]="view.spentDetail(job)">{{ spent }}</span>
+                    }
+                  </td>
+                  <td>
+                    <span class="pill"
+                          [class.ok]="job.state === 'done'"
+                          [class.bad]="job.state === 'failed'">{{ job.state }}</span>
+                  </td>
+                  <td class="acts">
+                    @if (job.state === 'done') {
+                      @if (job.kind === 'pdf') {
+                        <button class="btn xs" (click)="view.open(job)"
+                                title="Open this PDF in a tab">Open</button>
+                      }
+                      @if (view.filed(job)) {
+                        <button class="btn xs" (click)="view.saveCopy(job)"
+                                title="Save a copy of this export">Save…</button>
+                      }
+                      <button class="btn xs" (click)="view.reveal(job)"
+                              [attr.aria-label]="'Show ' + view.label(job) + ' in the file manager'"
+                              title="Show it in the file manager">↗</button>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </section>
+      }
+    </div>
+    }
+  

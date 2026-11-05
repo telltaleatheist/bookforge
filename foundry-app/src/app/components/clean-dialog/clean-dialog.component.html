@@ -1,0 +1,211 @@
+
+    <div class="scrim" (click)="ui.closeClean()"></div>
+
+    <div class="card" role="dialog" aria-modal="true" aria-label="Clean this book's text">
+      <header class="head">
+        <span class="title">Clean text</span>
+        <button class="x" (click)="ui.closeClean()" title="Close">✕</button>
+      </header>
+
+      @if (source(); as input) {
+        <div class="body">
+        <!--
+          THE RUN REPLACES THE FORM. Leaving the fields up while the job moves
+          would offer edits that change nothing — the request was composed and
+          handed over at the press.
+        -->
+        @if (watched(); as job) {
+          <app-run-progress [job]="job" [verb]="job.kind === 'clean-triage' ? 'Checking which paragraphs need it' : 'Cleaning'" />
+        } @else {
+          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. Two choices now, and
+               both are real. The model is a dropdown on Owen's ruling of
+               2026-10-25, verbatim: "put the option the user can pick in a
+               dropdown on the modal that configures the job"; "cloud accounts
+               should be listed as an option in every model dropdown if its
+               available, just like 27b or 9b or anything else. however,
+               bookforge should use the last used model as the default. the
+               ideal is that the user wont need to use cloud models because
+               theyre expensive. but it should be there if their system is too
+               weak to run a local model"; "keep it at 27b as the max right
+               now". job-model.component.ts carries the rest. The quick check
+               below is NOT in this dropdown: it stays on its own 9B (Owen:
+               "should stay on 9b for now"). -->
+          <app-run-target act="clean" [(server)]="server" (ready)="canRun.set($event)" />
+          <app-job-model kind="clean" [server]="server()" [(value)]="chosenModel"
+                         (ready)="modelReady.set($event)" />
+          <!--
+            The book's own name, as the tab, the pane and the window are already
+            calling it. The path is on the tooltip for the one person who wants
+            it — see the Translate dialog, where this field is argued in full.
+          -->
+          <!--
+            A FACT, NOT A FIELD. It was a read-only input, which is a control
+            that looks pressable and is not — Owen, 2026-09-17: *"if an option is
+            impossible to click … dont present it as an option. it isnt an
+            option. present it as information or dont present it at all."* The
+            book is not choosable here; the dialog was opened on it.
+          -->
+          <p class="fact" [title]="input">{{ name() }}</p>
+
+          <!--
+            THE HOST'S SECTION (`HostPassOffer`, shared/host-ops.ts). Every word in
+            it is the host's: this app draws the choices as lit boxes, lights the
+            one chosen, and carries its id on the request. Nothing when the host has
+            nothing to say, which is every standalone window.
+          -->
+          @if (offer(); as o) {
+            <div class="field">
+              <span class="label">{{ o.label }}</span>
+              <div class="host-pass">
+                <p class="host-note">{{ o.note }}
+                  @if (o.review; as r) {
+                    <button type="button" class="link" (click)="openReview(r.operationId, r.nodeId)">{{ r.label }}</button>
+                  }
+                </p>
+                <div class="host-choices" role="group" [attr.aria-label]="o.label">
+                  @for (choice of o.choices; track choice.id) {
+                    <button type="button" class="pick" [class.on]="chosen() === choice.id"
+                            [attr.aria-pressed]="chosen() === choice.id" (click)="chosen.set(choice.id)">
+                      <span class="pick-head">
+                        <span class="pick-name">{{ choice.label }}</span>
+                        @if (choice.recommended) { <span class="pick-tag">Recommended</span> }
+                      </span>
+                      <span class="pick-said">{{ choice.detail }}</span>
+                    </button>
+                  }
+                </div>
+              </div>
+            </div>
+          }
+
+          <!--
+            THE QUICK CHECK IN FRONT OF THE CLEANUP. A box only when an engine
+            can do it; a sentence when none can, because a box that cannot be
+            honoured is not an option (Owen, 2026-09-17: "present it as
+            information or dont present it at all"). Nothing while the answer is
+            still being asked for -- a box that appears and then turns into a
+            sentence would be the screen changing its mind in front of somebody.
+          -->
+          @switch (triageOffer()) {
+            @case ('yes') {
+              <label class="check">
+                <input type="checkbox" [checked]="triaged()" (change)="setTriaged($event)" />
+                <span>Skip paragraphs that need no cleaning <em>(a quick check runs first)</em></span>
+              </label>
+            }
+            @case ('no') {
+              <p class="note">
+                Every paragraph goes to the cleaner. The quick check that skips the ones needing
+                nothing is not something {{ triageWhere() }} can do yet.
+              </p>
+            }
+          }
+
+          <!--
+            WHAT THE CLEANUP TAKES OUT (Owen, 2026-09-29): the box is ticked every
+            time the card opens, and the field is his own words for anything else
+            this book prints that nobody reads aloud. Both are said to the model,
+            in the check and in the cleanup; it decides each span.
+          -->
+          <label class="check">
+            <input type="checkbox" [checked]="removeReferences()" (change)="setRemoveReferences($event)" />
+            <span>Remove references a narrator would not read <em>(“see table 3”, “fig. 1-1”, “[image]” — the model decides each one)</em></span>
+          </label>
+          <div class="field">
+            <label class="label" for="clean-remove-also">Also remove <em>(optional — describe it in your own words)</em></label>
+            <textarea id="clean-remove-also" class="text" rows="3"
+                      placeholder="e.g. the running header with the book's title, or &quot;Photo courtesy of …&quot; credits"
+                      [ngModel]="removeAlso()" (ngModelChange)="removeAlso.set($event)"></textarea>
+          </div>
+
+          <p class="note">
+            The cleanup lands as a NEW step, in the same language, and the book you are cleaning
+            is never written to. Everything you make after it carries the cleaned text —
+            translate or simplify afterwards and the cleanup no longer applies, because those
+            write fresh sentences of their own.
+          </p>
+
+          @if (problem(); as reason) {
+            <p class="problem">{{ reason }}</p>
+          }
+
+          <!-- WHAT THE PRESS PUTS IN THE QUEUE, in order, when the host has rows of its own to add ahead. -->
+          @if (offer() !== null) {
+            <div class="field">
+              <span class="label">Adds to the queue</span>
+              <ol class="queued">
+                @for (row of queuedRows(); track $index) { <li>{{ row }}</li> }
+              </ol>
+            </div>
+          }
+        }
+        </div>
+
+        <!--
+          THREE PRESSES, THEN TWO — the shape OCR took first, and the reason is
+          the same: Start enqueues exactly as Add does and then releases that ONE
+          row, so the modal and the queue are the same run seen from two places.
+          Send to background is this card letting go, not a handover.
+        -->
+        @if (watched(); as job) {
+          <footer class="foot">
+            <p class="beside">{{ job.state === 'done' ? 'Done.' : 'It keeps going if you close this.' }}</p>
+            <button class="ghost" (click)="cancelRun(job.id)">Stop</button>
+            <button class="primary" (click)="background()">Send to background</button>
+          </footer>
+        } @else {
+          <footer class="foot">
+            <button class="ghost" (click)="ui.closeClean()">Cancel</button>
+            <!--
+              -- HOSTED IT IS "ADD TO QUEUE", AND ONLY THAT --------------------
+
+              I built this backwards. The first version hid Add to queue hosted
+              and kept Start, reasoning that the host queue holds nothing so the
+              two buttons would mean the same thing. Owen, meeting it in
+              BookForge: *"for the vendored copy, it should have an add to queue
+              button and it should add it to the bookforge queue. we dont do long
+              actions from the modal in bookforge, like the cleanup stage,
+              translate, simplify, narrate, and ocr."*
+
+              So it is not a question of which label is accurate. It is a HOUSE
+              RULE about where long work belongs: in BookForge it belongs in
+              BookForge's queue, on BookForge's own shelf, beside everything else
+              that machine is doing. A modal running a twenty-minute cleanup
+              inside a window that is a guest of another app is the wrong shape
+              whatever the button says.
+
+              Start is therefore ABSENT hosted rather than relabelled, and the
+              watching branch goes with it: nothing here sets watching, so the
+              card never becomes a progress view it has no business being.
+            -->
+            <button [class.ghost]="!hosted()" [class.primary]="hosted()"
+                    [disabled]="busy() || !canRun() || !modelReady()" (click)="add(false)">
+              {{ busy() === 'queue' ? 'Working...' : 'Add to queue' }}
+            </button>
+            @if (!hosted()) {
+            <button class="primary" [disabled]="busy() || !canRun() || !modelReady()" (click)="add(true)">
+              {{ busy() === 'start' ? 'Starting…' : 'Start' }}
+            </button>
+          }
+          </footer>
+        }
+      } @else {
+        <!--
+          The same two ways to get here as the Simplify dialog's empty state, and
+          the same answer to each: there is no book yet, or you have deliberately
+          stepped back to the import and are standing before the book.
+        -->
+        <div class="body empty">
+          <p>
+            There is no book here to clean. A cleanup says every paragraph again, so the
+            pages have to have been read first — and standing on the import row is standing
+            before the book: step onto the reading or an edit to clean what is there.
+          </p>
+        </div>
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeClean()">Close</button>
+          <button class="primary" (click)="openDocument()">Open a book…</button>
+        </footer>
+      }
+    </div>
+  

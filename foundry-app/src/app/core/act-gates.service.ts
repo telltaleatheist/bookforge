@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 
-import type { ActGate, ActGates, ActName } from '@shared/types';
+import type { ActGate, ActGates, ActName } from '@owen/foundry-core/shared/types';
 import { api } from './foundry';
 
 /**

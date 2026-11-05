@@ -1,0 +1,61 @@
+
+    <div class="scrim" (click)="close()"></div>
+
+    <div
+      class="card"
+      role="dialog"
+      aria-modal="true"
+      [attr.aria-label]="heading()"
+      (keydown.escape)="close()"
+    >
+      <header class="head">
+        <span class="title">{{ heading() }}</span>
+      </header>
+
+      <div class="body">
+        <p class="lead">
+          The name goes on the project's folder and cannot be changed afterwards.
+        </p>
+        <!--
+          THE SECOND SENTENCE ONLY WHEN THERE IS A SECOND HALF TO THE ACT. It
+          counts the images because a person about to move nine photographs out
+          of the workspace should read the nine — capture-grid's rule for its
+          own menu, and the same reason: the workspace list is where they are
+          now, and after this it is not.
+        -->
+        @if (from().length > 0) {
+          <p class="lead">
+            {{ from().length }}
+            {{ from().length === 1 ? 'image moves' : 'images move' }} out of the workspace and into
+            it. Anything the intake will not read is named afterwards.
+          </p>
+        }
+        <!--
+          Enter submits, because a one-field ask where the keyboard cannot
+          finish it is a form pretending to be a question. The destructive-Enter
+          reasoning in confirm-dialog does not apply: nothing here destroys
+          anything, and the worst an accidental Enter makes is an empty project.
+        -->
+        <input
+          #field
+          class="name"
+          type="text"
+          placeholder="What book is this?"
+          [value]="title()"
+          [disabled]="making()"
+          (input)="title.set(field.value)"
+          (keydown.enter)="create()"
+        />
+      </div>
+
+      <footer class="foot">
+        <button class="ghost" type="button" [disabled]="making()" (click)="close()">Cancel</button>
+        <!-- "Start" is right for a shoot that has not happened yet and wrong for
+             photographs that are already here: nothing is being started, a book
+             is being made out of what is on the table. -->
+        <button class="primary" type="button" [disabled]="making()" (click)="create()">
+          {{ making() ? 'Making…' : from().length > 0 ? 'Create' : 'Start' }}
+        </button>
+      </footer>
+    </div>
+  

@@ -1,0 +1,104 @@
+
+    <!--
+      THE OPEN PHOTOGRAPH LEAVING THE RECIPE USED TO STRAND THIS SCREEN.
+      There was an @else here drawing "That photograph is no longer in this
+      project" as a bare paragraph between the table and the mint footer --
+      with no way to dismiss it, because the open id stayed set and the modal that
+      owns Escape was the thing that had gone. And the table below it was DEAF,
+      since it stops answering the keyboard while something is open over it.
+      Closing is the whole of the right answer; the table reappearing says the
+      photograph is gone better than a sentence about it would.
+    -->
+    <div class="table">
+      <!--
+        THE TABLE IS ALWAYS DRAWN NOW. The editor used to REPLACE it, so leaving
+        meant a button called "All photographs" and coming back meant finding
+        your card again. It is a modal since Wave 21, and a modal is something
+        you open rather than somewhere you go.
+      -->
+      <app-capture-grid
+          [active]="open() === null"
+          [cards]="captures.cards()"
+          [arranged]="captures.arranged()"
+          [projecting]="captures.pass() === 'split'"
+          (reorder)="captures.reorder($event)"
+          (open)="openPage($event)"
+          (strike)="captures.toggleStrike($event)"
+          (sortBy)="captures.sortBy($event.key, $event.descending)"
+          (dropped)="captures.intake(tab().path, $event)"
+        (remove)="void confirmRemoval($event)"
+          (turn)="captures.turnPhotos($event.photos, $event.turns)"
+          (follow)="followThese($event)"
+      />
+    </div>
+
+    <!--
+      THE RAIL, AND WHY THE MINT MOVED INTO IT.
+
+      Mint used to sit in a footer under the table, which is where Owen found it
+      before he had turned a single page: the surface offered the LAST ACT
+      FIRST, and the three things you do before it were inside a modal you had
+      to know to open. The rail puts the three verbs in front of the act and the
+      act at the foot of them, and the gate is what makes that an order rather
+      than a suggestion.
+    -->
+    <app-capture-rail
+      [counts]="captures.prepare()"
+      [prepared]="prepared()"
+      [mintable]="mintable()"
+      [minted]="minted()"
+      [progress]="mint.progress()"
+      [diverged]="captures.diverged()"
+      [pass]="captures.pass()"
+      [standing]="hasCrop()"
+      [bookCut]="hasCut()"
+      [sided]="captures.sided()"
+      [cost]="captures.applyCost()"
+      (open)="openTool()"
+      (tick)="captures.tick($event)"
+      (mint)="void startMint()"
+      (stop)="mint.cancel()"
+      (applyCrops)="captures.applyCrops()"
+      (applyCuts)="captures.applyCuts()"
+      (reopen)="captures.reopen()"
+      (select)="showPopulation($event)"
+    />
+
+    @if (open() !== null) {
+      @if (opened(); as photo) {
+        <app-capture-editor-modal
+          [label]="photo.label"
+          [source]="captures.url(photo.workingCopy)"
+          [dimensions]="photo.dimensions"
+          [quads]="photo.quads"
+          [split]="photo.split"
+          [pass]="captures.pass()"
+          [ghost]="ghost()"
+          [hasPrevious]="walkIndex() > 0"
+          [hasNext]="walkIndex() < walk().length - 1"
+          [name]="photo.name"
+          [global]="global()"
+          [scope]="captures.scope()"
+          [own]="photo.complete"
+          [theirOwn]="captures.prepare().complete"
+          [bookCut]="bookCut()"
+          [frames]="frames()"
+          [here]="open()"
+          (turnBy)="turnThis(photo.id, $event)"
+          (clearCrop)="clearCropHere(photo.id)"
+          (twoPagesChange)="setTwoPages(photo.id, $event)"
+          (quadsChange)="setQuads(photo.id, $event)"
+          (splitChange)="captures.setSplit(photo.id, $event, !global())"
+          (settled)="settle(photo.id)"
+          (globalChange)="captures.setGlobal($event)"
+          (scopeChange)="captures.setScope($event)"
+          (resetAll)="void confirmReset()"
+          (followAll)="void confirmFollowAll()"
+          (jump)="open.set($event)"
+          (step)="step($event)"
+          (close)="open.set(null)"
+        />
+      }
+    }
+
+  

@@ -1,0 +1,401 @@
+
+    /*
+      ── THE ROW COSTS NOTHING IN THE WINDOW THAT MUST NOT HAVE IT ────────────
+
+      Hosted this is display:none — not visibility, not opacity, not a
+      zero-height box — so a hosted window's chrome is byte for byte the chrome
+      of one that never mounted this component. The padding is on the host
+      rather than on a wrapper inside it, which is what makes that true.
+
+      `position: relative` because the panel hangs off it, and the z-index is
+      the shelf's old rung: viewer < queue 900 < drag veil 1000 < toasts 1100 <
+      dialogs 1200. The ladder did not move; only the thing on this rung did.
+    */
+    :host { display: none; }
+    :host(.up) {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      padding: 6px 12px 0;
+      position: relative;
+      z-index: 900;
+    }
+
+    /* Read, never seen. Clipped rather than display:none or visibility:hidden,
+       because both of those take the element out of the accessibility tree and
+       a live region nothing can reach announces nothing. */
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      margin: -1px; padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* ── The chip ──────────────────────────────────────────────────────── */
+
+    /*
+      BookForge's chip, in Foundry's tokens: a pill, 28 high, the running state
+      ringed in the accent and the empty state barely there at all. overflow is
+      hidden twice over — the progress line is anchored to the bottom edge
+      inside it, and a headline longer than the ceiling ellipses instead of
+      pushing the chip across the window.
+    */
+    .chip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 28px;
+      max-width: 420px;
+      padding: 0 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      color: var(--text-secondary);
+      font: inherit;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .chip:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    .chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+    .chip.running { border-color: var(--accent); }
+    .chip.running:hover { border-color: var(--accent-hover); }
+    .chip.bad { border-color: var(--error); }
+    /* Empty, it is barely a control: still pressable — Start lives inside — but
+       it has nothing to report and does not take the eye for saying so. */
+    .chip.quiet { background: transparent; border-color: transparent; color: var(--text-tertiary); }
+
+    .what {
+      min-width: 0;
+      flex: 0 1 auto;
+      font-family: var(--font-display); font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .chip.quiet .what { font-weight: 500; color: inherit; }
+    .chev { flex: none; color: var(--text-tertiary); font-size: 10px; }
+    .glyph { flex: none; font-size: 12px; line-height: 1; }
+
+    .spinner {
+      width: 12px; height: 12px; flex: none;
+      border: 2px solid var(--accent-soft);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .mark { flex: none; font-weight: 700; }
+    .mark.ok { color: var(--ok); }
+    .mark.bad { color: var(--error); }
+
+    /* The host status chip's progress hairline, verbatim in shape: two pixels
+       along the bottom edge of the chip, clipped by the chip's own overflow. */
+    .edge {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 2px;
+      background: var(--bg-sunken);
+    }
+    .edge i {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      transition: width 200ms ease;
+    }
+
+    /* ── The panel ─────────────────────────────────────────────────────── */
+
+    /*
+      Anchored under the chip with their right edges aligned, which is where a
+      dropdown from a corner control belongs and what BookForge's overlay
+      position says in CDK's vocabulary. The shelf's shadow verbatim: the two
+      surfaces that float over this window should not hover at different
+      heights.
+    */
+    .panel {
+      position: absolute;
+      top: 100%;
+      right: 12px;
+      margin-top: 6px;
+      width: 420px;
+      max-width: calc(100vw - 24px);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow:
+        0 10px 15px -3px rgba(0, 0, 0, 0.2),
+        0 20px 40px -10px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      font-size: 13px;
+      color: var(--text-primary);
+    }
+    .panel:focus { outline: none; }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .eyebrow {
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+    .panel-head .note { margin-left: auto; font-size: 11px; color: var(--text-muted); }
+
+    .panel-body { max-height: min(60vh, 460px); overflow-y: auto; }
+
+    .empty {
+      margin: 0;
+      padding: 22px 14px;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    /*
+      THE LANE HEAD READS AS A RULE ACROSS THE LIST, not as a row — BookForge's
+      own section idiom, which is the same decision the shelf made in different
+      clothes. Sticky, so the lane a row belongs to is still legible when a long
+      batch is scrolled: the body is a window, and a board whose headers scroll
+      away is a list again.
+    */
+    .sec {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px 5px;
+      background: var(--bg-elevated);
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .sec .rule { flex: 1; height: 1px; background: var(--border-subtle); }
+    /* The lane that is free says so in words rather than by being a gap. */
+    .lane-idle {
+      margin: 0;
+      padding: 4px 14px 8px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 14px;
+    }
+    .row + .row { border-top: 1px solid var(--border-subtle); }
+    .row-top { display: flex; align-items: center; gap: 8px; }
+    .name {
+      flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    .bar {
+      height: 5px;
+      border-radius: 3px;
+      background: var(--bg-sunken);
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .bar i {
+      display: block;
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, var(--accent-hover), var(--accent));
+      transition: width 0.4s ease;
+    }
+    .bar.indeterminate i { width: 35% !important; animation: slide 1.2s ease-in-out infinite; }
+    @keyframes slide {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(320%); }
+    }
+
+    /*
+      ── THE TWO STAGES OF AN ANALYSIS ────────────────────────────────────────
+
+      Two SMALLER bars, which is what Owen asked for and is also the only shape
+      that works: a row in this panel has three lines to spend, and two bars at
+      the full weight of the one they replace would be a row that shouts twice
+      about one job. So the pair is set on a grid — name, bar, count — and the
+      whole stack occupies about the height the single bar and its line did.
+
+      THE STAGE THAT HAS NOT STARTED IS DIMMED AND STILL DRAWN, which is the
+      point of drawing two: an empty second bar with a name on it is the run
+      saying there is another pass coming, so the first one finishing does not
+      have to be read as the job finishing.
+    */
+    .stages { display: flex; flex-direction: column; gap: 5px; margin-top: 3px; }
+    .stage {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 8px;
+    }
+    /* The bar inside a stage row carries no margin of its own — the stack's gap
+       is what spaces the pair — and is a pixel thinner than the single bar, so a
+       staged row reads as two smaller measurements rather than as two of it. */
+    .stage .bar { height: 4px; margin-top: 0; }
+    .stage-name {
+      font-size: 10.5px;
+      color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .stage-count {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    /* Not started: quieter than the running stage in both of its parts, so the
+       eye lands on the one that is moving. Never hidden — see the note above. */
+    .stage.idle .stage-name { color: var(--text-muted); }
+    .stage.idle .bar { opacity: 0.55; }
+
+    .sub {
+      font-size: 11px; color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sub.ok { color: var(--ok); }
+    .sub.bad { color: var(--error); white-space: normal; }
+    /* The forecast, dimmer than the count it follows and on the same line. See
+       the comment at the markup for why it is the quieter of the two. */
+    .eta { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+    /*
+      THE STEP, WRAPPED TO TWO LINES AND NO MORE. The engine's sentences run
+      long — a rejected answer names the block and the attempt — and the whole of
+      one is in the hover; two lines is what a row can spend without the panel
+      turning into a log window, which is what the terminal is for.
+    */
+    .detail {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+    }
+
+    /*
+      WHY THIS ROW IS STILL, in BookForge's pill. A sentence in a tinted capsule
+      rather than a line of grey text, because "waiting" and "waiting for
+      something you have to do" are the two states a still queue can be in and
+      the difference is the whole reason somebody opened this panel.
+    */
+    .why {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      align-self: flex-start;
+      max-width: 100%;
+      padding: 2px 8px;
+      border-radius: 3px;
+      background: var(--bg-input);
+      color: var(--text-tertiary);
+      font-size: 11px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .why .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
+    /*
+      A held row reads as WAITING FOR SOMEBODY rather than as inert. The accent
+      is the same one the Start button carries, so the row and the control that
+      releases it are visibly the same subject; the left rule is what makes a run
+      of them legible as a BATCH at a glance, which is the thing being assembled.
+      Colour is not the only carrier — the row also says "Waiting for Start" in
+      words, because a state told only in hue is a state somebody who cannot see
+      the hue does not have.
+    */
+    .why.hold { background: var(--accent-soft); color: var(--accent); }
+    .row[data-state='held'] { box-shadow: inset 2px 0 0 var(--accent); }
+
+    /* ── Controls ──────────────────────────────────────────────────────── */
+
+    .x {
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 12px;
+      padding: 3px 5px; border-radius: var(--radius-sm);
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .tiny {
+      display: inline-flex; align-items: center; justify-content: center;
+      flex: none;
+      height: 22px; padding: 0 9px;
+      border-radius: var(--radius-sm);
+      font-size: 11px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+      background: transparent;
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      white-space: nowrap;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .tiny:hover:not(:disabled) {
+      background: var(--bg-hover); border-color: var(--border-strong); color: var(--text-primary);
+    }
+    .tiny:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .panel-foot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      background: var(--bg-sunken);
+      border-top: 1px solid var(--border-subtle);
+    }
+    .spacer { flex: 1; }
+    .details {
+      color: var(--text-tertiary);
+      font-size: 11.5px;
+      text-decoration: none;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+    }
+    .details:hover { color: var(--accent); }
+
+    /* The dialogs' primary button, at the panel's smaller scale — same tokens,
+       same states, so Start reads as the same kind of commit as "Add to queue". */
+    .primary {
+      display: inline-flex; align-items: center; justify-content: center;
+      flex: none;
+      height: 26px; padding: 0 12px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 600; line-height: 1;
+      cursor: pointer;
+      background: var(--accent); color: var(--text-inverse);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .primary:active:not(:disabled) { background: var(--accent-active); transform: scale(0.98); }
+    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: none; }
+      .bar i { transition: none; }
+      .bar.indeterminate i { animation: none; width: 100% !important; }
+    }
+  

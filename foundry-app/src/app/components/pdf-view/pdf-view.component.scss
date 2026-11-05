@@ -1,0 +1,189 @@
+
+    :host { display: block; width: 100%; height: 100%; background: var(--bg-sunken); }
+    .pdf { display: flex; flex-direction: column; height: 100%; }
+
+    /* The same row the book pane wears, so the two do not feel like two apps. */
+    .toolbar {
+      display: flex; align-items: center; gap: 8px;
+      height: 44px;
+      padding: 0 12px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .counter {
+      min-width: 72px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .zoom { display: flex; gap: 4px; }
+    .find { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; justify-content: flex-end; }
+    .find input { width: 220px; max-width: 40vw; height: 26px; padding: 0 10px; font-size: 12px; border-radius: var(--radius-sm); }
+    .hits {
+      min-width: 82px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .panes { flex: 1; min-height: 0; display: flex; }
+    .panes.split .viewport { flex: 1 1 50%; min-width: 0; }
+    .panes.split .paper-side { border-left: 1px solid var(--border-default); }
+
+    /*
+      `position: relative` is load-bearing, not decoration: it makes this the
+      offsetParent of every page box, so a page's offsetTop is measured from the
+      scroller's own content top and can be compared with scrollTop directly.
+      Without it the pages measure from the document body and every jump — the
+      thumbnails, the search, the page counter — lands somewhere else.
+    */
+    .viewport { position: relative; flex: 1; min-width: 0; overflow: auto; }
+    .reel { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px; }
+
+    .page {
+      position: relative; flex-shrink: 0;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+    .page canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+    /* Paper, not white: the right pane is a reconstruction and should not be
+       mistaken at a glance for the scan on the left. */
+    .page.paper { background: #f6f3ec; }
+
+    .page-problem {
+      position: absolute; inset: 0; margin: 0;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+      /* Not --error: this one is printed ON the page, and the chrome's red is
+         mixed for a dark surface. */
+      color: #dc2626; font-size: 12px; text-align: center;
+    }
+
+    .no-layer {
+      position: absolute; inset: 0; margin: 0;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+      color: #8a8172; font-size: 13px; font-style: italic; text-align: center;
+    }
+
+    /*
+      The text layer. Transparent over the page — pdf.js paints the glyphs and
+      this is the selectable copy of them — and inked in the layer pane, so the
+      same geometry reads twice: once as the page, once as what a search finds.
+      `user-select: text` on both, because copying out of either is the point.
+
+      EVERY span RULE GOES THROUGH ::ng-deep, and it is load-bearing: the spans
+      are made by `layoutText` with document.createElement, and Angular's style
+      emulation scopes a component's CSS by stamping an attribute on template
+      elements — an attribute a dynamically created element never receives. The
+      first version of this file wrote these as plain `.text span` and every
+      rule silently missed: no absolute positioning (the whole layer piled up
+      in the page's top-left), no transparent ink over the scan, no dark ink in
+      the layer pane. The `.text` ancestor IS from the template, so the rules
+      stay this component's own; only the leap to its children is unscoped.
+    */
+    .text {
+      position: absolute; inset: 0;
+      overflow: hidden;
+      line-height: 1;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .text ::ng-deep span {
+      position: absolute;
+      white-space: pre;
+      transform-origin: 0% 0%;
+      color: transparent;
+      cursor: text;
+    }
+    /*
+     * `color: transparent` HERE IS LOAD-BEARING. The app's global rule paints
+     * selected text near-white (styles.scss ::selection), and the cascade is
+     * per-property: this rule won the background and never declared a color,
+     * so the global's #faf9f7 re-inked the invisible text layer during every
+     * selection — a white ghost copy of the glyphs, offset from the canvas's
+     * printed ones by the layer's approximation (Owen, 2026-08-21, "is it
+     * revealing the hidden layer as white text?" — almost exactly). Over
+     * paper, the selected words are already printed beneath; selection here
+     * is a box, never a second inking.
+     */
+    .text ::ng-deep span::selection { background: rgba(6, 182, 212, 0.4); color: transparent; }
+    .text.shown ::ng-deep span { color: #23201a; }
+    /* Over the scan the hit is a BOX and the text under it stays invisible —
+       painting it would double the ink the highlight is pointing at. The fill
+       is the accent, but at an alpha that stays findable on a full white page
+       rather than at the chrome's. */
+    .text ::ng-deep span.hit { background: rgba(6, 182, 212, 0.55); border-radius: 2px; }
+    .text.shown ::ng-deep span.hit { background: rgba(6, 182, 212, 0.85); }
+
+    .strip {
+      /* Positioned for the same reason the viewport is — revealThumb reads
+         offsetLeft against this element's scrollLeft. */
+      position: relative;
+      flex-shrink: 0;
+      display: flex; gap: 8px;
+      padding: 8px 10px;
+      overflow-x: auto; overflow-y: hidden;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-subtle);
+    }
+    .thumb {
+      flex-shrink: 0;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 0;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .thumb canvas {
+      display: block; width: 100%;
+      background: #fff;
+      border: 2px solid transparent; border-radius: var(--radius-sm);
+      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .thumb:hover canvas { border-color: var(--border-strong); }
+    .thumb.on canvas { border-color: var(--accent); }
+    .thumb.on { color: var(--accent); font-weight: 500; }
+
+    .problem {
+      flex: 1;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 8px; padding: 32px;
+      color: var(--text-tertiary); text-align: center;
+    }
+    .problem h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--error); }
+    .problem p { margin: 0; font-size: 13px; max-width: 70ch; white-space: pre-wrap; }
+
+    /* One button shape across the row — 26px tall, 4px radius — so the toolbar
+       reads as a strip of controls rather than a line of separate widgets.
+       There is no accented button here now: nothing on this row is the thing
+       you came to press, and the one control that was (Save a copy) is on the
+       dock as Export. */
+    .ghost, .icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 26px; padding: 0 10px;
+      border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 500; line-height: 1;
+      cursor: pointer; white-space: nowrap;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .ghost, .icon {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+    }
+    .ghost:hover:not(:disabled), .icon:hover:not(:disabled) {
+      background: var(--bg-hover); border-color: var(--border-strong);
+    }
+    .ghost.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+    .icon { min-width: 26px; padding: 0 6px; }
+    .icon.wide { min-width: 34px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+  

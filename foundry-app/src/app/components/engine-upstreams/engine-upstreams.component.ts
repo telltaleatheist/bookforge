@@ -49,7 +49,7 @@ import {
   type SettingsPatch,
   type UpstreamName,
   type UpstreamTestResult,
-} from '@shared/engine-settings';
+} from '@owen/foundry-core/shared/engine-settings';
 import { api } from '../../core/foundry';
 
 /**
@@ -77,117 +77,8 @@ export interface UpstreamApply {
   selector: 'app-engine-upstreams',
   imports: [FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @for (name of upstreams(); track name) {
-      <div class="upstream">
-        <div class="row">
-          <span class="who">{{ label(name) }}</span>
-          @if (configured(name)) {
-            <span class="badge">connected</span>
-            <span class="small mono">{{ hint(name) }}</span>
-          }
-          <span class="spacer"></span>
-          @if (configured(name)) {
-            <button class="ghost" type="button" [disabled]="busy()"
-                    (click)="remove(name)">Remove</button>
-          }
-        </div>
-
-        <!--
-          ONE BOX, AND WHICH KIND IT IS IS THE UPSTREAM'S OWN FACT. PHASE15 §2:
-          ollama has "no key; ollama is reached by address". A password box for
-          an address would hide the one thing a person needs to read back.
-        -->
-        <div class="row">
-          @if (name === 'ollama') {
-            <input class="wide" type="text" [name]="'u-' + name"
-                   [placeholder]="addressHint()"
-                   [ngModel]="typed()[name]"
-                   (ngModelChange)="type(name, $event)">
-          } @else {
-            <input class="wide" type="password" [name]="'u-' + name"
-                   [placeholder]="keyHintFor(name)"
-                   [ngModel]="typed()[name]"
-                   (ngModelChange)="type(name, $event)">
-          }
-          <button class="ghost" type="button"
-                  [disabled]="busy() || testing() === name"
-                  (click)="test(name)">
-            {{ testing() === name ? 'Testing…' : 'Test' }}
-          </button>
-          <button class="primary" type="button"
-                  [disabled]="busy() || !canSave(name)"
-                  (click)="save(name)">{{ applyLabel() }}</button>
-        </div>
-
-        @if (results()[name]; as result) {
-          @if (result.outcome === 'ok') {
-            @if (result.models.length === 0) {
-              <p class="small warn">
-                That answered, and listed no models. Nothing here can name one for you.
-              </p>
-            } @else {
-              <p class="small ok">{{ listedLine(result.models) }}</p>
-              @if (wantsModel()) {
-                <!--
-                  THE MODEL COMES OUT OF THAT LISTING AND NOWHERE ELSE. PHASE15
-                  §2: the engine "does not ship a cloud model list", and neither
-                  does this app - a catalog compiled into a build is wrong by the
-                  next release, offering models that have been retired and hiding
-                  the one somebody is paying for.
-                -->
-                <select class="wide" [name]="'m-' + name"
-                        [ngModel]="model()[name]"
-                        (ngModelChange)="pick(name, $event)">
-                  <option value="">Pick the model to use…</option>
-                  @for (id of result.models; track id) {
-                    <option [value]="id">{{ id }}</option>
-                  }
-                </select>
-              }
-            }
-          } @else {
-            <!-- The engine's own words, kept whole: it is the thing that knows
-                 whether the key was rejected or nothing answered at all. -->
-            <p class="small warn">{{ result.message }}</p>
-          }
-        }
-      </div>
-    }
-  `,
-  styles: [`
-    :host { display: flex; flex-direction: column; gap: 8px; }
-    .upstream {
-      display: flex; flex-direction: column; gap: 6px;
-      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
-      padding: 8px;
-    }
-    .row { display: flex; align-items: center; gap: 6px; }
-    .who { font-size: 12px; font-weight: 600; }
-    .spacer { flex: 1; }
-    .wide { flex: 1; min-width: 0; }
-    .small { font-size: 11px; color: var(--text-tertiary); margin: 0; }
-    .mono { font-family: var(--font-mono); }
-    .warn { color: var(--warn); }
-    .ok { color: var(--ok); }
-    .badge {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--ok); background: var(--ok-soft); border-radius: 999px; padding: 2px 8px;
-    }
-    .primary, .ghost {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 26px; padding: 0 12px;
-      border-radius: var(--radius-sm);
-      font-size: 12px; font-weight: 500; line-height: 1;
-      cursor: pointer;
-    }
-    .primary { border: none; background: var(--accent); color: var(--text-inverse); }
-    .primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
-    .ghost { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); }
-    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
-    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
-  `],
+  templateUrl: './engine-upstreams.component.html',
+  styleUrl: './engine-upstreams.component.scss',
 })
 export class EngineUpstreamsComponent {
   /** Which registered server these cards write to. Empty disables every press. */

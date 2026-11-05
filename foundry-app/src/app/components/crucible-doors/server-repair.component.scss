@@ -1,0 +1,13 @@
+:host { display: block; }
+.repair { display: flex; flex-direction: column; gap: 4px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.small { font-size: 11px; color: var(--text-secondary); margin: 0; overflow-wrap: anywhere; }
+.warn { color: var(--warn); }
+.ok { color: var(--ok); }
+.mono { font-family: var(--font-mono); }
+.ghost {
+  padding: 4px 10px; font-size: 12px; border-radius: var(--radius-sm); cursor: pointer;
+  background: transparent; color: var(--text-primary); border: 1px solid var(--border-default);
+}
+.ghost:hover:not(:disabled) { background: var(--bg-hover); }
+.ghost:disabled { opacity: 0.5; cursor: default; }

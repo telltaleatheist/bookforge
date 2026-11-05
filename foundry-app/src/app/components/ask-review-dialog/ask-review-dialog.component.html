@@ -1,0 +1,126 @@
+
+    <div class="scrim" (click)="ui.closeAskReview()"></div>
+
+    <div class="card" role="dialog" aria-modal="true" aria-label="What Ask did">
+      <header class="head">
+        <span class="title">What Ask did</span>
+        <button class="x" (click)="ui.closeAskReview()" title="Close">✕</button>
+      </header>
+
+      @if (pane(); as book) {
+        @if (session(); as kept) {
+          @if (working()) {
+            <div class="body working">
+              <p class="progress">Undoing…</p>
+              <p class="note">
+                On a translated pass the words of a block are a record, not a change waiting to be
+                applied — so each one is written on its own, in order.
+              </p>
+            </div>
+          } @else {
+            <div class="bar">
+              <span class="asked">"{{ kept.request }}"</span>
+              <span class="tally">{{ kept.model }} · {{ kept.items.length }} {{ kept.items.length === 1 ? 'change' : 'changes' }}</span>
+            </div>
+            @if (kept.skipped > 0) {
+              <p class="problem">
+                {{ kept.skipped }} of the model's marks were never put on the book, because their
+                blocks changed while it worked.
+              </p>
+            }
+
+            <div class="list">
+              @for (group of groups(); track group.reason) {
+                <div class="group">
+                  <span class="reason">{{ group.reason }}</span>
+                  <span class="group-count">{{ group.items.length }} · {{ undoingIn(group.items) }} to undo</span>
+                  <button class="hit group-hit" (click)="flipGroup(group.items)">
+                    <span class="verdict" [class.keep]="allUndone(group.items)">
+                      {{ allUndone(group.items) ? 'KEEP ALL' : 'UNDO ALL' }}
+                    </span>
+                  </button>
+                </div>
+                @for (item of group.items; track key(item)) {
+                  @let moved = movedWhy().get(key(item));
+                  @let undoing = isUndoing(item);
+                  <div class="row" [class.ghost]="moved !== undefined" [class.open]="opened().has(key(item))">
+                    <button class="at" (click)="travel(book, goesTo(item))">
+                      <span class="at-id">{{ item.id }}</span>
+                      @if (pageOf(goesTo(item)) > 0) {
+                        <span class="at-page">≈ {{ pageOf(goesTo(item)) }}</span>
+                      }
+                    </button>
+
+                    <div class="quote" (click)="toggleOpen(key(item))">
+                      @if (item.kind === 'strike') {
+                        <p class="q-line" [class.struck]="!undoing">{{ shown(key(item), item.before) }}</p>
+                      } @else if (item.kind === 'category') {
+                        <p class="q-line">{{ shown(key(item), item.before) }}</p>
+                        <p class="q-line q-after q-retype" [class.undoing]="undoing">
+                          <span class="arrow">→ </span>{{ retyped(item) }}
+                        </p>
+                      } @else if (item.kind === 'join' || item.kind === 'split' || item.kind === 'restore' || item.kind === 'link' || item.kind === 'unlink' || item.kind === 'revert') {
+                        <p class="q-line" [class.struck]="item.kind === 'restore' && undoing">{{ shown(key(item), item.before) }}</p>
+                        <p class="q-line q-after q-retype" [class.undoing]="undoing" [title]="renamedOnUndo(item)">
+                          <span class="arrow">→ </span>{{ structure(item) }}
+                        </p>
+                      } @else {
+                        <p class="q-line">
+                          @for (part of partsOf(item.before, 'removed', item.id); track $index) {
+                            <span [class.q-gone]="part.changed">{{ part.text }}</span>
+                          }
+                        </p>
+                        <p class="q-line q-after" [class.undoing]="undoing">
+                          <span class="arrow">→ </span>
+                          @for (part of partsOf(item.after, 'added', item.id); track $index) {
+                            <span [class.q-new]="part.changed">{{ part.text }}</span>
+                          }
+                        </p>
+                      }
+                      @if (moved !== undefined) {
+                        <p class="moved">Left alone: {{ moved }}.</p>
+                      }
+                    </div>
+
+                    @if (moved !== undefined) {
+                      <span class="hit still"><span class="verdict gone">moved</span></span>
+                    } @else {
+                      <button class="hit" (click)="flip(key(item))">
+                        <span class="verdict" [class.keep]="!undoing">{{ undoing ? 'UNDO' : 'KEEP' }}</span>
+                      </button>
+                    }
+                  </div>
+                }
+              } @empty {
+                <p class="none">The model marked nothing.</p>
+              }
+            </div>
+
+            <footer class="foot">
+              <span class="counts">
+                <span class="keep-count">{{ keptCount() }} kept</span>
+                <span class="cut-count">{{ chosen().length }} to undo</span>
+              </span>
+              <button class="ghost" [disabled]="undoable().length === 0" (click)="keepAll()">Keep all</button>
+              <button class="ghost" [disabled]="undoable().length === 0" (click)="undoAll()">Undo all</button>
+              <button class="primary" [disabled]="chosen().length === 0" (click)="undoSelected(book)">
+                Undo selected ({{ chosen().length }})
+              </button>
+            </footer>
+          }
+        } @else {
+          <div class="body empty"><p>Nothing has been asked of this book yet.</p></div>
+          <footer class="foot">
+            <span class="counts"></span>
+            <button class="ghost" (click)="ui.closeAskReview()">Close</button>
+          </footer>
+        }
+      } @else {
+        <div class="body empty"><p>{{ shut() }}</p></div>
+        <footer class="foot">
+          <span class="counts"></span>
+          <button class="ghost" (click)="ui.closeAskReview()">Close</button>
+        </footer>
+      }
+    </div>
+  

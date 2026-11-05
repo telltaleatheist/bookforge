@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import { isPdfName } from '@shared/capture';
-import type { ProjectDocument, ProjectSummary } from '@shared/types';
+import { isPdfName } from '@owen/foundry-core/shared/capture';
+import type { ProjectDocument, ProjectSummary } from '@owen/foundry-core/shared/types';
 
 import { api } from './foundry';
 import { CaptureService } from './capture.service';

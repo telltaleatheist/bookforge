@@ -1,0 +1,326 @@
+
+    <div class="scrim" (click)="close.emit()"></div>
+
+    <div class="card" role="dialog" aria-modal="true">
+      <button class="shut" type="button" title="Back to the table (Escape)" (click)="close.emit()">✕</button>
+
+      <div class="work">
+        <div class="stage">
+          <app-capture-page-editor
+            [source]="source()"
+            [dimensions]="dimensions()"
+            [quads]="quads()"
+            [split]="split()"
+            [projecting]="splitting()"
+            [ghost]="ghost()"
+            (quadsChange)="quadsChange.emit($event)"
+            (splitChange)="splitChange.emit($event)"
+            (settled)="settled.emit()"
+          />
+          <!--
+            THE WALK, AT THE HAND — Owen (2026-08-22), stepping a 179-page
+            screenshot shoot: `"maybe an arrow on the left and right side of
+            each page so i can move between the pages quickly and easily."`
+            The cluster's Back/Next and the arrow keys both survive; these are
+            the same act at the place the eye already is, the lightbox idiom.
+            ABSENT at either end rather than disabled, this stage's own rule —
+            and they sit at the stage's edges, outside the photograph's usual
+            fit, so they cover no corner anybody is trying to grab.
+          -->
+          @if (hasPrevious()) {
+            <button class="leaf back" type="button" title="Previous photograph (left arrow)" (click)="step.emit(-1)">‹</button>
+          }
+          @if (hasNext()) {
+            <button class="leaf next" type="button" title="Next photograph (right arrow)" (click)="step.emit(1)">›</button>
+          }
+        </div>
+
+        <!--
+          ONE COLUMN, IN THE ORDER THE WORK HAPPENS, and it replaces a perimeter.
+
+          Owen: "the buttons are all on the other side of the app from each other."
+          They were: walking in the header, the tools in the header, the gestures
+          in the footer's left corner and the acts in its right. Four groups on
+          three edges of a window whose middle is a photograph.
+
+          Now: who you are looking at and how to move, what this photograph is,
+          and last whose hand the handles are answering to. Nothing is left on
+          any edge, and nothing in the column is an ACT any more — the gestures
+          on the picture are the acts, and the column says what they reach.
+        -->
+        <aside class="cluster">
+          <div class="who">
+            @if (name(); as called) {
+              <div class="name">{{ called }}</div>
+            }
+            <div class="pos">{{ label() }}</div>
+            <!--
+              THE PASS, SAID ONCE, WHERE THE PERSON IS STANDING. The rail carries
+              the sequence and the numbered steps; this is the one sentence that
+              has to be true of the room you are actually in, because the stage
+              below it has silently changed which handles it offers.
+            -->
+            <div class="pass">{{ passSays() }}</div>
+            <div class="walk">
+              <button
+                type="button"
+                [disabled]="!hasPrevious()"
+                title="Previous photograph (left arrow)"
+                (click)="step.emit(-1)"
+              >← Back</button>
+              <button
+                type="button"
+                [disabled]="!hasNext()"
+                title="Next photograph (right arrow)"
+                (click)="step.emit(1)"
+              >Next →</button>
+            </div>
+          </div>
+
+          <!--
+            THIS PHOTOGRAPH — the facts about the picture in front of you, and
+            the gestures that change only it.
+
+            THE TOOL SELECTOR IS GONE and stays gone (Wave 24). Turn, Crop and
+            Split were three exclusive MODES over one picture whose corners and
+            gutter were draggable in all three -- so the mode never changed what a
+            gesture did, only which buttons were on screen, which is a mode you
+            cannot see the effect of. What decides now is the PASS, and a pass
+            changes the handles as well as the buttons.
+          -->
+          <div class="does">
+            <div class="cap">This photograph</div>
+
+            <!--
+              THE TURN IS THE CROP PASS'S, ruled in the contract: orienting the
+              shot is part of deciding its rectangle. By the split pass the
+              rectangle is settled and the page on the stage is already the way
+              round it prints, so a turn here would be re-opening a decision the
+              Apply has already committed.
+            -->
+            @if (!splitting()) {
+              <div class="turnpair">
+                <button type="button" title="Turn this photograph anticlockwise" (click)="turn(-1)">⟲</button>
+                <button type="button" title="Turn this photograph clockwise" (click)="turn(1)">⟳</button>
+              </div>
+            }
+
+            <!--
+              A TICK, NOT A TOOL, AND IT SURVIVES BOTH PASSES. A split is not
+              something you are holding; it is a fact about the photograph -- this
+              is a spread, or it is not -- and that is as true after the crops are
+              applied as before. As a mode you could stand in "split mode" on an
+              uncut photograph, which is precisely the state that produced *"i set
+              it, i hit ok, and nothing happened"*.
+
+              TICKING IS THE CUT. There is no place it out and confirm it later,
+              because unticking rejoins -- keeping the crop, through the same body
+              the cut came from -- so the act is reversible and needs no rehearsal.
+            -->
+            <label class="tick">
+              <input
+                type="checkbox"
+                [checked]="twoPages()"
+                (change)="setTwoPages($any($event.target).checked)"
+              />
+              <span>Two pages</span>
+            </label>
+            <p class="says">{{ cutSays() }}</p>
+
+            <!--
+              REMOVING A CROP IS REMOVING THE MARK, so it is offered only when
+              there is one -- and only in the pass that owns the rectangle. A
+              control that is always there and does nothing four times out of five
+              teaches people to stop reading it.
+            -->
+            @if (!splitting() && !wholeFrame()) {
+              <button class="btn quiet" type="button" (click)="clearCrop.emit()">
+                Use the whole photograph
+              </button>
+            }
+          </div>
+
+          <!--
+            SCOPE — the one tick that says whose hand is on the handles.
+
+            ── Owen's ruling (2026-08-26), and the two presses it replaces ────
+
+            Wave 25 was right that the modal speaks for the photograph it has
+            open, and it paid for the rule with a sequence: record the book's
+            crop here, walk out to the rail, press Apply, walk back to see
+            whether it fitted. `"it wasnt obvious to me that i had to apply all
+            crops from the main window"` was the first complaint and a second
+            button in here was the first answer; the real answer is that the
+            SCOPE IS A STATE OF THE PHOTOGRAPH, not a property of a button.
+
+            So: ticked, every gesture made in here — a corner, the gutter, a
+            turn — is the book's gesture, and every follower takes it as the
+            hand opens. Untick it and a gesture moves the page it is made on
+            and marks it that page's own; the rest keep what they were last
+            given.
+
+            ── AND IT IS A MODE, NOT THE PAGE'S STATE (Wave 51b) ────────────
+
+            It was `!isComplete` of the open photograph until Owen walked it:
+            `"if i uncheck global, make it so it doesnt switch back to checked
+            unless i specifically set it back … i dont want to have to uncheck
+            global for every one."` A box derived per photograph is a box that
+            re-ticks itself at every step, and the second half of an evening is
+            one pass through fifty pages nudging each in turn.
+
+            So TICKING MOVES NOTHING. It arms the next gesture, and the gesture
+            is what defines or updates the standing — which is also what became
+            of *re-tick to adopt*: a gesture made with the tick on, on a page
+            somebody had taken for their own, hands it back AND leads the book,
+            inside one walk.
+
+            The current photograph is a FOLLOWER LIKE THE REST once it has led.
+            It is not the source and it is not exempt — it holds the standing
+            because it authored it, which is the same thing.
+          -->
+          <div class="scope">
+            <div class="cap">Scope</div>
+            <label class="tick">
+              <input
+                type="checkbox"
+                [checked]="global()"
+                (change)="globalChange.emit($any($event.target).checked)"
+              />
+              <span>Global</span>
+            </label>
+            <p class="says">{{ scopeSays() }}</p>
+
+            <!--
+              WHICH PAGES A GLOBAL GESTURE REACHES — Owen (2026-08-26): `"a
+              'just even pages' and 'just odd pages' global setting. this change
+              only applies to every other page, but its global."`
+
+              The case is recto/verso: a book photographed one page at a time
+              from a fixed stand puts the left-hand pages in one part of the
+              frame and the right-hand ones in another, so a single crop is
+              wrong about half the book by construction.
+
+              ONLY WHILE GLOBAL IS TICKED, on this surface's own rule that a
+              control which would change nothing is ABSENT rather than
+              disabled: with the tick off a gesture reaches one page, and
+              asking which half of the book that page is on would be a control
+              with no act behind it.
+            -->
+            @if (global()) {
+              <div class="sides" role="group" aria-label="Which pages a change reaches">
+                @for (side of SIDES; track side.key) {
+                  <button
+                    type="button"
+                    class="side"
+                    [class.on]="scope() === side.key"
+                    [attr.aria-pressed]="scope() === side.key"
+                    [title]="side.title"
+                    (click)="scopeChange.emit(side.key)"
+                  >{{ side.word }}</button>
+                }
+              </div>
+            }
+
+            <!--
+              WHERE THIS PAGE STANDS — a sentence, not a control, and it is no
+              longer the checkbox's job to say it.
+
+              Until Wave 51b the tick WAS this fact, so its caption could say
+              both at once. The tick is a mode now and the fact is still worth
+              having in front of you: a page the book has stopped moving looks
+              exactly like a page it is about to move, and the dot on the card
+              is behind the modal you are standing in.
+            -->
+            <p class="says stands">{{ standsSays() }}</p>
+
+            <!--
+              THE ONE ACT THAT OVERRULES A HAND, and the only one in this stage
+              that asks first. Everything else here spares a page somebody took
+              for their own — that is Owen's standing ruling and the whole point
+              of the tick above. This is the door for the evening where the
+              assumption is what went wrong, so it reaches the marked pages too,
+              and the confirm is what keeps that from being a surprise.
+            -->
+            <button
+              class="btn quiet"
+              type="button"
+              [title]="resetTitle()"
+              (click)="resetAll.emit()"
+            >{{ resetSays() }}</button>
+            <p class="says">{{ resetMeans() }}</p>
+
+            <!--
+              THE OVERRIDE — Owen (2026-08-26): `"if the page was individually
+              edited, it's exempt from the global settings, unless the user
+              specifically overrides all individual settings to revert to
+              global."`
+
+              The exemption is everywhere in this stage already; this is the
+              second half of the sentence, and until now the only door to it was
+              a card's right-click, one photograph at a time, behind the modal a
+              person is standing in.
+
+              IT IS THE OTHER ACT, NOT A GENTLER RESET. Reset above goes back to
+              the ORIGINALS and empties the book's standing; this KEEPS the
+              standing and dresses everybody in it. Both overrule a hand, which
+              is why they sit together and why both ask first — and why the
+              caption has to name the one above, because the two questions are a
+              step apart and the outcomes are opposite.
+
+              ABSENT WHEN THERE IS NOBODY TO HAND BACK, on this surface's own
+              rule: a control that is always there and does nothing four times
+              out of five teaches people to stop reading it. It also makes the
+              button a fact about the book — if it is there, some page in this
+              shoot is its own.
+            -->
+            @if (theirOwn() > 0) {
+              <button
+                class="btn quiet"
+                type="button"
+                [title]="followAllTitle()"
+                (click)="followAll.emit()"
+              >Give every page back to the book</button>
+              <p class="says">{{ followAllMeans() }}</p>
+            }
+          </div>
+        </aside>
+      </div>
+
+      <!--
+        THE FILMSTRIP — the book, along the foot, while you are inside a page.
+
+        It is what makes a global act's reach VISIBLE from in here: move a corner
+        with *Global* ticked and the strip is where you watch which photographs
+        the book did NOT take it to — the ones carrying a tick are their own. And
+        it is what makes the walk navigable without closing anything, which Back
+        and Next alone never were on a shoot of fifty -- those are one step each,
+        and a strip is a place.
+
+        THE THUMBNAILS ARE RAW IN BOTH PASSES, said out loud. The cards on the
+        table draw the rectified page from Apply onward; these do not, because
+        the projection needs a WebGL context and this component has none -- the
+        editor below owns one and the table behind owns another, and a third for
+        forty-four-pixel pictures is a context per open on a surface somebody
+        walks twenty-five times an evening. What the strip is FOR is the marks and
+        the position, and both are honest on a raw thumbnail.
+      -->
+      @if (frames().length > 1) {
+        <div class="strip" #strip>
+          @for (frame of frames(); track frame.id) {
+            <button
+              type="button"
+              class="shot"
+              [class.now]="frame.id === here()"
+              [title]="frame.label"
+              (click)="jump.emit(frame.id)"
+            >
+              <img [src]="frame.thumb" [alt]="frame.label" loading="lazy" draggable="false" />
+              @if (frame.complete) {
+                <span class="dot mark">✓</span>
+              }
+            </button>
+          }
+        </div>
+      }
+    </div>
+  

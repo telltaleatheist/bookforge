@@ -43,7 +43,7 @@
  */
 import { BrowserWindow, session, shell } from 'electron';
 
-import { crucibleServerNamed } from './crucible-registry';
+import { crucibleServerNamed } from '@owen/foundry-core/node/crucible-registry';
 
 /**
  * One window per server, reused — pressing Open twice focuses the first rather

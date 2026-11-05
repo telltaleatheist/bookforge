@@ -1,0 +1,39 @@
+
+    <!--
+      DRAWN ONLY WHERE THERE IS SOMETHING TO COMPARE AGAINST. A project with one
+      step has no second row to offer, and a button whose menu would be empty is
+      furniture that teaches somebody the feature does not work.
+    -->
+    @if (choices().length > 0) {
+      <button
+        type="button"
+        class="act"
+        [class.on]="stage.compare() !== null"
+        title="Put another step beside this one, read-only"
+        (click)="open($event)"
+      >Compare</button>
+    }
+
+    <!--
+      THE APP'S ONE CONTEXT-MENU IDIOM: a full-window scrim under a fixed menu, so
+      the next click anywhere dismisses it exactly once and cannot also land on
+      whatever was underneath. The library's own vocabulary, to the pixel — there
+      is one of these in this app and a second would be a second thing to learn.
+    -->
+    @if (at(); as where) {
+      <div class="menu-scrim" (click)="at.set(null)" (contextmenu)="at.set(null)"></div>
+      <div
+        class="menu"
+        role="menu"
+        aria-label="Choose a step to compare against"
+        [style.left.px]="where.x"
+        [style.top.px]="where.y"
+        (keydown.escape)="at.set(null)"
+      >
+        <span class="lbl">compare against</span>
+        @for (step of choices(); track step.id) {
+          <button role="menuitem" (click)="choose(step)">{{ step.label }}</button>
+        }
+      </div>
+    }
+  

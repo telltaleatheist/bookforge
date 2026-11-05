@@ -60,7 +60,18 @@
  *     a missing one. This is the repair half Owen names in BookForge, and it is
  *     the only half of this page that can act.
  *
- * ── THE ENGINE LINE STAYS TOO ─────────────────────────────────────────────
+ * ── AND WHAT WENT, 2026-11-04: BOTH OF THOSE ──────────────────────────────
+ *
+ * Owen: Foundry always ships with Crucible, so every model call goes to Crucible
+ * and Foundry has no Python. The rasteriser is MuPDF inside the engine now
+ * (`vlm/raster.ts`, the `mupdf` package) — it travels with the app and cannot
+ * be missing, so there is nothing to measure — and the environments it was
+ * installed from went with it, card, catalog, installer and the startup
+ * provisioner alike. Folders an earlier version downloaded are left on disk for
+ * the user to delete (`retireSettingsKeys`, node/settings.ts, names them once).
+ * The engine still answers `doctor`; this page no longer draws any of it.
+ *
+ * ── THE ENGINE LINE STAYS ─────────────────────────────────────────────────
  *
  * Which `foundry` binary this window is driving, and its version. Not a
  * dependency a person installs, but the first thing anybody diagnosing this app
@@ -68,14 +79,12 @@
  */
 import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
 
-import type { DoctorReport, EngineInfo } from '@shared/types';
+import type { EngineInfo } from '@owen/foundry-core/shared/types';
 
 import { api } from '../../core/foundry';
-import { EnvCardComponent } from './env-card.component';
 
 @Component({
   selector: 'app-doctor-pane',
-  imports: [EnvCardComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="pane-head">
@@ -85,50 +94,7 @@ import { EnvCardComponent } from './env-card.component';
           <span class="muted">{{ info.version ?? 'version unknown' }} · {{ info.source }}</span>
         </div>
       }
-      <button class="ghost" [disabled]="probing()" (click)="probe()">
-        {{ probing() ? 'Probing…' : 'Re-probe' }}
-      </button>
     </div>
-
-    @if (report(); as r) {
-      <!--
-        THE ONE MEASUREMENT LEFT, and it is a dependency rather than a backend:
-        every conversion draws the book locally before anything reads it, so a
-        machine without PyMuPDF cannot convert at all. The tier cards that used
-        to sit under this went with the local inference stack they described.
-      -->
-      <div class="card" [attr.data-ok]="r.rasteriser.available">
-        <div class="card-head">
-          <span class="dot" [attr.data-ok]="r.rasteriser.available"></span>
-          <span class="card-title">Rasteriser (PyMuPDF)</span>
-        </div>
-        <p class="detail">{{ r.rasteriser.detail }}</p>
-        @if (r.rasteriser.python) {
-          <p class="mono small">{{ r.rasteriser.python }}</p>
-        }
-        @if (!r.rasteriser.available) {
-          <p class="detail">
-            Every conversion renders the pages on this computer before anything reads them, so
-            nothing can be converted until this is present. Installing the environment below
-            provides it.
-          </p>
-        }
-      </div>
-    } @else if (doctorProblem(); as reason) {
-      <div class="card">
-        <div class="card-head">
-          <span class="dot" data-ok="false"></span>
-          <span class="card-title">No report</span>
-        </div>
-        <pre class="detail pre">{{ reason }}</pre>
-      </div>
-    } @else {
-      <p class="muted">Asking the engine what this machine has…</p>
-    }
-
-    <!-- The prebuilt Pythons, and the button that fetches a missing one. The
-         repair half: this is the only thing on the page that can act. -->
-    <app-env-card (changed)="probe()" />
 
     <!--
       SAID PRECISELY, because the first draft of this line claimed that every
@@ -139,10 +105,10 @@ import { EnvCardComponent } from './env-card.component';
     -->
     <p class="muted">
       Nothing on this page needs a graphics card. Every act that needs one — reading a scanned
-      page, cleaning up text, translating, simplifying, and the judging half of analysis — runs
+      page, translating, simplifying, and the judging half of analysis — runs
       on a Crucible server, and Foundry keeps no local copy of any of it to be missing. What this
       computer does for itself is draw the pages, and for analysis the first pass that scores
-      every sentence. Both run on the processor, and both are environments above.
+      every sentence. Both run on the processor, inside the app.
     </p>
   `,
   styles: [`
@@ -184,9 +150,6 @@ import { EnvCardComponent } from './env-card.component';
   `],
 })
 export class DoctorPaneComponent {
-  protected readonly report = signal<DoctorReport | null>(null);
-  protected readonly doctorProblem = signal<string | null>(null);
-  protected readonly probing = signal(false);
   protected readonly engine = signal<EngineInfo | null>(null);
 
   constructor() {
@@ -194,38 +157,7 @@ export class DoctorPaneComponent {
   }
 
   private async load(): Promise<void> {
-    if (!api) {
-      this.doctorProblem.set('This page is running outside Electron, so there is no engine to ask.');
-      return;
-    }
-    this.engine.set(await api.engineInfo());
-    await this.probe();
-  }
-
-  /**
-   * One probe, with NO endpoint argument.
-   *
-   * It used to pass the URL that was on screen rather than the saved one, so
-   * that testing an endpoint did not require writing to the engine's settings
-   * file first. There is no endpoint on screen any more and no tier for one to
-   * belong to, so the engine is asked about this machine and nothing else. The
-   * report still carries tiers; this page draws only the rasteriser out of it,
-   * because the rest describes a local inference stack that no longer runs.
-   */
-  protected async probe(): Promise<void> {
     if (!api) return;
-    this.probing.set(true);
-    try {
-      const result = await api.doctor();
-      if (result.ok) {
-        this.report.set(result.report);
-        this.doctorProblem.set(null);
-      } else {
-        this.report.set(null);
-        this.doctorProblem.set(result.reason);
-      }
-    } finally {
-      this.probing.set(false);
-    }
+    this.engine.set(await api.engineInfo());
   }
 }

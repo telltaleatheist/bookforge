@@ -1,0 +1,257 @@
+
+    <aside class="rail">
+      <header class="head">
+        <h3>Prepare this book</h3>
+        <p>Crop first — square pages make one cut land right everywhere.</p>
+      </header>
+
+      <div class="steps">
+        <!--
+          ══ STEP 1 · CROP ═════════════════════════════════════════════════
+          The pass a project starts in and the one `Reopen` returns it to.
+        -->
+        <section class="step" [class.now]="pass() === 'crop'" [class.done]="pass() === 'split'">
+          <div class="line">
+            <span class="no">{{ pass() === 'split' ? '✓' : '1' }}</span>
+            <span class="words">
+              <span class="verb">Crop</span>
+              <span class="state">{{ cropStep() }}</span>
+            </span>
+            @if (pass() === 'split') {
+              <!--
+                REOPEN COSTS NOTHING AND DESTROYS NOTHING, which is the property
+                that makes Apply safe to press in the first place: no pixels
+                were cut — that happens once, at Finish — so every line every
+                photograph holds is exactly where it was. Reopening is not a
+                rollback. It is the corners being offered again.
+              -->
+              <button
+                class="ghost"
+                type="button"
+                title="Back to the corners. Nothing is undone and nothing is lost."
+                (click)="reopen.emit()"
+              >Reopen</button>
+            }
+          </div>
+
+          <div class="under">
+            @for (task of cropTasks(); track task.verb) {
+              <ng-container [ngTemplateOutlet]="row" [ngTemplateOutletContext]="{ $implicit: task }" />
+            }
+
+            @if (pass() === 'crop') {
+              @if (standing()) {
+                <p class="cost">{{ cropCost() }}</p>
+                <ng-container [ngTemplateOutlet]="populations" />
+                <!--
+                  FINALIZE, NOT APPLY, SINCE WAVE 26 — and the word had to move
+                  with the meaning. The crops already landed: every follower took
+                  the book's crop at the moment the gesture that set it was let
+                  go of. What this press does is close the pass, and run the same
+                  walk once more so that anything that arrived late lands too.
+                  "Apply" named a propagation that is no longer waiting to happen.
+                -->
+                <button class="apply" type="button" (click)="applyCrops.emit()">Finalize page crops</button>
+              } @else {
+                <!--
+                  NO BUTTON, because there is no book's crop for it to land and
+                  a press would only be able to refuse. The stage's own rule,
+                  from the split button and then from Wave 24's whole control
+                  table: a control that would change nothing is not shown. What
+                  IS shown is the way forward, which a greyed button would not
+                  have been.
+                -->
+                <p class="cost">Open a page that sits well and place its crop with <em>Global</em> ticked — every other page takes it as you go.</p>
+              }
+            } @else {
+              <p class="cost">Nothing was thrown away. Reopening shows every corner exactly as you left it.</p>
+            }
+          </div>
+        </section>
+
+        <!--
+          ══ STEP 2 · SPLIT ════════════════════════════════════════════════
+          Inert until the crops land, and it says why rather than going grey in
+          silence: the reason it waits is the reason the sequence exists.
+        -->
+        <section class="step" [class.now]="pass() === 'split'" [class.waiting]="pass() === 'crop'">
+          <div class="line">
+            <span class="no">2</span>
+            <span class="words">
+              <span class="verb">Split</span>
+              <span class="state">{{ splitStep() }}</span>
+            </span>
+          </div>
+
+          @if (pass() === 'split') {
+            <div class="under">
+              @for (task of splitTasks(); track task.verb) {
+                <ng-container [ngTemplateOutlet]="row" [ngTemplateOutletContext]="{ $implicit: task }" />
+              }
+              @if (bookCut()) {
+                <p class="cost">{{ cutCost() }}</p>
+                <ng-container [ngTemplateOutlet]="populations" />
+                <!--
+                  REPEATABLE, and repeating it costs nothing: the cut is always
+                  made against the SHEET, so a second press moves the gutter
+                  rather than quartering the page. Like its sibling above it is
+                  the safety net rather than the propagation — a line slid with
+                  <em>Global</em> ticked has already reached every follower.
+                -->
+                <button class="apply" type="button" (click)="applyCuts.emit()">Finalize page splits</button>
+              } @else {
+                <!-- Absent for the same reason as above: with no book's cut this
+                     press could only say no. -->
+                <p class="cost">Open a spread and put the line down the gutter with <em>Global</em> ticked — the rest follow it as you go.</p>
+              }
+            </div>
+          }
+        </section>
+      </div>
+
+      <!--
+        ══ STEP 3 · FINISH ═══════════════════════════════════════════════════
+        At the foot, where the act has been since Wave 21b, and numbered like
+        the other two because it is the end of the same sequence rather than a
+        different kind of thing sitting underneath it.
+      -->
+      <footer class="foot" [class.now]="mintable() > 0">
+        <div class="line">
+          <span class="no">3</span>
+          <span class="words">
+            <span class="verb">Generate</span>
+            <span class="state">Cuts the pixels once and makes the pages</span>
+          </span>
+        </div>
+
+        <!--
+          THE DIVERGENCE SENTENCE, said once, about the difference, and only
+          while there is one.
+
+          Every count on this surface acquired a second referent the moment a
+          mint existed -- what a mint WOULD produce, and what the book on the
+          shelf actually holds -- which is the two-things-one-name defect
+          arriving through a feature rather than through a variable. The rail
+          goes on speaking about the recipe, which is the truth and the thing
+          being edited, and this one line carries the difference.
+        -->
+        @if (diverged()) {
+          <p class="moved">The book on the shelf was made from an earlier arrangement.</p>
+        }
+
+        @if (progress(); as running) {
+          <p class="why">Making page {{ running.done }} of {{ running.total }}…</p>
+          <button class="stop" type="button" (click)="stop.emit()">Stop</button>
+        } @else {
+          <!--
+            THE COUNT LIVES ON THIS LINE AND NOT INSIDE THE BUTTON. It moves as
+            pages are struck and as spreads are split, and a button whose own
+            name reflows under the pointer is hard to aim at.
+          -->
+          <!--
+            THE GATE IS GONE — Owen (2026-08-22): `"sometimes i wont need to
+            do any of the three. if thats the case i should be able to click
+            finish/finalize anyway."` The ticks above stay as the record
+            (auto-set by the work itself, still yours to set by hand); the
+            only thing that disables Finish now is having nothing to finish.
+          -->
+          <p class="why">{{ pages() }}</p>
+          <button
+            class="mint"
+            type="button"
+            [class.ready]="mintable() > 0"
+            [disabled]="mintable() === 0"
+            [title]="mintTitle()"
+            (click)="mint.emit()"
+          >{{ minted() ? 'Generate book again' : 'Generate book' }}</button>
+        }
+
+        <!--
+          PERSISTENCE, SAID ONCE, WHERE THE DOUBT ACTUALLY LIVES.
+
+          Owen: *"i need a way to finalize the action … when i change something
+          on one page, it stays that way. if i leave and come back, it's set to
+          that."* It already was — every drag has written to the recipe at the
+          moment it was made since the stage was built. What was missing was any
+          surface saying so, which is why it FELT unset, and a thing a person
+          cannot tell is true is a thing that is not true for them.
+
+          At the foot rather than at the head, because this is the sentence that
+          answers "can I stop now?" and the foot is where somebody stands when
+          they are deciding whether to. Once, and not per control: a promise
+          repeated on every row reads as a system protesting.
+        -->
+        <p class="kept">Everything above is kept the moment you do it — leaving and coming back changes nothing.</p>
+      </footer>
+    </aside>
+
+    <!--
+      ONE ROW, TWO CONTROLS, and the tick is not a checkbox beside a button:
+      pressing the row OPENS the editor on that tool, and pressing the tick SAYS
+      SO. A single control would have to guess which of the two a click meant,
+      and the guess would be wrong on whichever one the person did not want.
+
+      A template rather than a repeated block because the rows are now spread
+      across two steps, and a row drawn twice in two places is a row that grows
+      a difference nobody meant.
+    -->
+    <ng-template #row let-task>
+      <div class="task" [class.ticked]="task.ticked">
+        <button class="go" type="button" (click)="open.emit(task.verb)">
+          <span class="glyph">{{ task.glyph }}</span>
+          <span class="words">
+            <span class="verb">{{ task.words }}</span>
+            @if (task.state !== null) {
+              <span class="state">{{ task.state }}</span>
+            }
+          </span>
+        </button>
+        <button
+          class="mark"
+          type="button"
+          role="checkbox"
+          [attr.aria-checked]="task.ticked"
+          [title]="task.ticked
+            ? 'You said this is done — press to take it back'
+            : 'Say this step is done'"
+          (click)="tick.emit(task.verb)"
+        ><span class="dot">{{ task.ticked ? '✓' : '' }}</span></button>
+      </div>
+    </ng-template>
+
+    <!--
+      THE POPULATIONS, AND EACH OF THEM IS A PRESS.
+
+      The same three the consequence line above has just named, from the same
+      count, offered as a way to LOOK at them. This is Wave 24's deferral
+      discharged: a number that says how many and nothing about which is a
+      number you have to take on trust, and this table has fifty cards on it.
+
+      Drawn once and outlet twice, because the crop pass and the split pass name
+      the same three photographs -- one Apply cost serves both, since a crop and
+      a cut are fractions of the same frame and skip on the same test.
+
+      A population of nobody is not drawn: pressing it would select nothing,
+      which is a control that does nothing wearing a number.
+    -->
+    <ng-template #populations>
+      <div class="who">
+        @if (cost().takes > 0) {
+          <button
+            class="pop follow"
+            type="button"
+            title="Show me the ones the book still moves"
+            (click)="select.emit('follow')"
+          ><span class="pip"></span>{{ cost().takes }} follow</button>
+        }
+        @if (cost().complete > 0) {
+          <button
+            class="pop done"
+            type="button"
+            title="Show me the ones the book leaves alone"
+            (click)="select.emit('complete')"
+          ><span class="pip"></span>{{ cost().complete }} complete</button>
+        }
+      </div>
+    </ng-template>
+  

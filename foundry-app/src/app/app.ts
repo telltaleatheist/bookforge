@@ -3,7 +3,7 @@ import {
 } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 
-import { isPdfName } from '@shared/capture';
+import { isPdfName } from '@owen/foundry-core/shared/capture';
 
 import { InspectorComponent } from './components/inspector/inspector.component';
 import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
@@ -38,15 +38,8 @@ import { StageService } from './core/stage.service';
 import { UiService } from './core/ui.service';
 import { UnappliedService } from './core/unapplied.service';
 import { api } from './core/foundry';
-
-/**
- * Whether this window stands on macOS — asked once, for the one branch whose
- * behaviour genuinely differs by platform (`undo`'s editable arm; the argument
- * lives there). `navigator.platform` is deprecated-but-shipped and is the only
- * synchronous answer the renderer has; Electron gives every window the real
- * value.
- */
-const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
+import * as dropping_ from './app.drop';
+import * as keys from './app.keys';
 
 /**
  * The shell: the LIBRARY SIDEBAR on the left — the tree above, the tool dock
@@ -127,250 +120,19 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
     CaptureNewDialogComponent, CaptureProgressComponent, SetupWizardComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="shell">
-      <!--
-        THE TOP ROW, AND IT BELONGS TO WHOEVER IS RUNNING THIS APP.
-
-        The window has the OS's own title bar and nothing of its own under it,
-        which was right for as long as everything on screen was about the book.
-        Hosted, it is not: the host runs a queue this app knows nothing about,
-        and in the host's own windows that queue's state is in the top corner
-        where a glance finds it. So the shell's column grows a first row for it,
-        pinned to the right where a status belongs, above everything that is
-        about a document.
-
-        IT COSTS THE STANDALONE APP NOTHING AND NOT NEARLY NOTHING. The chip's
-        host element is display:none until a host pushes something, and its
-        padding is on that same element, so this row occupies no pixels at all
-        in a window nobody mounted (see the component). Inside the flex column
-        rather than fixed over it, deliberately: a chip floating at z-index over
-        the inspector would be furniture nobody could move off the panel it
-        landed on, and this is chrome, not an overlay.
-      -->
-      <app-host-status />
-      <!--
-        AND THE OTHER OCCUPANT OF THAT CORNER, which is this app's OWN queue.
-
-        Owen, 2026-08-22, verbatim: *"can you make the queue shelf a bar along
-        the top right that i can click and look at"*. So the queue is a chip in
-        the top row now — a glance, a dropdown under it, and a page behind its
-        More info button (\`QueueBarComponent\` carries the ruling in full and
-        the gravestone for the shelf it replaces).
-
-        THE TWO CHIPS CANNOT COLLIDE, and it is by construction rather than by
-        arrangement: the host's chip is drawn only while a host is pushing a
-        status, and this one is not rendered hosted at all. Each is the corner's
-        whole content in exactly the world the other is absent from. Two rows in
-        the column rather than one shared row, because they are two components
-        with two visibility rules and a shared row would be a third rule to keep
-        in step with both.
-      -->
-      <app-queue-bar />
-      <div class="body">
-        <!--
-          THE LEFT SIDEBAR IS PERMANENT CHROME NOW, and that is Owen's sixth
-          ruling arriving rather than a change of mind about empty panels. It
-          used to be drawn only when there was something to LIST — *"an empty
-          list is 220 pixels of nothing taken off Home"* — and the dock's
-          buttons lived in a row along the bottom of the window. The buttons are
-          inside this panel now, so an unrendered sidebar would be an app with
-          no Settings, no Home and no Documents button on the one screen it
-          opens on. The justification inverted with the contents: a panel
-          holding the app's tools is not nothing.
-
-          Collapsed it is a 30px stub — the reopen button at the top, the tools
-          icon-only at the bottom — so putting the library away never puts the
-          dock away with it. The class is set HERE, on the element the shell's
-          flex row measures, so the width change and the flag are one pass.
-        -->
-        <app-open-documents [class.shut]="!ui.documentsShown()" />
-        <main class="main"><router-outlet /></main>
-        @if (inspectorUp()) {
-          <app-inspector />
-        }
-      </div>
-      <!--
-        THE NOTICES, AND THEY ARE IN THE SHELL NOW RATHER THAN ON A ROUTE.
-
-        \`app-notice-bar\` is deleted (Owen's ruling, 2026-08-22: Foundry's notices
-        should be toasts, hit on a multi-line capture refusal drawn as a band
-        across the top of the window). What replaces it is a stack of cards in the
-        bottom-right corner — \`ToastTrayComponent\`, whose
-        docblock carries the ruling, the arithmetic of the offset and the cost of
-        having no severity.
-
-        THE BAR WAS MOUNTED IN THE WORKSPACE PAGE, which was a smaller mistake
-        hiding inside the big one: a notice is about the WINDOW, not about a
-        route, and half the writers of the signal — the action menu, the library
-        panel, the queue panel's Save… — can be pressed with Settings on screen.
-        Every one of those sentences was raised into a component that was not
-        rendered, and vanished without ever being drawn. Here it is a sibling of
-        the queue bar and the dialogs, which is what it always was in kind: chrome
-        over the whole window, alive on every route.
-
-        Always mounted, never gated: the tray IS the reader of
-        \`NoticeService.notice\`, and a gate would be a door with nobody behind it.
-      -->
-      <app-toast-tray />
-
-      @if (ui.ocrOpen()) {
-        <app-ocr-dialog />
-      }
-
-      @if (ui.exportOpen()) {
-        <app-export-dialog />
-      }
-
-      @if (ui.translateOpen()) {
-        <app-translate-dialog />
-      }
-
-      @if (ui.simplifyOpen()) {
-        <app-simplify-dialog />
-      }
-
-      <!--
-        CLEAN TEXT. The card is mounted on its signal like every other dialog here;
-        what keeps it out of a standalone window is that nothing there can raise
-        the signal — the tile is drawn only when hosted (action-menu.component.ts).
-        Gating the mount as well would be a second copy of one rule.
-      -->
-      @if (ui.cleanOpen()) {
-        <app-clean-dialog />
-      }
-
-      @if (ui.metadataOpen()) {
-        <app-metadata-dialog />
-      }
-
-      @if (ui.mintMetaOpen()) {
-        <app-mint-meta-dialog />
-      }
-
-      @if (ui.captureNewOpen()) {
-        <app-capture-new-dialog />
-      }
-
-      <!--
-        THE REVIEW OF AN ASK RUN, WHICH IS THE ONE DIALOG HERE THAT IS NOT ABOUT
-        THE POSITION. The five above configure an act against the step somebody
-        is standing on; this one is about the BOOK PANE that is open: it lists
-        what the model marked and pushes the undo of any of it onto that pane's
-        own stack. It took the Sweep's place (Owen, 2026-10-29: "we dont need
-        sweep"). It is mounted with them because it is a modal and obeys the
-        one-question-at-a-time rule with them, and for no other reason.
-      -->
-      @if (ui.askReviewOpen()) {
-        <app-ask-review-dialog />
-      }
-      @if (ui.askPresetsOpen()) {
-        <app-ask-presets-dialog />
-      }
-
-      <!--
-        THE ANALYSIS DIALOG, mounted with the acts above it because it IS one of
-        them: it configures a run against the position, enqueues it held, and asks
-        nothing about the pane in front of anybody. What it produces is not a state
-        of the book but a report ABOUT it, which is why the thing that draws its
-        result is a COLUMN and not another modal — see the workspace's second
-        column, and docs/ANALYSIS.md §8.
-      -->
-      @if (ui.analysisOpen()) {
-        <app-analysis-dialog />
-      }
-
-      <!--
-        NOT IN UiService's ONE-QUESTION LIST, and not gated on a flag at all.
-        That list exists because a modal is a QUESTION and only one can be asked
-        at a time; this is a REPORT about work already under way, so only()
-        closing it when something else opens would be exactly wrong. It draws
-        while the service says an intake is running and not otherwise.
-      -->
-      <app-capture-progress />
-
-      <!--
-        FIRST RUN, AND IT IS MOUNTED UNCONDITIONALLY FOR A HARDER REASON THAN
-        capture-progress's. An @if around this is a DESTROY, and this component
-        holds the subscriptions that draw an environment download and a page-reader
-        download — both of which take many minutes, and the first of which keeps
-        running in another process regardless. A wrapper flag that flickered would take the
-        only progress a person can see off the screen while the download it was
-        reporting carried on. It decides its own visibility from
-        UiService.setupOpen, which the shell never touches.
-      -->
-      <app-setup-wizard />
-
-      <!--
-        THE HOST'S OWN ACT, CONFIGURED IN THIS WINDOW. Opened by a request
-        rather than a boolean (\`UiService.hostOpOpen\`), because unlike the five
-        above it cannot work out for itself what it is about: which operation,
-        which book, which node. Standalone nothing ever opens it — no host, no
-        operations, no forms.
-      -->
-      @if (ui.hostOpOpen() !== null) {
-        <app-host-op-dialog />
-      }
-
-      <!-- Always mounted, unlike the three above: it owns its own visibility
-           because the service that settles its promise has to be able to close
-           it from anywhere, including from another dialog opening. -->
-      <app-confirm-dialog />
-
-      @if (dropping()) {
-        <div class="drop-veil"><span>{{ dropSays() }}</span></div>
-      }
-    </div>
-  `,
-  styles: [`
-    :host { display: block; height: 100vh; }
-    /*
-      THE COLUMN THE DOCK LEFT BEHIND, PUT BACK TO WORK. \`.shell\` was a column —
-      the body above, the tool dock along the bottom — and the dock moved into the
-      left sidebar (Owen, 2026-08-17 22:30), leaving a one-child flex that was kept
-      rather than flattened, because the queue bar and the dialogs are its siblings
-      a \`display: block\` here would take the body's own height management with
-      it. It has a second child again: the host status chip's row, above the body,
-      which is nothing at all in a window nobody mounted and a top row when there
-      is one (\`HostStatusComponent\`).
-
-      \`min-height: 0\` still earns its place on the row: without it a flex item
-      does not shrink below its content, and a long tree would push the sidebar's
-      own pinned dock past the bottom of the window instead of scrolling inside
-      the panel.
-    */
-    .shell { display: flex; flex-direction: column; height: 100%; }
-    .body { display: flex; flex: 1; min-height: 0; }
-    .main { flex: 1; min-width: 0; height: 100%; overflow: hidden; }
-
-    .drop-veil {
-      position: fixed;
-      inset: 0;
-      z-index: 1000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg-overlay);
-      backdrop-filter: blur(4px);
-      border: 2px dashed var(--accent);
-      color: var(--text-primary);
-      font-family: var(--font-display);
-      font-size: 16px;
-      font-weight: 600;
-      pointer-events: none;
-    }
-  `],
+  templateUrl: './app.html',
+  styleUrl: './app.scss',
 })
 export class App {
-  private readonly documents = inject(OpenDocumentsService);
-  private readonly captures = inject(CaptureService);
+  readonly documents = inject(OpenDocumentsService);
+  readonly captures = inject(CaptureService);
   /**
    * The intake workspace — where a dropped IMAGE goes when no light table is in
    * front of it. Injected here because the drop seam is here: this is the one
    * handler that sees every file the window is given, and sorting them is a
    * decision about the drop rather than about any surface.
    */
-  private readonly shelf = inject(IntakeWorkspaceService);
+  readonly shelf = inject(IntakeWorkspaceService);
   /**
    * The rasterizer that turns a dropped PDF into a pile of pages, and the card
    * that asks which of the two things a dropped PDF means. Both are here for the
@@ -378,11 +140,11 @@ export class App {
    * whole drop, and "is this a book to open or a book to take apart" is a
    * question about the GESTURE, not about any surface.
    */
-  private readonly pdfPages = inject(PdfPagesService);
-  private readonly confirm = inject(ConfirmService);
-  private readonly stage = inject(StageService);
+  readonly pdfPages = inject(PdfPagesService);
+  readonly confirm = inject(ConfirmService);
+  readonly stage = inject(StageService);
   private readonly notices = inject(NoticeService);
-  private readonly stacks = inject(BookStacksService);
+  readonly stacks = inject(BookStacksService);
   /**
    * THE POSITION SYNC IS INJECTED AND NEVER CALLED, and that is the point.
    *
@@ -399,7 +161,7 @@ export class App {
    * came for free because all of this lived in the class App injected for its
    * other members (docs/PLAN.md §4).
    */
-  private readonly positions = inject(PositionSyncService);
+  readonly positions = inject(PositionSyncService);
   /**
    * The library, read for one question: has this app imported the document in
    * front of the user? A scan with a project behind it has a history worth a
@@ -465,7 +227,7 @@ export class App {
   });
 
   protected readonly dropping = signal(false);
-  private dragDepth = 0;
+  dragDepth = 0;
 
   /**
    * Ask main whether there is anything to offer, wait out the wizard if one is
@@ -625,186 +387,19 @@ export class App {
     this.ui.toggleDocuments();
   }
 
-  /**
-   * Ctrl/Cmd+Z, and the one decision that has to be made out here.
-   *
-   * THERE ARE TWO UNDOS IN THIS WINDOW and the chord means whichever one the
-   * caret is in. A text box — a rename input in the inspector, a settings field,
-   * a paragraph being retyped on the sheet — has the browser's own history and
-   * expects to keep it; that is what `role: 'undo'` used to give it, and taking it
-   * away so the book could have the chord would have made typing worse to make
-   * editing better. So a text field gets `execCommand`, which is exactly what the
-   * role menu did, and everything else goes to the book viewer's stack. (There
-   * were three while a chapter could be typed into an iframe this window could not
-   * see a caret in; that frame is deleted — docs/RENDERER.md §7.)
-   *
-   * `execCommand` is deprecated and there is no replacement for programmatic
-   * undo of a text field. It is what the platform still implements, and the
-   * alternative is a chord that does nothing in a textarea.
-   *
-   * THE DOCUMENT IS RESOLVED HERE AND HANDED DOWN. `BookStacksService` sits at
-   * the bottom of the service chain (docs/PLAN.md §4, unit 8c) and knows about a
-   * map keyed by tab id and nothing else; "what is in front of the user" is the
-   * stage's question. So the chord's raiser asks the stage and passes the answer,
-   * which is the same shape the routing always had — it is only that the two
-   * halves now live in the two services that own them. Null is legitimate and
-   * gets its own sentence: the chord arrived over Home.
-   */
-  private undo(redo: boolean): void {
-    const focused = document.activeElement;
-    const editable = focused instanceof HTMLInputElement
-      || focused instanceof HTMLTextAreaElement
-      || (focused instanceof HTMLElement && focused.isContentEditable);
-    if (editable) {
-      /*
-       * ── THE FIELD'S OWN UNDO RUNS ONCE, AND ON WINDOWS THAT MEANS NOT HERE ──
-       *
-       * Measured in a probe window (2026-08-23): a menu accelerator does NOT
-       * swallow the keypress on Windows — the page receives the raw keydown
-       * beside the menu click, so the browser's native undo already runs in the
-       * focused field, and the `execCommand('undo')` this branch used to make
-       * beside it was a SECOND undo per press. Two steps back for one chord, in
-       * whichever text box had the caret, is the shape of "undo behaves broken
-       * while I'm typing".
-       *
-       * ON MAC THE SYSTEM MENU CONSUMES THE KEY, so the native default never
-       * fires and `execCommand` remains the only road to the field's history —
-       * exactly the arrangement this branch was written for. So it is kept
-       * there and only there.
-       */
-      if (IS_MAC) document.execCommand(redo ? 'redo' : 'undo');
-      return;
-    }
-    const tab = this.stage.activeDocument();
-    void (redo ? this.stacks.redo(tab) : this.stacks.undo(tab));
-  }
+  undo(redo: boolean): void { return keys.undo.call(this, redo); }
 
   @HostListener('window:keydown', ['$event'])
-  protected onKeyDown(event: KeyboardEvent): void {
-    /*
-     * ── Ctrl/Cmd+Z AND Ctrl/Cmd+Shift+Z, HERE AS WELL AS ON THE MENU ────────
-     *
-     * Owen, 2026-09-07: *"the undo button works, but ctrl/cmd+z only works
-     * for some things."* The chord reached the book's stack by ONE road — the
-     * Edit menu's accelerator, arriving as `menu:action` — and that road does
-     * not exist wherever this window is hosted: BookForge's own Edit menu is
-     * the platform's `role: 'undo'`, which is `webContents.undo()`, the focused
-     * text field's history and nothing else. So hosted, the chord undid typing
-     * and never a strike; the button, which calls the pane directly, always
-     * did. "Some things" was the text boxes.
-     *
-     * THE KEYDOWN IS NOW THE ROAD ON WINDOWS AND LINUX, and the menu item is a
-     * label with a click. A menu accelerator does not swallow the keypress
-     * there (measured 2026-08-23 — the page receives the raw keydown beside
-     * the menu click), so listening here AND registering the accelerator would
-     * be two undos per press; the menu's Undo keeps its displayed chord and
-     * stops registering it (`registerAccelerator: false`, electron/main.ts),
-     * and a hosted window whose host registers the platform role still gets
-     * this keydown because that role does not swallow it either.
-     *
-     * ON MAC THE SYSTEM MENU CONSUMES THE KEY before the page sees it, so
-     * standalone this branch never fires there and the menu road stands as it
-     * was. Hosted on a Mac the HOST's role menu consumes it the same way, and
-     * the only fix is the host's: send `menu:action` `'undo'` to this window
-     * when it is the focused one (docs/BOOKFORGE-HANDOFF.md §8b).
-     *
-     * A CARET IN A TEXT BOX IS LEFT ALONE, and no `preventDefault` — the
-     * field's own history is the browser's default action for this very key,
-     * which is the whole of what `undo`'s editable arm protects.
-     */
-    if ((event.key === 'z' || event.key === 'Z') && (event.ctrlKey || event.metaKey) && !event.altKey) {
-      const focused = document.activeElement;
-      const editable = focused instanceof HTMLInputElement
-        || focused instanceof HTMLTextAreaElement
-        || (focused instanceof HTMLElement && focused.isContentEditable);
-      if (editable) return;
-      event.preventDefault();
-      this.undo(event.shiftKey);
-      return;
-    }
-    if (event.key === 'Escape' && this.ui.ocrOpen()) {
-      event.preventDefault();
-      this.ui.closeOcr();
-      return;
-    }
-    if (event.key === 'Escape' && this.ui.exportOpen()) {
-      event.preventDefault();
-      this.ui.closeExport();
-      return;
-    }
-    if (event.key === 'Escape' && this.ui.translateOpen()) {
-      event.preventDefault();
-      this.ui.closeTranslate();
-      return;
-    }
-    if (event.key === 'Escape' && this.ui.simplifyOpen()) {
-      event.preventDefault();
-      this.ui.closeSimplify();
-      return;
-    }
-    if (event.key === 'Escape' && this.ui.askPresetsOpen()) {
-      event.preventDefault();
-      this.ui.closeAskPresets();
-      return;
-    }
-    if (event.key === 'Escape' && this.ui.metadataOpen()) {
-      event.preventDefault();
-      this.ui.closeMetadata();
-      return;
-    }
-    /*
-     * Ctrl+Tab. `event.key` is 'Tab' with ctrlKey, and preventDefault is what
-     * stops the browser moving focus through the rail's buttons instead. It
-     * cycles the flat list of open documents, which is the only list there is —
-     * Ctrl+1…5 went with the columns it was addressing (docs/PLAN.md §4, 8b).
-     *
-     * TWO HALVES, HERE, because stepping to the next document is the same
-     * statement as clicking its row and the position has to follow. The mirror
-     * (`standForTab`) is in `PositionSyncService`, which sits ABOVE the stage in
-     * the dependency chain, so the stage answers with the id it landed on and the
-     * gesture's own handler does the second half. It is exactly what the
-     * workspace's pointerdown already does for the other gesture that means
-     * "this one".
-     */
-    if (event.key === 'Tab' && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      const next = this.stage.nextTab();
-      if (next !== null) void this.positions.standForTab(next);
-    }
-  }
+  protected onKeyDown(event: KeyboardEvent): void { return keys.onKeyDown.call(this, event); }
 
-  /**
-   * A FILE drag, and only a file drag.
-   *
-   * A row dragged inside the library — the loose files' reorder — uses the same
-   * platform mechanism, and without this test the veil ("Drop a PDF to open it")
-   * would slap itself over the whole window the moment one was picked up.
-   * `types` is the only part of a drag payload readable before the drop, which
-   * is exactly what it is for.
-   */
   @HostListener('window:dragenter', ['$event'])
-  protected onDragEnter(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    this.dragDepth += 1;
-    this.dropping.set(true);
-  }
+  protected onDragEnter(event: DragEvent): void { return dropping_.onDragEnter.call(this, event); }
 
   @HostListener('window:dragover', ['$event'])
-  protected onDragOver(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    // Without this the browser navigates the window to the dropped file, which
-    // replaces the whole app with a PDF and no way back.
-    event.preventDefault();
-  }
+  protected onDragOver(event: DragEvent): void { return dropping_.onDragOver.call(this, event); }
 
   @HostListener('window:dragleave', ['$event'])
-  protected onDragLeave(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    this.dragDepth = Math.max(0, this.dragDepth - 1);
-    if (this.dragDepth === 0) this.dropping.set(false);
-  }
+  protected onDragLeave(event: DragEvent): void { return dropping_.onDragLeave.call(this, event); }
 
   /**
    * WHAT A DROP WOULD MEAN RIGHT NOW, said on the veil before it happens.
@@ -857,238 +452,13 @@ export class App {
    * the front tab is the thing a person believes they are dropping onto — and
    * it is the same fact `dropSays` puts on the veil.
    */
-  private readonly intaking = computed(() => {
+  readonly intaking = computed(() => {
     const tab = this.stage.activeDocument();
     return tab !== null && tab.kind === 'capture' ? tab : null;
   });
 
   @HostListener('window:drop', ['$event'])
-  protected onDrop(event: DragEvent): void {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    this.dragDepth = 0;
-    this.dropping.set(false);
-    const files = Array.from(event.dataTransfer?.files ?? []);
+  protected onDrop(event: DragEvent): void { return dropping_.onDrop.call(this, event); }
 
-    const front = this.intaking();
-    if (front !== null) {
-      // One call with every file: intake copies, hashes and decodes them as a
-      // batch and answers once with what it did and would not do. Handing them
-      // over one at a time would be a recipe write per photograph and a notice
-      // bar that overwrites itself twenty-six times.
-      void this.captures.intake(front.path, files);
-      return;
-    }
-
-    /*
-     * ── THE MIXED DROP, SORTED BY WHAT THE FILE IS ───────────────────────────
-     *
-     * Owen (2026-08-22): *"the drop zone on the home page - lets have it accept
-     * images (HEIC, PNG, JPG, etc) as input, not just PDF. if the user
-     * drag/drops images into the home screen, it pulls them all up in the
-     * organizer"*. A drop is not one kind of thing — somebody selecting a
-     * folder's worth of a book can easily hand over a PDF and forty
-     * photographs in one gesture — so the files are SORTED rather than the drop
-     * being classified. A PDF or an EPUB goes through the document door it has
-     * always gone through, one tab each; an image goes to the intake workspace,
-     * all of them together, because a pile is what the workspace is for.
-     *
-     * ── WHY THE SEAM IS HERE AND NOT ON HOME'S RECTANGLE ─────────────────────
-     *
-     * Home HAS a drop target and it is decorative in the strict sense — the
-     * whole window takes the drop, and the rectangle exists so that anybody
-     * knows that (HomeComponent's docblock, and this class's). Hanging the
-     * workspace off that element would rebuild the exact failure the capture
-     * front-tab routing was written to fix: a strip down one side of the light
-     * table, with every drop that missed it falling through to the document
-     * admission and coming back as "IMG_0238.HEIC is not something Foundry
-     * opens". A person dropping photographs at this app is not aiming at a
-     * rectangle either.
-     *
-     * ── AND IT IS NOT GATED ON HOME BEING ON SCREEN ──────────────────────────
-     *
-     * The workspace lives in the library sidebar, which is permanent chrome on
-     * every route. So the rule is about the FILE, not about what is in front of
-     * it: an image is never a document this app can open, and with no capture
-     * project in front there is exactly one useful thing to do with one. Gating
-     * on the route would mean the same gesture, one second apart, either
-     * organised a shoot or raised a refusal — and the refusal is what it used
-     * to raise, which is what Owen was ending.
-     *
-     * HOSTED, THERE IS NO WORKSPACE and images fall through to the document
-     * door as they always did: `available` is the one place that decides it
-     * (`IntakeWorkspaceService`), for the reason "Photograph a book…" is behind
-     * the same guard — a project born here would land in a library the host is
-     * not keeping.
-     */
-    const images = this.shelf.available() ? files.filter(isWorkspaceImage) : [];
-    /*
-     * ── AND A PDF NOW MEANS TWO THINGS, SO THE DROP IS ASKED ABOUT ───────────
-     *
-     * Owen, 2026-09-10: *"give me the ability to drag/drop a pdf into a new
-     * book, not just images. if i do, it should take each page as an individual
-     * image. theres a book that is just a bunch of scanned images that need to
-     * be cropped and split and stuff"*.
-     *
-     * An image has exactly one useful meaning here and is sorted silently, one
-     * paragraph down. A PDF has TWO, and both are things this app does for a
-     * living: it is a book to OPEN — the gesture this window has had since the
-     * first day and the one most drops mean — or it is a bound stack of
-     * photographs to TAKE APART onto the light table. Nothing about the file
-     * says which; the same scan is both, on different evenings.
-     *
-     * SO IT IS ASKED RATHER THAN GUESSED, and asked ONCE for the whole drop
-     * rather than once per file — somebody handing over four scans at a time
-     * means the same thing by all four, and four stacked cards would be this app
-     * making them say it four times. The card is deferred to `sortPdfs` because
-     * it is a round trip and this handler must not become async: the files list
-     * off a `DragEvent` does not survive an await.
-     *
-     * A LIGHT TABLE IN FRONT NEEDS NO CARD AT ALL and never reaches here — the
-     * intake door above takes the whole drop, and a PDF dropped on a table of
-     * page cards has only ever had one meaning (`CaptureService.intake`).
-     *
-     * HOSTED, THERE IS NO WORKSPACE AND SO NO SECOND MEANING. `available` is the
-     * one place that decides it, for the reason images fall through there too: a
-     * project born in a hosted window would land in a library the host is not
-     * keeping.
-     */
-    const pdfs = this.shelf.available() ? files.filter((file) => isPdfName(file.name)) : [];
-    if (pdfs.length > 0) void this.sortPdfs(pdfs);
-
-    if (images.length > 0) {
-      this.shelf.take(images);
-      /*
-       * AND THE PANEL IS OPENED, because the workspace is IN it. A drop that
-       * landed behind a collapsed 30-pixel stub is a drop that vanished — the
-       * toast would say twenty images arrived and the window would show no sign
-       * of one. This is the shell's business rather than the service's: the
-       * service holds the images, the shell holds the furniture they are drawn
-       * in, and a service reaching out to un-collapse a panel would be the
-       * wrong half of the app deciding what is on screen.
-       */
-      this.ui.documentsShown.set(true);
-    }
-
-    // Every file, not just the first: a drop of three books is three tabs, which
-    // is the whole reason there are tabs.
-    for (const file of files) {
-      // A PDF's tab is opened by `sortPdfs` if that is what the person says they
-      // meant. Opening it here as well would put the book on screen before the
-      // card asking whether they wanted it there had been answered.
-      if (images.includes(file) || pdfs.includes(file)) continue;
-      void this.documents.openDropped(file);
-    }
-  }
-
-  /**
-   * Ask what the dropped PDFs are, and do it.
-   *
-   * ── THE DISMISSAL DOES NOTHING, DELIBERATELY ────────────────────────────────
-   *
-   * Escape, the scrim, or another dialog opening over this one answers `nothing`
-   * — no tab, no pages, no toast. The alternative considered was to fall back to
-   * opening, on the grounds that it is what the window did before this card
-   * existed and it is cheap to undo. It is out because a dismissal is a person
-   * saying "not this", and answering it with an action is the card overruling
-   * them; the gesture is a drag away from being repeated, and the file is still
-   * wherever they dragged it from.
-   *
-   * ── THE PAGES ARE READ ONE PDF AT A TIME ────────────────────────────────────
-   *
-   * Sequentially, not in parallel: each explosion holds a canvas the size of a
-   * page and a pdf.js worker, and two at once would double both to finish no
-   * sooner — the work is the rasterizing, and it is already using the machine.
-   * It also keeps the progress card telling one true story rather than two
-   * interleaved ones.
-   *
-   * ── THE TWO BUTTONS ARE NAMED FOR THE PERSON WHO DID NOT BUILD THIS ────────
-   *
-   * They said *Open it* and *Make a book from its pages*, and Owen retired both
-   * (2026-09-21): *"maybe we can rename those buttons to make sense for somebody
-   * who doesnt know what theyre for exactly. maybe it can just be 'edit book' or
-   * 'open book'. that might be more logical."* — and the sentence he gave for why
-   * is the whole ruling: *"that makes sense to me because i know what i
-   * programmed it to do."*
-   *
-   * "Make a book from its pages" describes the MACHINERY — an explosion, a light
-   * table, a selection, a mint — to somebody who has not met any of it. *Edit
-   * book* describes the OUTCOME, which is the only thing they can have an opinion
-   * about; that it happens by taking the book apart is what the detail paragraphs
-   * are for, and they now say it in words nobody has to already know.
-   *
-   * THE PAIR IS DELIBERATELY SYMMETRICAL — *Open book* / *Edit book*, one verb
-   * apart — because the question this card asks is which of two things the person
-   * means, and two labels of different shapes read as two unrelated offers. The
-   * same two words name the door inside an open book (`ActionMenuComponent`'s
-   * *Edit book*, which does exactly this to a project's own PDF), and that is not
-   * a coincidence to be tidied away: one gesture with one name, wherever it is
-   * reached from.
-   */
-  private async sortPdfs(pdfs: readonly File[]): Promise<void> {
-    const one = pdfs.length === 1;
-    const answer = await this.confirm.put({
-      title: one ? pdfs[0]!.name : `${pdfs.length} PDFs`,
-      message: one
-        ? 'What is this?'
-        : 'What are these?',
-      detail: [
-        one
-          ? 'Open book reads it exactly as it is: the pages go through Foundry the ordinary way, '
-            + 'and everything after that is made from what they say.'
-          : 'Open books reads them exactly as they are: the pages go through Foundry the ordinary '
-            + 'way, and everything after that is made from what they say.',
-        one
-          ? 'Edit book takes it apart first, into one picture per page, so you can crop them, '
-            + 'split a two-page spread into two pages, and turn a page the right way up. The book '
-            + 'is rebuilt out of the pages you fixed, and read from there.'
-          : 'Edit books takes them apart first, into one picture per page, so you can crop them, '
-            + 'split a two-page spread into two pages, and turn a page the right way up. Each book '
-            + 'is rebuilt out of the pages you fixed, and read from there.',
-        'Pages land in the workspace, where you choose which of them become a book.',
-      ],
-      choices: [
-        { key: 'open', label: one ? 'Open book' : 'Open books' },
-        { key: 'pages', label: one ? 'Edit book' : 'Edit books' },
-      ],
-      preferred: 'open',
-      dismissed: 'nothing',
-      checkbox: null,
-    });
-
-    if (answer.key === 'open') {
-      for (const file of pdfs) void this.documents.openDropped(file);
-      return;
-    }
-    if (answer.key !== 'pages') return;
-
-    /*
-     * THE PANEL IS OPENED BEFORE THE FIRST PAGE IS DRAWN, not after the last.
-     * The workspace lives inside it, and the reason is the one written where
-     * images do the same: a drop that landed behind a collapsed 30-pixel stub is
-     * a drop that vanished. Here it matters more, because the rasterizing takes
-     * minutes and the person should be able to watch the cards arrive.
-     */
-    this.ui.documentsShown.set(true);
-    for (const file of pdfs) {
-      const exploded = await this.pdfPages.explode(file, true);
-      if (exploded !== null) {
-        this.shelf.takePages(exploded);
-        continue;
-      }
-      /*
-       * A NULL IS TWO DIFFERENT THINGS AND THEY ARE ANSWERED DIFFERENTLY. A scan
-       * that would not open is no reason to lose the three beside it, so the
-       * loop goes on. STOP MEANT ALL OF THEM — somebody who pressed it once and
-       * then watched the next PDF start would be pressing it four times to end
-       * one gesture.
-       */
-      if (this.pdfPages.stopped()) return;
-    }
-  }
-}
-
-/** Whether a drag is carrying files from outside the app, rather than a library row. */
-function carriesFiles(event: DragEvent): boolean {
-  return event.dataTransfer?.types.includes('Files') === true;
+  sortPdfs(pdfs: readonly File[]): Promise<void> { return dropping_.sortPdfs.call(this, pdfs); }
 }

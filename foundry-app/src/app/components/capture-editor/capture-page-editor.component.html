@@ -1,0 +1,255 @@
+
+    <div class="editor">
+      <div class="picture-column">
+        <!--
+          THE FRAME OWNS THE LEFTOVER HEIGHT. See the styles: without it the
+          picture sized itself against the whole column and overflowed it.
+        -->
+        <!--
+          THE LISTENERS ARE ON THE FRAME, NOT ON THE PICTURE, and that is the
+          whole of Owen's "cant grab the top two".
+
+          A handle is 18px wide and centred ON its corner with a -9px margin, so
+          a quad hugging an edge -- which the whole-frame default is, on every
+          photograph of this shoot -- puts HALF of each edge handle outside the
+          picture. A press aimed at the visible dot then lands on whatever is
+          behind it, and grab() never runs. The bottom corners happened to sit
+          far enough inside the visible area on his screen for their circles to
+          be fully over the listener, which is the entire asymmetry: the top two
+          were not special, they were just the ones at an edge he pressed above.
+
+          The frame owns the leftover space and is padded (see the styles), so
+          every handle now has listening surface all the way around it. The
+          fraction conversion still measures the PICTURE, so a press that starts
+          in the padding is simply a fraction slightly outside [0,1] -- which the
+          drag already clamps, and which cornerNear already measures honestly.
+        -->
+        <!--
+          THE CURSOR IS THE ONLY THING SAYING ANY OF THIS IS DRAGGABLE.
+
+          Every handle here is pointer-events:none, so the browser hit-tests
+          nothing and a :hover rule on a corner or the gutter would never match.
+          The frame carries the classes instead, off the same walk the press
+          uses -- see under(). Held beats hovering, because a hand that has
+          already taken hold of something is past being told it could.
+        -->
+        <div
+          class="frame"
+          #frame
+          [class.can-grab]="over() !== null"
+          [class.grabbing]="held() !== null || holdingSplit() !== null"
+          [class.on-cut]="onTheCut()"
+          (pointerdown)="grab($event)"
+          (pointermove)="drag($event)"
+          (pointerup)="release($event)"
+          (pointercancel)="release($event)"
+          (pointerleave)="over.set(null)"
+        >
+        <div
+          class="picture"
+          #picture
+          [class.page]="projecting()"
+          [style.aspect-ratio]="turned().box"
+          [style.width]="turned().slotWidth"
+          [style.height]="turned().slotHeight"
+        >
+        <!--
+          THE PHOTOGRAPH IS SHOWN THE WAY ROUND IT WILL PRINT.
+
+          Owen, three separate reports, the last of them: "no matter how i
+          rotated it, the thumbnails are properly rotated, but the main image
+          inside the modal is not rotated". It was not, and that was the
+          design -- a turn permutes the corner assignment without moving a
+          corner, so the picture is identical before and after and only the
+          first-corner mark moves.
+
+          It is a bad argument, and the evidence is that the person it was
+          written for could not read it three times running. The table draws the
+          printed orientation, so the editor was the one surface disagreeing
+          with every other: turn twenty-five spreads upright, see them upright
+          on the table, open one, find it on its side.
+
+          Picture and handles turn as ONE element, as the card does and for the
+          same reason -- the handles are drawn in the photograph's own fraction
+          space, so turning one without the other would put a sideways crop over
+          an upright photograph, which reads as a bug in the crop rather than as
+          an absence.
+        -->
+        <div
+          class="spun"
+          #spun
+          [class.texture]="projecting()"
+          [style.width]="turned().spunWidth"
+          [style.height]="turned().spunHeight"
+          [style.transform]="turned().spin"
+        >
+          <!--
+            (load) IS THE OTHER HALF OF THE REDRAW, and see repaint() for why an
+            effect alone could not be.
+
+            IT IS STILL HERE IN THE SPLIT PASS AND IT IS THE TEXTURE THEN, not
+            the picture -- invisible rather than absent, exactly as the light
+            table's cards do it, because `display: none` would be a photograph
+            the browser never decodes and a canvas that never gets anything to
+            draw.
+          -->
+          <img
+            #photo
+            [src]="source()"
+            [alt]="'The photograph being edited'"
+            (load)="repaint()"
+            draggable="false"
+          />
+
+          @if (!projecting()) {
+            <!--
+              The handles are an SVG in the picture's own fraction space
+              (viewBox 0 0 1 1), so nothing here has to know the pixel size of
+              the box it is drawn in, and a resize needs no recomputation.
+              `vector-effect` keeps the strokes one pixel wide at any scale.
+            -->
+            <svg class="handles" viewBox="0 0 1 1" preserveAspectRatio="none">
+              <!--
+                THE BOOK'S CROP, UNDER THIS PAGE'S OWN, so a deviation is a thing
+                you can SEE rather than a thing you have to remember.
+
+                A complete photograph sits out every Apply, which means the crop
+                it holds can drift arbitrarily far from the book's and nothing on
+                the surface would say so -- the page looks correct because it IS
+                what somebody placed. Drawn faint and dashed and BENEATH the real
+                outline, so it reads as a reference rather than as a second
+                choice: the solid line is the page that will be minted, always.
+
+                Absent when the two agree, because a control -- or a mark -- that
+                would change nothing is not shown, and a dashed line hiding
+                exactly under a solid one is noise on every page in the book.
+              -->
+              @if (ghost(); as book) {
+                <polygon
+                  class="ghost"
+                  vector-effect="non-scaling-stroke"
+                  [attr.points]="outlineOf(book)"
+                />
+              }
+              @for (quad of quads(); track $index) {
+                <polygon
+                  class="outline"
+                  vector-effect="non-scaling-stroke"
+                  [attr.points]="outlineOf(quad)"
+                />
+              }
+              @if (cut(); as line) {
+                <line
+                  class="split"
+                  vector-effect="non-scaling-stroke"
+                  [attr.x1]="line.a.point[0]" [attr.y1]="line.a.point[1]"
+                  [attr.x2]="line.b.point[0]" [attr.y2]="line.b.point[1]"
+                />
+              }
+            </svg>
+
+            <!--
+              Corner handles are DOM rather than SVG circles: they want a hit area
+              bigger than the dot a person aims at, and a CSS box gives that for
+              free at any zoom. Positioned in percentages, which is the same
+              fraction space the quads are already in.
+            -->
+            @for (handle of handles(); track handle.key) {
+              <span
+                class="handle"
+                [class.first]="handle.corner === 0"
+                [class.held]="held()?.quad === handle.quad && held()?.corner === handle.corner"
+                [style.left.%]="handle.at[0] * 100"
+                [style.top.%]="handle.at[1] * 100"
+              ></span>
+            }
+
+            <!--
+              THE GUTTER'S TWO ENDS, EACH RIDING AN EDGE OF THE PAGE.
+
+              Drawn where the geometry resolves the end to, not at the stored endpoint:
+              the segment is gesture state and goes stale against a crop dragged
+              after it, so what is on screen is where the geometry says the end
+              actually sits. They are a different colour from the corners because
+              they do a different thing -- a corner moves the page, these move the
+              cut through it.
+            -->
+            @if (cut(); as line) {
+              <span
+                class="gutter"
+                [class.held]="holdingSplit() === 'a'"
+                [style.left.%]="line.a.point[0] * 100"
+                [style.top.%]="line.a.point[1] * 100"
+              ></span>
+              <span
+                class="gutter"
+                [class.held]="holdingSplit() === 'b'"
+                [style.left.%]="line.b.point[0] * 100"
+                [style.top.%]="line.b.point[1] * 100"
+              ></span>
+            }
+          }
+        </div>
+
+        <!--
+          THE SPLIT PASS'S STAGE: THE PAGE, AND ONE LINE THROUGH IT.
+
+          Wave 25's Apply is a commitment point -- no pixels are cut until Finish,
+          but every surface starts drawing the rectified projection. The table
+          did it first (the cards); this is the same picture at workbench size,
+          off the same shader, drawn into a 2D canvas from the editor's ONE
+          rectifier so the window gains no second WebGL context.
+
+          THE CORNERS ARE NOT DRAWN AND NOT GRABBABLE HERE, which is the whole
+          argument for the pass being a pass: what is on the stage answers the
+          scope question before it is asked. The frame is settled; a handle that
+          re-opened it would put the crop pass back on top of the split pass and
+          undo the reason the cut fits every page at once.
+        -->
+        @if (projecting()) {
+          <canvas #face class="face" [class.drawn]="drawn()"></canvas>
+          <svg class="handles" viewBox="0 0 1 1" preserveAspectRatio="none">
+            @if (pageCut(); as line) {
+              <line
+                class="split"
+                vector-effect="non-scaling-stroke"
+                [attr.x1]="line.a[0]" [attr.y1]="line.a[1]"
+                [attr.x2]="line.b[0]" [attr.y2]="line.b[1]"
+              />
+            }
+          </svg>
+          @if (pageCut(); as line) {
+            <span
+              class="gutter"
+              [class.held]="holdingSplit() === 'a'"
+              [style.left.%]="line.a[0] * 100"
+              [style.top.%]="line.a[1] * 100"
+            ></span>
+            <span
+              class="gutter"
+              [class.held]="holdingSplit() === 'b'"
+              [style.left.%]="line.b[0] * 100"
+              [style.top.%]="line.b[1] * 100"
+            ></span>
+          }
+        }
+        </div>
+        </div>
+
+      </div>
+
+      <div class="previews">
+        @for (preview of previews(); track preview.index) {
+          <figure>
+            <canvas #previewCanvas [width]="preview.width" [height]="preview.height"></canvas>
+            <figcaption>
+              Page {{ preview.index + 1 }}
+              @if (!preview.withinSource) {
+                <span class="outside">— corners fall outside this photograph</span>
+              }
+            </figcaption>
+          </figure>
+        }
+      </div>
+    </div>
+  

@@ -1,0 +1,100 @@
+
+    <div class="page">
+      <nav class="rail">
+        <h1>Settings</h1>
+        <div class="section-list">
+          @for (section of sections; track section.id) {
+            <button class="section-item" type="button"
+                    [class.active]="selected() === section.id"
+                    (click)="selected.set(section.id)">
+              <span class="section-icon">{{ section.icon }}</span>
+              <span class="section-name">{{ section.name }}</span>
+            </button>
+          }
+        </div>
+
+        <!--
+          SET APART FROM THE LIST BECAUSE IT ACTS RATHER THAN NAVIGATES, and
+          hidden inside a host for setup-card's own reason: the wizard's first
+          step is the library, which a hosted window does not own, and its later
+          steps reconfigure an engine the host runs. UiService.openSetup refuses
+          there as well, so this is a hidden door and not a decorated one.
+        -->
+        @if (!hosted()) {
+          <button class="section-item guided-setup" type="button" (click)="openSetup()">
+            <span class="section-icon">🧭</span>
+            <span class="section-name">Run guided setup…</span>
+          </button>
+        }
+      </nav>
+
+      <section class="pane">
+        <!--
+          THE SCROLLER FILLS THE WINDOW AND THE CONTENT IS CENTRED INSIDE IT.
+          It used to be one element doing both jobs — max-width 860 AND
+          overflow-y — which put the scrollbar at the right edge of the CONTENT,
+          860px into a 2000px window, with dead space beyond it. A scrollbar
+          belongs at the edge of the thing it scrolls, and the thing it scrolls
+          is the window. Owen, seeing it: "the scrollbar is in the middle of the
+          window."
+        -->
+        <div class="pane-inner">
+        @if (current(); as section) {
+          <header class="pane-head">
+            <h2>{{ section.name }}</h2>
+            <p class="pane-detail">{{ section.description }}</p>
+          </header>
+
+          @switch (section.id) {
+            @case ('general') {
+              <!--
+                Where the books go, FIRST, because it is the one setting in this
+                app that is about the user's own files rather than about which
+                Python reads a page. Hosted, it is the HOST's fact about its own
+                data — main refuses library:set anyway — and a control that can
+                only refuse is not a control, so the card goes.
+              -->
+              @if (!hosted()) {
+                <app-library-card />
+              }
+
+              <!-- What the first-run walk-through skipped, which is a fact a
+                   person can act on. The button that re-runs it is under the
+                   section list, where actions live. -->
+              <app-setup-card />
+
+            }
+
+            @case ('crucible') {
+              <!--
+                WHERE WORK CAN GO — the Crucible servers this machine knows
+                about, in the order it will try them (docs/SLOTS.md). Drawn
+                hosted as well, read-only, because a hosted window still has
+                slots — the host's — and a card that vanished would leave the
+                queue's picker naming machines nothing explains.
+              -->
+              <app-servers-card />
+            }
+
+            @case ('ai') {
+              <!--
+                AND WHAT EACH OF THOSE SERVERS HAS BEEN TOLD TO DO WITH THE WORK
+                (crucible docs/PHASE15-HOST.md §3.7, §5.2). Nothing on it is
+                stored here — Owen's ruling is that the engine is the single
+                source of truth for these settings, so every control is a
+                request to it and its answer is what redraws. Not hidden hosted,
+                because §5.3 says the hosted pane draws the HOST's registry and
+                shows the same engine.
+              -->
+              <app-ai-pane />
+            }
+
+            @case ('doctor') {
+              <app-doctor-pane />
+            }
+          }
+        }
+        </div>
+      </section>
+    </div>
+  

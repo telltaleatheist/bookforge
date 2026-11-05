@@ -1,0 +1,42 @@
+
+    /*
+     * A ROW SINCE WAVE 21b, AND IT USED TO BE A COLUMN. The column existed to
+     * stack the mint footer under the table; the mint is at the foot of the
+     * rail now, so what is left is two things side by side and no wrapper is
+     * needed to say so.
+     */
+    :host {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      height: 100%;
+      min-height: 0;
+    }
+
+    /* The rail sizes itself; the table takes what is left, which is why the
+       photographs get wider on a wider window and the rail does not. */
+    .table {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: auto;
+    }
+
+    /*
+     * THE FOOTER'S RULES ARE GONE WITH THE FOOTER (Wave 21b) -- .bar, .grow,
+     * .which, .mint, .count, .progress, .quiet and .act all styled a strip
+     * under the table that the prepare rail replaced. They are not moved here
+     * in spirit; the rail declares its own, because of the lesson the deleted
+     * block existed to record:
+     *
+     * ANGULAR COMPONENT STYLES ARE SCOPED, so a button in a new component
+     * inherits nothing from the grid, the editor or any dialog. This file once
+     * shipped four buttons with no rules at all -- one of them MINT THE PAGES --
+     * rendering native white, the same defect Owen found in the new-project
+     * modal, which had carried confirm-dialog's class names and none of its
+     * rules. Any component that grows a button grows the rules for it in the
+     * same file, and capture-rail.component.ts does.
+     */
+  

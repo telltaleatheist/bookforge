@@ -1,0 +1,213 @@
+
+    /*
+     * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT — the same argument the
+     * confirm dialog makes, and for the same reason: this component is mounted
+     * for the whole life of the window (an @if around it would be a DESTROY,
+     * and destroying it mid-install drops the progress subscriptions), so a
+     * fixed, full-window host is a sheet of glass over the entire application
+     * at all times unless it is told not to take the pointer.
+     *
+     * 1250 is the capture-progress rung: above every dialog, because on first
+     * run there is nothing behind this worth clicking, and below the confirm
+     * card at 1300 so a question asked BY this screen lands on top of it.
+     */
+    :host {
+      position: fixed;
+      inset: 0;
+      z-index: 1250;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+
+    .scrim {
+      position: absolute;
+      inset: 0;
+      pointer-events: auto;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(4px);
+      animation: fade 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+    .card {
+      position: relative;
+      pointer-events: auto;
+      width: min(680px, calc(100vw - 48px));
+      max-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.45);
+      animation: rise 140ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    .rail {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 12px 14px 0;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--border-default);
+      transition: background-color 140ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .dot.past { background: var(--accent-strong); }
+    .dot.here { background: var(--accent); transform: scale(1.35); }
+    .spacer { flex: 1; }
+    .shut {
+      background: none;
+      border: none;
+      color: var(--text-tertiary);
+      font-size: 13px;
+      line-height: 1;
+      padding: 2px 4px;
+      cursor: pointer;
+    }
+    .shut:hover { color: var(--text-primary); }
+
+    .head { padding: 8px 20px 4px; }
+    .title { margin: 0; font-family: var(--font-display); font-size: 17px; font-weight: 600; }
+    .blurb { margin: 4px 0 0; font-size: 12px; color: var(--text-tertiary); }
+
+    .body {
+      padding: 12px 20px 8px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .lead { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-primary); }
+    .line { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+    .small { margin: 0; font-size: 11px; color: var(--text-tertiary); word-break: break-word; }
+    .small.bad, .bad { color: var(--error); }
+    .ok-note { margin: 0; font-size: 12px; color: var(--ok); }
+    .mono { font-family: var(--font-mono); word-break: break-all; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-tertiary);
+    }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .path {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 6px 8px;
+    }
+
+    .dotstate {
+      width: 8px;
+      height: 8px;
+      margin-top: 5px;
+      border-radius: 50%;
+      background: var(--text-tertiary);
+      flex-shrink: 0;
+    }
+    .dotstate[data-ok="true"] { background: var(--ok); }
+
+
+    .badge {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-radius: 999px;
+      padding: 2px 8px;
+    }
+    .badge.held { color: var(--ok); background: var(--ok-soft); }
+    .badge.warn-badge { color: var(--warn); background: var(--warn-soft); }
+
+    .wsl { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+    .engine {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 10px;
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
+    .engine-card {
+      margin: 0;
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text-primary);
+    }
+
+    .acts { display: flex; flex-direction: column; gap: 2px; }
+    .act { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    /* The dot sits on a text baseline everywhere else in this card; on these
+       rows it sits in a flex line of its own, so the nudge has to come off. */
+    .act .dotstate { margin-top: 0; }
+    .act-name { color: var(--text-primary); }
+    .act-by { margin-left: auto; color: var(--text-tertiary); text-align: right; }
+    .act[data-ok="false"] .act-by { color: var(--warn); }
+    /* The server's own sentence about a refusal, indented under its row so it
+       reads as an explanation of that line rather than a new one. */
+    .act-why { padding: 0 0 4px 16px; }
+
+    .bar { height: 4px; background: var(--bg-sunken); border-radius: 2px; overflow: hidden; }
+    .fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
+    /* No honest percentage outside a download — the bar says so rather than
+       inventing a number to keep itself moving. See env-install.ts. */
+    .bar.indeterminate .fill { width: 35% !important; animation: slide 1.2s ease-in-out infinite; }
+    @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+
+    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .foot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px 16px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .primary, .ghost {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 32px;
+      padding: 0 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1;
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .primary {
+      border: none;
+      background: var(--accent);
+      color: var(--text-inverse);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .primary:active:not(:disabled) { background: var(--accent-active); transform: scale(0.98); }
+    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ghost {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+    }
+    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+  

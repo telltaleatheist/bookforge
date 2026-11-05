@@ -1,0 +1,123 @@
+
+    @if (ui.mintMetaOpen(); as ask) {
+      <div class="scrim" (click)="ui.closeMintMeta()"></div>
+
+      <div class="card" role="dialog" aria-modal="true" aria-label="Book metadata">
+        <header class="head">
+          <span class="title">{{ ask.mode === 'mint' ? 'Export EPUB' : 'Metadata' }}</span>
+          <button class="x" (click)="ui.closeMintMeta()" title="Close">✕</button>
+        </header>
+
+        <div class="body">
+          @if (ask.mode === 'edit') {
+            <!--
+              A FACT, NOT A FIELD. A read-only input is a control that looks
+              pressable and is not — Owen, 2026-09-17: *"if an option is impossible
+              to click … dont present it as an option. it isnt an option. present
+              it as information or dont present it at all."* The dialog was opened
+              ON this document; there was never a second one to pick.
+            -->
+            <p class="fact" [title]="ask.path">{{ ask.file }}</p>
+          }
+
+          <label class="field">
+            <span class="label">Title</span>
+            <input type="text" [ngModel]="title()" (ngModelChange)="edit(title, $event)" name="title">
+          </label>
+          <label class="field">
+            <span class="label">Subtitle</span>
+            <input type="text" [ngModel]="subtitle()" (ngModelChange)="edit(subtitle, $event)" name="subtitle">
+          </label>
+
+          <!--
+            AUTHORS AS A LIST, BookForge's own shape: {first, last} rows with
+            add/remove, the first row the primary. The filename reads them
+            through the 1 / 2 / "et al." convention, and the display string is
+            "First Last, First Last" wherever one line is wanted.
+          -->
+          <div class="field">
+            <span class="label">Authors</span>
+            @for (author of authors(); track $index) {
+              <div class="author">
+                <input
+                  type="text"
+                  placeholder="First"
+                  [ngModel]="author.first"
+                  (ngModelChange)="editAuthor($index, 'first', $event)"
+                  [name]="'author-first-' + $index">
+                <input
+                  type="text"
+                  placeholder="Last"
+                  [ngModel]="author.last"
+                  (ngModelChange)="editAuthor($index, 'last', $event)"
+                  [name]="'author-last-' + $index">
+                <button
+                  type="button"
+                  class="x"
+                  title="Remove this author"
+                  [disabled]="authors().length === 1"
+                  (click)="removeAuthor($index)"
+                >✕</button>
+              </div>
+            }
+            <button type="button" class="add" (click)="addAuthor()">+ Add author</button>
+          </div>
+
+          <div class="pair">
+            <label class="field">
+              <span class="label">Year</span>
+              <input type="text" placeholder="1934" [ngModel]="year()" (ngModelChange)="edit(year, $event)" name="year">
+            </label>
+            <label class="field">
+              <span class="label">Language</span>
+              <select [ngModel]="language()" (ngModelChange)="edit(language, $event)" name="language">
+                @for (option of languages(); track option.value) {
+                  <option [value]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </label>
+          </div>
+
+          @if (ask.mode === 'mint') {
+            <!--
+              THE FILENAME, LIVE — BookForge's convention exactly, and their
+              override semantics exactly: it regenerates from the fields until
+              the person types in it, and from then on their spelling stands.
+              Focusing the empty field seeds it with the generated name so
+              there is something to edit rather than a blank to compose into.
+            -->
+            <label class="field">
+              <span class="label">Filename</span>
+              <input
+                type="text"
+                [ngModel]="filenameShown()"
+                (ngModelChange)="overrideFilename($event)"
+                (focus)="seedFilename()"
+                name="filename">
+            </label>
+            <p class="note">
+              On disk the name is simplified to ASCII — the book’s own metadata keeps the real
+              characters.
+            </p>
+          } @else {
+            <p class="note">
+              Saving stamps this file where it is filed — a side file and one rename, near
+              instant — and remembers the answers for the next book minted from this project.
+              The file keeps its name.
+            </p>
+          }
+
+          @if (problem(); as said) {
+            <p class="problem">{{ said }}</p>
+          }
+        </div>
+
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeMintMeta()">Cancel</button>
+          <button class="primary" [disabled]="busy()" (click)="confirm()">
+            {{ busy() ? 'Working…' : ask.mode === 'mint' ? 'Export' : 'Save' }}
+          </button>
+        </footer>
+      </div>
+    }
+  

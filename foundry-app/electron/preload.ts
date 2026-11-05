@@ -8,19 +8,19 @@
  */
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
-import type { FoundryApi, MenuAction } from '../shared/api';
-import type { CrucibleCoordinationState } from '../shared/coordinate-wire';
-import type { CrucibleInstallEvent } from '../shared/crucible-install-wire';
-import type { HostOffers, HostStatus } from '../shared/host-ops';
-import type { CruciblePullProgress } from '../shared/model-wire';
-import type { AskProgress } from '../shared/ask';
-import type { SuggestProgress } from '../shared/category-suggestions';
+import type { FoundryApi, MenuAction } from '@owen/foundry-core/shared/api';
+import type { CrucibleCoordinationState } from '@owen/foundry-core/shared/coordinate-wire';
+import type { CrucibleInstallEvent } from '@owen/foundry-core/shared/crucible-install-wire';
+import type { RepairState } from '@owen/foundry-core/shared/crucible-repair-wire';
+import type { HostOffers, HostStatus } from '@owen/foundry-core/shared/host-ops';
+import type { CruciblePullProgress } from '@owen/foundry-core/shared/model-wire';
+import type { AskProgress } from '@owen/foundry-core/shared/ask';
+import type { SuggestProgress } from '@owen/foundry-core/shared/category-suggestions';
 import type {
   AppQuestion,
   Asked,
   CaptureIntakeProgress,
   CloseAnswer,
-  EnvInstallProgress,
   HostNodes,
   Job,
   PageReaderProgress,
@@ -28,7 +28,7 @@ import type {
   ReReadAnswer,
   ServerStatus,
   UnappliedAnswer,
-} from '../shared/types';
+} from '@owen/foundry-core/shared/types';
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const wrapped = (_event: unknown, value: T): void => listener(value);
@@ -304,6 +304,11 @@ const api: FoundryApi = {
       subscribe<CruciblePullProgress>('crucible:pull-progress', listener),
     installPlan: () => ipcRenderer.invoke('crucible:install-plan'),
     install: () => ipcRenderer.invoke('crucible:install'),
+    localPresence: () => ipcRenderer.invoke('crucible:local-presence'),
+    repair: (server, verifyOnly) => ipcRenderer.invoke('crucible:repair', server, verifyOnly),
+    repairStates: () => ipcRenderer.invoke('crucible:repair-states'),
+    repairStop: (server) => ipcRenderer.invoke('crucible:repair-stop', server),
+    onRepairState: (listener) => subscribe<RepairState>('crucible:repair-state', listener),
     installStatus: () => ipcRenderer.invoke('crucible:install-status'),
     onInstallEvent: (listener) => subscribe<CrucibleInstallEvent>('crucible:install-event', listener),
     installRetry: () => ipcRenderer.invoke('crucible:install-retry'),
@@ -383,14 +388,6 @@ const api: FoundryApi = {
   settings: {
     read: () => ipcRenderer.invoke('settings:read'),
     write: (patch) => ipcRenderer.invoke('settings:write', patch),
-  },
-
-  env: {
-    catalog: () => ipcRenderer.invoke('env:catalog'),
-    install: (request) => ipcRenderer.invoke('env:install', request),
-    cancel: () => ipcRenderer.invoke('env:cancel'),
-    chooseDest: (defaultPath) => ipcRenderer.invoke('env:choose-dest', defaultPath),
-    onInstallProgress: (listener) => subscribe<EnvInstallProgress>('env:install-progress', listener),
   },
 
   setup: {

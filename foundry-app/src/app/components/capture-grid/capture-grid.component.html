@@ -1,0 +1,236 @@
+
+    <div class="column">
+    <header>
+      <span class="count">{{ cards().length }} {{ cards().length === 1 ? 'page' : 'pages' }}</span>
+      <!--
+        SORT IS A MENU OF FOUR ACTS, not a toggle — Owen (2026-08-22), after
+        179 screenshots arrived in drop order: `"it should be able to sort
+        them by filename or by date saved. ascending or descending."` The
+        reverse button this replaces could only flip a time-ordered table and
+        went dead the moment anybody dragged; a named sort works from any
+        standing order, because choosing a rule IS abandoning the arrangement,
+        deliberately. Disabled only on an empty table, where sorting nothing
+        reads as a broken app rather than a no-op (this header's own ruling).
+      -->
+      <span class="sortwrap">
+        <button type="button" [disabled]="cards().length === 0" (click)="sortOpen.set(!sortOpen())">
+          Sort ▾
+        </button>
+        @if (sortOpen()) {
+          <div class="menu-scrim" (click)="sortOpen.set(false)" (contextmenu)="sortOpen.set(false)"></div>
+          <div class="menu sortmenu" role="menu">
+            <button type="button" (click)="pickSort('name', false)">By name, A to Z</button>
+            <button type="button" (click)="pickSort('name', true)">By name, Z to A</button>
+            <button type="button" (click)="pickSort('taken', false)">Oldest first</button>
+            <button type="button" (click)="pickSort('taken', true)">Newest first</button>
+          </div>
+        }
+      </span>
+
+      <!--
+        TURNING IS A TABLE ACT, not only an editor one.
+
+        Owen: *"i think rotate should be the kind of thing where i select items
+        on the main window and then click rotate and it just rotates the ones i
+        have selected in-place"*. Turning a photograph the right way up is the
+        commonest thing anybody does to a shoot and it needed a double-click, a
+        modal, a tool tab and a trip back -- for a gesture whose whole content
+        is "this one is on its side".
+
+        It acts on the SELECTION and says how many, because a turn that quietly
+        took the whole table would be unrecoverable-looking on a shoot of
+        fifty. Nothing chosen, nothing offered.
+      -->
+      <span class="turnpair">
+        <button
+          type="button"
+          [disabled]="chosenPhotos().length === 0"
+          [title]="turnSays('anticlockwise')"
+          (click)="turnChosen(-1)"
+        >⟲</button>
+        <button
+          type="button"
+          [disabled]="chosenPhotos().length === 0"
+          [title]="turnSays('clockwise')"
+          (click)="turnChosen(1)"
+        >⟳</button>
+      </span>
+      @if (arranged()) {
+        <!--
+          Said out loud rather than just disabling the button: the sort is gone
+          because the person arranged the pages themselves, and a control that
+          greys with no reason reads as a bug.
+        -->
+        <span class="note">Your order — the capture-time sort no longer applies</span>
+      }
+    </header>
+
+    <!--
+      THE MARQUEE IS ON THE TABLE, NOT ON THE CARDS. A rubber band that started
+      only on empty space would be unusable at twenty-seven cards, where almost
+      every pixel is a card -- so the press starts anywhere and a card decides on
+      RELEASE whether it was a click or the beginning of a sweep.
+    -->
+    <!--
+      THE DRAG IS HEARD BY THE TABLE AND NOT BY THE CARDS (Wave 51).
+
+      It used to be a dragover on each slot, which could only ever answer "in
+      front of card N" — so the trailing empty space below the last row was deaf,
+      and there was NO WAY TO EXPRESS "put this at the very end" on a table whose
+      last row is half full. Owen, moving a back cover from the top to the
+      bottom-right: it could not be dropped past the last page.
+
+      One handler on the scroller answers both. It hit-tests the card under the
+      pointer, so a drop on empty space is not a miss to be ignored but the
+      table's own answer — the end of the book — and it is also the one place a
+      drag can be watched continuously, which is what the auto-scroll needs.
+    -->
+    <div
+      class="table"
+      (pointerdown)="startSweep($event)"
+      (pointermove)="moveSweep($event)"
+      (pointerup)="endSweep($event)"
+      (pointercancel)="endSweep($event)"
+      (contextmenu)="openMenu($event)"
+      (dragover)="overTable($event)"
+      (dragleave)="leftTable($event)"
+      (drop)="landOnTable($event)"
+    >
+      @if (band(); as box) {
+        <div
+          class="band"
+          [style.left.px]="box.left"
+          [style.top.px]="box.top"
+          [style.width.px]="box.width"
+          [style.height.px]="box.height"
+        ></div>
+      }
+      @for (card of cards(); track card.id; let index = $index) {
+        <div
+          class="slot"
+          [attr.data-id]="card.id"
+          [class.landing]="landing() === index"
+          [class.trailing]="landing() === cards().length && index === cards().length - 1"
+          draggable="true"
+          (dragstart)="pickUp($event, card.id)"
+          (dragend)="putDown()"
+        >
+          <app-capture-card
+            [chosen]="chosen().includes(card.id)"
+            [thumb]="card.thumb"
+            [label]="card.label"
+            [struck]="card.struck"
+            [complete]="card.own"
+            [quad]="card.quad"
+            [width]="card.width"
+            [height]="card.height"
+            [projected]="projecting()"
+            [rectifier]="rectifier()"
+            (choose)="chooseCard($event, card.id)"
+            (open)="open.emit(card.id)"
+            (strike)="strike.emit(card.id)"
+          />
+        </div>
+      } @empty {
+        <!--
+          IT DOES NOT SAY WHERE TO AIM ANY MORE. It used to read "Drop them on the
+          strip to the right", which was the instruction the window handler made
+          unnecessary -- and this is the FIRST SENTENCE a person reads after
+          making a project, which is exactly where Owen was standing when the
+          drop failed. Telling him to aim at a strip he no longer has to find
+          would have taught the wrong gesture at the one moment he was looking
+          for the right one.
+        -->
+        <p class="empty">No photographs yet — drop them anywhere in this window.</p>
+      }
+    </div>
+    </div>
+
+    <!--
+      PERSISTENT, for the life of the project (docs/CAPTURE.md: "Files can keep
+      landing there for the life of the project") — not a state the grid enters
+      when something is dragged over it. A zone that only appears mid-drag is a
+      zone you have to already know about.
+    -->
+    @if (menu(); as at) {
+      <!--
+        A FULL-WINDOW SCRIM UNDER IT, which is the app's own menu idiom
+        (open-documents, book-view, compare-picker all draw exactly this pair).
+        Until Wave 25 this menu had none and was dismissed only by the table's
+        own pointerdown -- so a click on the rail, the header or anything outside
+        the table left it hanging over a surface it no longer described. The
+        scrim also takes the click it dismisses on, so the next press cannot
+        both close the menu and land on whatever was underneath it.
+      -->
+      <div class="menu-scrim" (click)="menu.set(null)" (contextmenu)="menu.set(null)"></div>
+      <!--
+        Owen's flow: sweep, then right-click the highlighted cards. The menu is
+        the only place Delete is offered by mouse, so it names the count rather
+        than the word "selection" -- somebody about to destroy nine photographs
+        should read the nine.
+      -->
+      <div class="menu" role="menu" [style.left.px]="at.x" [style.top.px]="at.y">
+        <!--
+          FOLLOW THE BOOK AGAIN, AND ONLY WHERE IT WOULD DO SOMETHING.
+
+          The stage's own precedent, from the split button and then from Wave
+          24's whole control table: *a control that would change nothing is not
+          shown*. Offered on a photograph the book is already free to move it
+          would be a menu item that exists to say no, so it is ABSENT rather than
+          greyed on a selection with nothing complete in it.
+
+          It names the OUTCOME rather than the mechanism, because the other side
+          of this door has never had a name a person could hold — that is the
+          diagnosis Wave 24 opened with. What changed in Wave 51 is the outcome
+          itself: *Release* cleared the mark and left the picture alone, waiting
+          for an Apply that is now the gesture, so the press takes the book's
+          lines in the same breath. It counts photographs, like every other item
+          here, because a spread is two cards on one picture.
+        -->
+        @if (completeChosen().length > 0) {
+          <button type="button" role="menuitem" (click)="followChosen()">
+            Follow the book again —
+            {{ completeChosen().length }}
+            {{ completeChosen().length === 1 ? 'photograph takes' : 'photographs take' }}
+            the book's lines
+          </button>
+        }
+        <button type="button" role="menuitem" (click)="turnChosen(-1)">
+          Turn {{ chosenPhotos().length }}
+          {{ chosenPhotos().length === 1 ? 'photograph' : 'photographs' }} left
+        </button>
+        <button type="button" role="menuitem" (click)="turnChosen(1)">
+          Turn {{ chosenPhotos().length }}
+          {{ chosenPhotos().length === 1 ? 'photograph' : 'photographs' }} right
+        </button>
+        <button type="button" role="menuitem" (click)="removeChosen()">
+          Delete {{ chosenPhotos().length }}
+          {{ chosenPhotos().length === 1 ? 'photograph' : 'photographs' }}…
+        </button>
+      </div>
+    }
+
+    <!--
+      THE STRIP EARNS ITS SPACE ONLY ON AN EMPTY TABLE — Owen (2026-08-22):
+      `"remove the 'drop photos here' box thats taking up extra space...
+      after theyve already dragged pages in they should know they can drag
+      more pages in there. keep it a drop zone but give the space to the page
+      thumbnails."` The whole table takes drops either way (both paths call
+      the same intake; the strip's stopPropagation only ever prevented a
+      double). What the strip was FOR — a gesture with nowhere visible to aim
+      is a gesture people do not discover — is only true of a table with
+      nothing on it, so that is the only table that draws it.
+    -->
+    @if (cards().length === 0) {
+      <aside
+        class="dropzone"
+        [class.hot]="hot()"
+        (dragenter)="warm($event)"
+        (dragover)="warm($event)"
+        (dragleave)="cool()"
+        (drop)="take($event)"
+      >
+        <span>Drop photographs here</span>
+      </aside>
+    }
+  

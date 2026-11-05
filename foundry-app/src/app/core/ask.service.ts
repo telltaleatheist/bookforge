@@ -12,10 +12,10 @@ import {
   type AskRowState,
   type AskSession,
   type AskSkip,
-} from '@shared/ask';
-import type { Replayed } from '@shared/ops';
-import { newestFirst, type AskConversation } from '@shared/ask-conversations';
-import { AskChain, DEFAULT_CHECKED, askPresetsOrDefaults, type AskChainStep, type AskPreset, type AskPresetsKept, type AskStepEnd } from '@shared/ask-presets';
+} from '@owen/foundry-core/shared/ask';
+import type { Replayed } from '@owen/foundry-core/shared/ops';
+import { newestFirst, type AskConversation } from '@owen/foundry-core/shared/ask-conversations';
+import { AskChain, DEFAULT_CHECKED, askPresetsOrDefaults, type AskChainStep, type AskPreset, type AskPresetsKept, type AskStepEnd } from '@owen/foundry-core/shared/ask-presets';
 
 import { BookStacksService, type BookStack } from './book-stacks.service';
 import { NoticeService } from './notice.service';

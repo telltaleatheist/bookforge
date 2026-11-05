@@ -1,0 +1,146 @@
+
+    @if (servers().length === 0) {
+      <!--
+        NOTHING TO DRAW A WINDOW ONTO. Owen, 2026-09-15: "if theres no connected
+        crucible server then tiles should be disabled" — and a page of dead
+        pickers over an absent engine is the same failure one screen along. It
+        says what is missing and where the door is, and offers nothing to press
+        that cannot work.
+      -->
+      <div class="empty">
+        <p class="lead">No Crucible server is connected.</p>
+        <p class="detail">
+          Every model Foundry uses runs on a Crucible server, so there is nothing to configure
+          until one is added. Add one under Crucible Servers and this page fills itself in from
+          whatever that machine turns out to hold.
+        </p>
+      </div>
+    } @else {
+      <!--
+        WHICH ENGINE — chips rather than a select, and drawn even when there is
+        only one. The old cards hid the control at one server on the grounds
+        that a select with one option teaches somebody there is something to
+        choose. A chip is not a select: it is a label that happens to be
+        pressable, so at one server it reads as a statement of which machine
+        this page is about, which is worth saying on a page that writes to it.
+      -->
+      <div class="chips servers">
+        @for (server of servers(); track server.name) {
+          <button class="chip server" type="button"
+                  [class.chosen]="server.name === chosen()"
+                  [disabled]="working()"
+                  (click)="choose(server.name)">
+            <span class="chip-name">{{ server.name }}</span>
+            <span class="chip-detail">{{ serverWords(server) }}</span>
+          </button>
+        }
+      </div>
+
+      @if (problem(); as why) { <p class="warn">{{ why }}</p> }
+
+      @if (doc(); as settings) {
+        @for (group of grouped(); track group.title) {
+          <h3 class="group">{{ group.title }}</h3>
+          @for (row of group.rows; track row.cls) {
+            <div class="job">
+              <div class="job-head">
+                <div class="job-who">
+                  <span class="job-title">{{ row.title }}</span>
+                  <span class="job-sub">{{ row.subtitle }}</span>
+                </div>
+                <div class="chips">
+                  @for (chip of row.chips; track chip.key) {
+                    <!--
+                      DIMMED IS NOT DISABLED, and the distinction is the whole
+                      honesty of this control. The fit figure excludes the KV
+                      cache so it is not a verdict; somebody may be about to
+                      free memory; and the ENGINE refuses by name
+                      (local_model_does_not_fit, 409). Greying says "expect this
+                      to be refused", never "you may not ask".
+                    -->
+                    <button class="chip" type="button"
+                            [class.chosen]="chip.chosen"
+                            [class.dim]="chip.dim"
+                            [disabled]="working() || (chip.action === 'fetch' && pulling())"
+                            [title]="chip.detail"
+                            (click)="press(row, chip)">
+                      <span class="tick">{{ chip.chosen ? '✓' : '' }}</span>
+                      <span class="chip-name">{{ chip.label }}</span>
+                    </button>
+                  }
+                </div>
+              </div>
+
+              @if (row.pull; as running) { <p class="small">{{ running }}</p> }
+              @if (row.shortfall; as short) { <p class="small warnish">{{ short }}</p> }
+              @if (row.reason; as why) { <p class="small">{{ why }}</p> }
+
+              @if (row.routable) {
+                <!--
+                  THE POINTER DOWNWARDS, on every routable row. It is the line
+                  BookForge's rows carry and it is doing real work: the accounts
+                  are the answer for a card nothing fits, and a person staring at
+                  a row of models that will not run needs to be told there is
+                  another kind of answer further down the page.
+                -->
+                <p class="small">
+                  To run this on Anthropic, OpenAI or an Ollama server instead, set one up under
+                  Accounts below and press Test.
+                </p>
+                @if (custom() === row.cls) {
+                  <div class="typed">
+                    <input class="wide" type="text" [name]="'c-' + row.cls"
+                           placeholder="anthropic/claude-sonnet-5"
+                           [ngModel]="typed()"
+                           (ngModelChange)="typed.set($event)">
+                    <button class="primary" type="button"
+                            [disabled]="working() || typed().trim().length === 0"
+                            (click)="routeTyped(row.cls)">Use it</button>
+                  </div>
+                }
+              }
+            </div>
+          }
+        }
+
+        <!-- ── What the engine is, under everything it was asked to do ──── -->
+        <p class="small">{{ backendLine(settings) }}</p>
+        <!--
+          ── THE WSL OFFER IS GONE FROM THIS PAGE (crucible PHASE19 section 0) ──
+
+          It offered to set WSL acceleration up beside the backend line, which is
+          the button Owen ruled out on 2026-09-18: the Linux engine arrives by
+          itself now, as the last step of the install, and nobody is asked. What
+          replaces it is a READOUT of the outcome, and it lives on the Servers
+          card (Settings, Servers) rather than here -- this page is about which
+          model answers which class, and a restart prompt among the routes would
+          be a second screen about the machine underneath them.
+
+          (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
+        -->
+
+        <p class="small">
+          The sizes above are the engine's estimate of the WEIGHTS only — they do not include the
+          KV cache, which a long context on a large model adds several gigabytes to. A model can
+          be offered as fitting and still run out of memory when it loads.
+        </p>
+
+        <!-- ── Accounts: the engine's own, configured once ──────────────── -->
+        <h3 class="group">Accounts</h3>
+        <p class="detail">
+          An account the engine forwards to. The key is stored in the engine, never here — the
+          box below is empty every time this page is drawn, and the engine will only ever say
+          the last four characters of what it holds. BookForge, pointed at the same server,
+          shows the same accounts.
+        </p>
+        <app-engine-upstreams
+          [serverName]="chosen()"
+          [doc]="settings"
+          [busy]="working()"
+          (apply)="applyUpstream($event)" />
+
+      } @else if (problem() === null) {
+        <p class="small">Asking the engine…</p>
+      }
+    }
+  

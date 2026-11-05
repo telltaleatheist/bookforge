@@ -1,0 +1,245 @@
+
+    <div class="scrim" (click)="ui.closeOcr()"></div>
+
+    <!--
+      The click guard is on the CARD rather than a stopPropagation on the scrim's
+      handler, because the scrim is also the thing a click outside is supposed to
+      land on and the two must not be the same listener.
+    -->
+    <div class="card" role="dialog" aria-modal="true" aria-label="OCR and convert">
+      <header class="head">
+        <span class="title">OCR — read the pages</span>
+        <button class="x" (click)="ui.closeOcr()" title="Close">✕</button>
+      </header>
+
+      @if (source(); as input) {
+        <div class="body">
+        <!--
+          THE RUN REPLACES THE FORM RATHER THAN SITTING UNDER IT. Leaving the
+          fields up while the job moves would offer edits that change nothing —
+          the request was composed and handed over at the press — which is the
+          same defect as a read-only box drawn as a control, one step later.
+        -->
+        @if (watched(); as job) {
+          <p class="fact">{{ nameFor(input) }}</p>
+          <app-run-progress [job]="job" verb="Reading" />
+        } @else {
+          <!--
+            A PICKER RATHER THAN A READONLY BOX, and that is what makes a batch
+            possible at all. It used to name the focused tab and nothing else, so
+            the only conversion this dialog could queue was the one document in
+            front of you. With every open PDF in the list, four books open is
+            four jobs without closing this once.
+          -->
+          <!--
+            THE BOOK, QUALIFIED BY WHAT IT IS. These options were basenames, and
+            every document of one project shares a single stem — so two open
+            books were two forty-character strings differing somewhere in the
+            middle, and a project's scan and the real-text PDF made from it were
+            the same option twice over, differing only by the directory the user
+            is deliberately never shown. Picking the wrong one earned a refusal
+            after the whole form had been filled in.
+
+            AT ONE DOCUMENT IT IS NOT A FIELD. It was a read-only input, which is
+            a control that looks pressable and is not. Owen, 2026-09-17: "if an
+            option is impossible to click ... dont present it as an option. it
+            isnt an option. present it as information or dont present it at all."
+            So one source is a sentence and several are a picker.
+          -->
+          @if (sources().length > 1) {
+            <label class="field">
+              <span class="label">Source</span>
+              <select [ngModel]="input" (ngModelChange)="pick($event)" name="source" [title]="input">
+                @for (candidate of sources(); track candidate) {
+                  <option [value]="candidate">{{ optionFor(candidate) }}</option>
+                }
+              </select>
+            </label>
+          } @else {
+            <p class="fact" [title]="input">{{ optionFor(input) }}</p>
+          }
+
+          <!--
+            WHERE IT WILL RUN, AND WHAT WILL RUN IT. Owen met this dialog on
+            2026-09-17 having just dragged in a PDF, and it was the card from
+            before Crucible existed: no engine named, no model named, and no hint
+            that reading now needs a server at all. The child draws the one
+            real choice (which engine, and only when there is more than one) and
+            states the rest, because there is no per-run model override to offer
+            — see run-target.component.ts, which carries that ruling.
+          -->
+          <app-run-target act="pages" [(server)]="server" (ready)="canRun.set($event)" />
+
+          <!--
+            NO OUTPUT FORMAT. What this job makes is the reading, and what the
+            book becomes is a separate decision made afterwards from a bank that
+            is already paid for. Saying so here, once, because everybody arriving
+            at this dialog before today was asked for a format and will look for
+            the field.
+          -->
+          <p class="note">
+            This reads every page with the vision model and banks what it says. The book
+            appears by itself the moment the pages are read — and from that same reading
+            you can Export a finished EPUB, plain text or a real-text PDF as often as you
+            like, without reading anything again.
+          </p>
+
+          <!--
+            NAMES, NOT TAGS, AND A LIST RATHER THAN A BOX.
+            
+            It was free text with an "en" placeholder, which asked a person to
+            know BCP-47 to answer a question about their own book — and answered
+            wrong it does not fail, it produces a worse reading with nothing to
+            show for it. Owen, 2026-09-17: *"if its a real choice it can stay but
+            it shouldnt be en/de, make it the acutal language name. english,
+            german, etc."*
+            
+            THE LIST IS THE ONE TRANSLATE ALREADY USES — "LANGUAGE_CHOICES",
+            sorted by name, the curated table the engine consults too. This
+            dialog having its own text box while the dialog next door had a
+            proper picker was the two screens disagreeing about how hard the
+            question is.
+          -->
+          <label class="field">
+            <span class="label">Language <em>declared, not detected</em></span>
+            <select [ngModel]="language()" (ngModelChange)="language.set($event)" name="language">
+              @for (choice of languages; track choice.tag) {
+                <option [value]="choice.tag">{{ choice.name }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="label">Skip pages <em>optional</em></span>
+            <input type="text" placeholder="3,17,19-24" [ngModel]="skipPages()" (ngModelChange)="skipPages.set($event)" name="skip">
+          </label>
+
+          <!-- No strip-footnote-markers option, deliberately. The engine flag
+               exists for BookForge's narration builds, where a reference number
+               becomes a narrator saying "fourteen". Foundry converts books to
+               be READ: markers are kept and linked to their notes, which is
+               part of what converting to EPUB means here. -->
+
+          @if (problem(); as reason) {
+            <p class="problem">{{ reason }}</p>
+          }
+          <!--
+            The only thing left for this line to say is that NOTHING happened —
+            the job was already queued. A success closes the card, so there is
+            nothing for it to report and nowhere to report it.
+          -->
+          @if (added(); as note) {
+            <p class="added" role="status">{{ note }}</p>
+          }
+        }
+        </div>
+
+        <!--
+          IT CLOSES ON ADD, and hands focus to the queue.
+
+          For a while it stayed open so a batch could be built without reopening
+          it, with a confirmation line under the form. The card was the thing in
+          the way: what a person has just done is put a job in the queue, the
+          queue is somewhere else on the screen, and leaving a form in front of
+          it makes them dismiss a dialog to see the result of using it. Adding
+          another book is one press of the rail's button; looking at what you
+          just queued should not be.
+
+          A refusal — the same job already queued — keeps the card, because
+          nothing happened and moving on would be performing a result.
+        -->
+        <!--
+          THE BRANCH'S ONE LINE, and it is here — against the button, inside the
+          footer — rather than up in the body with the fields. It is not a fact
+          about the form; it is a fact about what pressing that button will do,
+          and a person reads the thing nearest what they are about to press.
+
+          No line at all for a replace: that one is a question, and it is asked in
+          main's own box the moment Add is pressed. No line for a book nobody has
+          read, because there is nothing to say.
+        -->
+        <!--
+          ── THREE PRESSES, AND THEN TWO WHILE IT RUNS ────────────────────────
+
+          Owen, 2026-09-17: *"most of these actions will probably be serialized
+          … which means most of the time we probably wont be using the queue, so
+          inline modals will have to handle it. the user can hit 'start', 'add to
+          queue', or 'cancel'. if they hit start, progress shows in the modal
+          live. if they hit 'send to background', it adds it to the queeu while
+          running and they can continue their work."*
+
+          THERE IS STILL ONE RUNNER. Start does not spawn anything itself: it
+          enqueues exactly as Add does, then releases that ONE row
+          (queue:release, added for this) and watches it. So "in the modal" and
+          "in the queue" are the same run seen from two places, and Send to
+          background is this card letting go rather than a handover. That also
+          answers the old objection recorded on queue.run, which refuses a read
+          by name because "hours of GPU never run under a dialog's spinner" —
+          they no longer have to, because the spinner is escapable.
+        -->
+        @if (watched(); as job) {
+          <footer class="foot">
+            <p class="beside">{{ job.state === 'done' ? 'Done.' : 'It keeps going if you close this.' }}</p>
+            <button class="ghost" (click)="cancelRun(job.id)">Stop</button>
+            <button class="primary" (click)="background()">Send to background</button>
+          </footer>
+        } @else {
+          <footer class="foot">
+            @if (branchNote(); as fact) {
+              <p class="beside">{{ fact }}</p>
+            }
+            <button class="ghost" (click)="ui.closeOcr()">Cancel</button>
+            <!--
+              ── HOSTED IT IS "ADD TO QUEUE", AND ONLY THAT ────────────────────
+
+              I built this backwards. The first version hid Add to queue hosted
+              and kept Start, reasoning that the host queue holds nothing so the
+              two buttons would mean the same thing. Owen, on meeting it in
+              BookForge: *"for the vendored copy, it should have an add to queue
+              button and it should add it to the bookforge queue. we dont do long
+              actions from the modal in bookforge, like the cleanup stage,
+              translate, simplify, narrate, and ocr."*
+
+              So it is not a question of which label is accurate. It is a HOUSE
+              RULE about where long work belongs: in BookForge it belongs in
+              BookForge's queue, where its own shelf shows it beside everything
+              else that machine is doing. A modal running a twenty-minute cleanup
+              inside a window that is a guest of another app is the wrong shape
+              whatever the button says.
+
+              Start is therefore absent hosted rather than relabelled, and with
+              it the whole watching branch: nothing here sets watching, so the
+              card never becomes a progress view it has no business being.
+            -->
+            <button [class.ghost]="!hosted()" [class.primary]="hosted()"
+                    [disabled]="busy() || !canRun()" (click)="add(false)">
+              {{ busy() === 'queue' ? 'Working…' : 'Add to queue' }}
+            </button>
+            @if (!hosted()) {
+            <button class="primary" [disabled]="busy() || !canRun()" (click)="add(true)">
+              {{ busy() === 'start' ? 'Starting…' : 'Start' }}
+            </button>
+          }
+          </footer>
+        }
+      } @else {
+        <div class="body empty">
+          <!--
+            THE LIGHT TABLE IS NOT NOTHING. Somebody photographing a book has a
+            project open and is one press from having pages; telling them to open
+            a PDF is an instruction about the wrong app. The two sentences differ
+            in what to do next, which is the only thing an empty state is for.
+          -->
+          @if (photographing()) {
+            <p>Generate the book first — reading is a thing you do to a book that has been made.</p>
+          } @else {
+            <p>Open a PDF first — reading the pages is a thing you do to a document you have in front of you.</p>
+          }
+        </div>
+        <footer class="foot">
+          <button class="ghost" (click)="ui.closeOcr()">Close</button>
+          <button class="primary" (click)="openDocument()">Open PDF…</button>
+        </footer>
+      }
+    </div>
+  

@@ -72,21 +72,23 @@
  * and `library:set` refuses outright. A first-run wizard there would be five
  * steps of asking for things somebody else already decided.
  */
+import { capabilityRowFor } from '@owen/foundry-core/shared/types';
 import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, signal } from '@angular/core';
 
-import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
-import type { CrucibleProbe, CrucibleServerView } from '@shared/slots';
+import type { CrucibleCoordinationMap } from '@owen/foundry-core/shared/coordinate-wire';
+import type { CrucibleProbe, CrucibleServerView } from '@owen/foundry-core/shared/slots';
 import {
   LLM_CLASSES,
   defaultEngineServer,
   splitUpstreamModel,
   type CapabilityRecord,
   type CapabilityRow,
-} from '@shared/engine-settings';
+} from '@owen/foundry-core/shared/engine-settings';
 import { CrucibleDoorsComponent } from '../crucible-doors/crucible-doors.component';
 import { CrucibleInstallOutcomeComponent } from '../crucible-doors/install-outcome.component';
 import {
   FOUNDRY_ACTS,
+  HOSTED_ONLY_ACTS,
   actWords,
   cardWords,
   coordinationWords,
@@ -206,471 +208,8 @@ const STEPS: readonly StepDef[] = [
   selector: 'app-setup-wizard',
   imports: [CrucibleDoorsComponent, CrucibleInstallOutcomeComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    @if (up()) {
-      <div class="scrim"></div>
-      <div class="card" role="dialog" aria-modal="true" aria-label="First-run setup">
-        <!-- ── The rail of dots ────────────────────────────────────────── -->
-        <div class="rail">
-          @for (step of visible(); track step.id) {
-            <span
-              class="dot"
-              [class.here]="step.id === current()"
-              [class.past]="indexOf(step.id) < index()"
-              [title]="step.title"
-            ></span>
-          }
-          <span class="spacer"></span>
-          <button class="shut" type="button" title="Close setup (everything here is in Settings)" (click)="dismiss()">✕</button>
-        </div>
-
-        <div class="head">
-          <h2 class="title">{{ def().title }}</h2>
-          <p class="blurb">{{ def().blurb }}</p>
-        </div>
-
-        <div class="body">
-          <!-- ── Welcome ─────────────────────────────────────────────────── -->
-          @if (current() === 'welcome') {
-            <p class="lead">
-              Foundry turns a scanned or PDF book into text you can read, translate, simplify and
-              search for claims. The book itself is made on this computer; anything that meets a
-              language model is sent to a GPU engine, which is the one thing here worth setting up
-              carefully.
-            </p>
-            <!--
-              THIS SAID *"Nothing on the next screens downloads until you press
-              the button that downloads it, and the size is always beside the
-              button"* — a promise about the Pythons step and the page-reader
-              step, neither of which exists. Nothing here downloads to THIS
-              machine any more. What can still take minutes is installing the
-              engine, so that is what the sentence is about now.
-            -->
-            <p class="line">
-              Nothing here downloads a model to this computer. If you ask Foundry to install the
-              GPU engine, that runs Crucible's own installer and takes a few minutes — and it is
-              the only thing on these screens that does.
-            </p>
-          }
-
-          <!-- ── Library ─────────────────────────────────────────────────── -->
-          @if (current() === 'library') {
-            <p class="line">
-              Every conversion lands under this folder, and the Save dialogs open on it. Changing it
-              later affects new work only — nothing is moved behind your back.
-            </p>
-            <div class="field">
-              <span class="label">Library folder</span>
-              <div class="row">
-                <span class="path mono">{{ libraryDir() || 'Reading…' }}</span>
-                <button class="ghost" type="button" (click)="pickLibrary()">Choose…</button>
-              </div>
-            </div>
-          }
-
-          <!-- ── The engine, in two faces ────────────────────────────────── -->
-          <!--
-            OWEN OPENED THIS STEP ON A MACHINE ALREADY RUNNING AN ENGINE AND WAS
-            SHOWN THREE DOORS AND THEN A REFUSAL: *"i tried to connect to the
-            crucible server but it gave me an error. this should be idiot proof…
-            it shouldnt talk about crucible unless it needs to, or to ask the
-            user to add a crucible server."* So the step has two faces and the
-            connected one is the common case: main connects the engine on this
-            machine at startup without being asked (connectLocalEngine in main), and
-            what is left to show is what he asked for — the card, what it can
-            do, and what it cannot.
-
-            THE WORD "CRUCIBLE" IS IN THE SECOND FACE ONLY. A person with a
-            working engine never needs it; a person who has to install one is
-            about to run an installer with that name on it, and hiding it there
-            would be hiding the one word they need to search for.
-          -->
-          @if (current() === 'crucible') {
-            @if (engineProbe(); as engine) {
-              <p class="lead">
-                Ready. Translation, simplification, cleanup, analysis and page reading run on
-                <strong>{{ engine.serverName }}</strong>, and nothing here needs setting up.
-              </p>
-              <div class="engine">
-                <p class="engine-card">{{ cardWords(engine) }}</p>
-                <p class="small">
-                  {{ engine.backend }} · version {{ engine.version }}
-                  @if (engine.via; as via) { · reached through {{ via }} }
-                </p>
-              </div>
-
-              @if (engineActs().length > 0) {
-                <p class="line">What it can do with that card:</p>
-                <div class="acts">
-                  @for (act of engineActs(); track act.act) {
-                    <div class="act" [attr.data-ok]="act.enabled">
-                      <span class="dotstate" [attr.data-ok]="act.enabled"></span>
-                      <span class="act-name">{{ act.act }}</span>
-                      @if (act.enabled) {
-                        <span class="act-by mono">{{ act.by }}</span>
-                      } @else if (act.shortfall; as short) {
-                        <span class="act-by">needs {{ short }}</span>
-                      } @else {
-                        <span class="act-by">will not run here</span>
-                      }
-                    </div>
-                    @if (!act.enabled) { <p class="act-why small">{{ act.reason }}</p> }
-                  }
-                </div>
-              }
-
-              <!--
-                ── THE OFFER BECAME A READOUT (crucible PHASE19 section 0) ────
-
-                What stood here was a button offering to set WSL acceleration up, with a
-                paragraph explaining vLLM to somebody who has not asked. Owen
-                ruled it out on 2026-09-18 -- "we should assume the user doesn't
-                know how to do it, and we shouldn't offer to let them do it
-                themselves ... it should do it automatically". So the Linux
-                engine now arrives by itself as the last step of the install,
-                decided by Crucible's own tray at every start (section 2.3), and
-                this card's job is to say what came of it.
-
-                THE CONDITION IS UNCHANGED AND STILL RIGHT. An outcome is about
-                a machine that has a native Windows engine and could have a
-                Linux one; on a Mac, or on a machine already serving through the
-                guest, there is nothing here to report. Section 2.5: on a done
-                machine there is no control at all.
-
-                (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
-              -->
-              @if (engine.backend === 'llama-windows') {
-                <div class="wsl">
-                  <app-crucible-install-outcome />
-                </div>
-              }
-
-              @if (engineNeedsAccount()) {
-                <!--
-                  OWEN'S OWN EXAMPLE, AND THE OFFER HE ASKED FOR: *"if the
-                  crucible server isnt powerful enough to run translate, because
-                  it's running on an 8 gb gpu and cant run the 27b, it can prompt
-                  them for claude or chatgpt api key for that."* It POINTS at the
-                  next step instead of growing a key box, because that step is
-                  PHASE15 §5.2's panel and the key belongs in the engine, once.
-                -->
-                <!--
-                  IT SAID "the next step is where that key goes" and there is no
-                  next step: the routes step was deleted on 2026-09-17 because
-                  Settings > AI asks the same question better. A wizard pointing
-                  at a screen that does not exist is worse than one that points
-                  at the screen that does.
-                -->
-                <p class="line">
-                  What this card cannot run, an Anthropic or OpenAI account can. Settings > AI is
-                  where that key goes — it is stored in the engine, not in Foundry, so BookForge
-                  uses the same one.
-                </p>
-              }
-
-              <!--
-                STILL REACHABLE, NEVER IN THE WAY. A second machine is a second
-                GPU slot in the queue and is the whole reason somebody buys a Mac
-                Studio; a person who has one working engine is not looking for it
-                on this screen.
-              -->
-              @if (moreDoors()) {
-                <app-crucible-doors (changed)="loadCrucible()" />
-              } @else {
-                <div class="actions">
-                  <button class="ghost" type="button" (click)="moreDoors.set(true)">
-                    Add another machine
-                  </button>
-                </div>
-              }
-            } @else if (engineAsking()) {
-              <p class="lead">Looking for an engine…</p>
-            } @else {
-              <p class="lead">
-                Translation, simplification, cleanup, analysis and page reading run on a GPU
-                engine — a program called Crucible, on this machine or another one. Foundry
-                looked and found none here. Compiling a book and exporting it never need one.
-              </p>
-              <p class="line">
-                An engine on a machine with a bigger card runs the work there; one on this
-                machine runs it here and holds its models properly instead of loading and
-                unloading per job. Registering both gives the queue two GPU slots and it will
-                use whichever is free.
-              </p>
-              @if (crucibleServers().length > 0) {
-                <!--
-                  A REGISTERED SERVER THAT WOULD NOT ANSWER. It is named, with
-                  whatever the last coordination sweep said about it, because
-                  "foundry found none here" beside a row somebody added by hand
-                  would read as the app having forgotten it.
-                -->
-                <p class="ok-note">
-                  Registered but not answering just now: {{ crucibleNames() }}. Settings › Servers
-                  tests these and says why.
-                </p>
-                @for (server of crucibleServers(); track server.name) {
-                  @if (coordinationOf(server.name); as said) {
-                    <p class="small">{{ server.name }} — {{ said }}</p>
-                  }
-                }
-              }
-              <app-crucible-doors (changed)="loadCrucible()" />
-            }
-          }
-
-
-          <!-- ── Done ────────────────────────────────────────────────────── -->
-          @if (current() === 'done') {
-            <p class="lead">Your choices are saved. Foundry will prepare the selected models before opening.</p>
-            @if (finishing()) {
-              @for (server of crucibleServers(); track server.name) {
-                <p class="line">{{ server.name }}: {{ coordinationOf(server.name) }}</p>
-              }
-            }
-            @if (finishError()) { <p class="line bad">{{ finishError() }}</p> }
-            @if (skipped().length > 0) {
-              <p class="line">
-                Skipped: {{ skippedTitles() }}. Settings has a button that opens this again, and
-                each of those steps has its own card there.
-              </p>
-            } @else {
-              <p class="line">Nothing was skipped. Settings holds all of it if you want to change something.</p>
-            }
-            <p class="line">Open a PDF or a folder of photographs from Home to start a book.</p>
-          }
-        </div>
-
-        <!-- ── The feet ────────────────────────────────────────────────── -->
-        <div class="foot">
-          @if (index() > 0 && current() !== 'done') {
-            <button class="ghost" type="button" (click)="back()">Back</button>
-          }
-          <span class="spacer"></span>
-          @if (current() === 'done') {
-            <button class="primary" type="button" [disabled]="finishing()" (click)="finish()">{{ finishing() ? 'Preparing models…' : finishError() ? 'Retry preparation' : 'Start using Foundry' }}</button>
-          } @else {
-            @if (skippable()) {
-              <button class="ghost" type="button" (click)="skip()">Skip this</button>
-            }
-            <button class="primary" type="button" (click)="next()">Next</button>
-          }
-        </div>
-      </div>
-    }
-  `,
-  styles: [`
-    /*
-     * THE HOST IS INERT AND ONLY ITS CHILDREN ARE NOT — the same argument the
-     * confirm dialog makes, and for the same reason: this component is mounted
-     * for the whole life of the window (an @if around it would be a DESTROY,
-     * and destroying it mid-install drops the progress subscriptions), so a
-     * fixed, full-window host is a sheet of glass over the entire application
-     * at all times unless it is told not to take the pointer.
-     *
-     * 1250 is the capture-progress rung: above every dialog, because on first
-     * run there is nothing behind this worth clicking, and below the confirm
-     * card at 1300 so a question asked BY this screen lands on top of it.
-     */
-    :host {
-      position: fixed;
-      inset: 0;
-      z-index: 1250;
-      display: grid;
-      place-items: center;
-      pointer-events: none;
-    }
-
-    .scrim {
-      position: absolute;
-      inset: 0;
-      pointer-events: auto;
-      background: rgba(0, 0, 0, 0.6);
-      backdrop-filter: blur(4px);
-      animation: fade 120ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-
-    .card {
-      position: relative;
-      pointer-events: auto;
-      width: min(680px, calc(100vw - 48px));
-      max-height: calc(100vh - 64px);
-      display: flex;
-      flex-direction: column;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius-lg);
-      box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.45);
-      animation: rise 140ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-
-    .rail {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 12px 14px 0;
-    }
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--border-default);
-      transition: background-color 140ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .dot.past { background: var(--accent-strong); }
-    .dot.here { background: var(--accent); transform: scale(1.35); }
-    .spacer { flex: 1; }
-    .shut {
-      background: none;
-      border: none;
-      color: var(--text-tertiary);
-      font-size: 13px;
-      line-height: 1;
-      padding: 2px 4px;
-      cursor: pointer;
-    }
-    .shut:hover { color: var(--text-primary); }
-
-    .head { padding: 8px 20px 4px; }
-    .title { margin: 0; font-family: var(--font-display); font-size: 17px; font-weight: 600; }
-    .blurb { margin: 4px 0 0; font-size: 12px; color: var(--text-tertiary); }
-
-    .body {
-      padding: 12px 20px 8px;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .lead { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-primary); }
-    .line { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
-    .small { margin: 0; font-size: 11px; color: var(--text-tertiary); word-break: break-word; }
-    .small.bad, .bad { color: var(--error); }
-    .ok-note { margin: 0; font-size: 12px; color: var(--ok); }
-    .mono { font-family: var(--font-mono); word-break: break-all; }
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .label {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--text-tertiary);
-    }
-    .row { display: flex; align-items: center; gap: 8px; }
-    .path {
-      flex: 1;
-      min-width: 0;
-      font-size: 12px;
-      background: var(--bg-input);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      padding: 6px 8px;
-    }
-
-    .dotstate {
-      width: 8px;
-      height: 8px;
-      margin-top: 5px;
-      border-radius: 50%;
-      background: var(--text-tertiary);
-      flex-shrink: 0;
-    }
-    .dotstate[data-ok="true"] { background: var(--ok); }
-
-
-    .badge {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--accent);
-      background: var(--accent-soft);
-      border-radius: 999px;
-      padding: 2px 8px;
-    }
-    .badge.held { color: var(--ok); background: var(--ok-soft); }
-    .badge.warn-badge { color: var(--warn); background: var(--warn-soft); }
-
-    .wsl { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-    .engine {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      padding: 10px;
-      background: var(--bg-sunken);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-    }
-    .engine-card {
-      margin: 0;
-      font-family: var(--font-display);
-      font-weight: 600;
-      font-size: 13px;
-      color: var(--text-primary);
-    }
-
-    .acts { display: flex; flex-direction: column; gap: 2px; }
-    .act { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-    /* The dot sits on a text baseline everywhere else in this card; on these
-       rows it sits in a flex line of its own, so the nudge has to come off. */
-    .act .dotstate { margin-top: 0; }
-    .act-name { color: var(--text-primary); }
-    .act-by { margin-left: auto; color: var(--text-tertiary); text-align: right; }
-    .act[data-ok="false"] .act-by { color: var(--warn); }
-    /* The server's own sentence about a refusal, indented under its row so it
-       reads as an explanation of that line rather than a new one. */
-    .act-why { padding: 0 0 4px 16px; }
-
-    .bar { height: 4px; background: var(--bg-sunken); border-radius: 2px; overflow: hidden; }
-    .fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
-    /* No honest percentage outside a download — the bar says so rather than
-       inventing a number to keep itself moving. See env-install.ts. */
-    .bar.indeterminate .fill { width: 35% !important; animation: slide 1.2s ease-in-out infinite; }
-    @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
-
-    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-
-    .foot {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 20px 16px;
-      border-top: 1px solid var(--border-subtle);
-    }
-
-    .primary, .ghost {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      height: 32px;
-      padding: 0 16px;
-      border-radius: var(--radius-md);
-      font-size: 13px;
-      font-weight: 500;
-      line-height: 1;
-      cursor: pointer;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .primary {
-      border: none;
-      background: var(--accent);
-      color: var(--text-inverse);
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    }
-    .primary:hover:not(:disabled) { background: var(--accent-hover); }
-    .primary:active:not(:disabled) { background: var(--accent-active); transform: scale(0.98); }
-    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
-    .ghost {
-      background: var(--bg-input);
-      border: 1px solid var(--border-default);
-      color: var(--text-primary);
-    }
-    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
-    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
-  `],
+  templateUrl: './setup-wizard.component.html',
+  styleUrl: './setup-wizard.component.scss',
 })
 export class SetupWizardComponent {
   private readonly ui = inject(UiService);
@@ -681,6 +220,8 @@ export class SetupWizardComponent {
   protected readonly libraryDir = signal('');
   /** The registry, so the Crucible step can say what is already there. */
   protected readonly crucibleServers = signal<CrucibleServerView[]>([]);
+  /** Asked before the line that says none was found: it may not be true. */
+  protected readonly crucibleHere = signal(false);
   /**
    * WHAT THE CONNECTED ENGINE IS AND WHAT IT CAN DO — `loadEngineFacts`.
    *
@@ -716,9 +257,14 @@ export class SetupWizardComponent {
   protected readonly engineActs = computed(() => {
     const record = this.engineCap();
     if (record === null) return [];
+    // The wizard only ever runs standalone, so the hosted-only acts are not
+    // reported as this app's (`HOSTED_ONLY_ACTS`).
     return FOUNDRY_ACTS
-      .map((name) => record.classes.find((row) => row.capability === name))
-      .filter((row): row is CapabilityRow => row !== undefined)
+      .filter((name) => !HOSTED_ONLY_ACTS.has(name))
+      .flatMap((name) => {
+        const row = capabilityRowFor(record.classes, name);
+        return row === undefined ? [] : [{ ...row, capability: name }];
+      })
       .map((row) => ({
         act: actWords(row.capability),
         enabled: row.enabled,
@@ -954,6 +500,7 @@ export class SetupWizardComponent {
     if (!api) return;
     const view = await api.crucible.settings();
     this.crucibleServers.set(view.servers);
+    this.crucibleHere.set((await api.crucible.localPresence()).state === 'present');
     this.coordination.set(await api.crucible.coordination());
     await this.loadEngineFacts();
   }

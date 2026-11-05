@@ -1,0 +1,285 @@
+
+    /*
+      ── A STRIP AND A GRID AT THE FOOT OF THE SIDEBAR ───────────────────────
+
+      *"i think the tile grid is best - b"* (Owen, 2026-08-22), chosen off four
+      drawings, and every number below is measured from the one he picked.
+
+      WHAT IT REPLACED WAS A COLUMN OF FULL-WIDTH ROWS, and that column deserves
+      its epitaph because it was right about the thing it was defending. It came
+      from *"[icon] [action], one after another"* (2026-08-18 01:05), and it
+      made the ORDER unmissable and the labels unambiguous; a row that is
+      `width: 100%` also has no column count to break when the panel is
+      resized, which is what the wrapped cluster before it kept getting wrong.
+      What it was wrong about was HEIGHT. Nine rows at thirty pixels each took
+      the bottom third of a 384-pixel panel whose other job is a tree that grows
+      all day — and the width it was spending on ellipsised labels was width the
+      tree could not use anyway.
+
+      SO THE TRADE IS MADE THE OTHER WAY ROUND, in a panel that is now wide and
+      short of height rather than narrow and full of it: three tiles across, two
+      lines, and the same six acts in a little over a hundred pixels. The order
+      is untouched — left to right, top to bottom, which is what an ordered list
+      is when the line breaks move.
+
+      NO HEIGHT TOKEN. `--rail-h` existed so the queue shelf's floating pill
+      could lift itself over a dock along the bottom edge; there is no dock along
+      the bottom edge, so the pill has nothing to clear and this block takes the
+      height its rows need.
+    */
+    .menu {
+      flex: 0 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-default);
+      padding: 10px;
+    }
+
+    /*
+      TWO SHAPES, AND NO RULES BETWEEN THEM ANY MORE. There used to be a hairline
+      under navigation and another above Settings, because a column of eight
+      identical rows reads as one run of equals and the grouping had to be drawn
+      on. It does not have to be drawn on now: a strip of thirty-pixel buttons
+      above a field of fifty-eight-pixel tiles IS the division, said in the one
+      language a layout has. Two hairlines that repeated it would be the same
+      sentence twice.
+
+      `minmax(0, 1fr)` and not `1fr`, which is the difference between a
+      long host label ellipsising inside its tile and the same label shoving the
+      third column off the edge of the panel: a grid track's automatic minimum is
+      its content, and a host we do not control writes these labels.
+    */
+    .menu-nav {
+      display: flex;
+      gap: 6px;
+      min-width: 0;
+    }
+    .menu-acts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      min-width: 0;
+    }
+
+    /*
+      THE TILE. Mark over word, centred, in a bordered box of its own — which is
+      the third shape this control has had and a return to the first. It was
+      exactly this (a 76-pixel column, glyph above label) while the menu ran
+      along the bottom of the window, then a full-width row for the four days it
+      was a list, and it is a tile again because the panel's scarce dimension
+      changed back.
+
+      A BOX RATHER THAN A BARE ROW, which is the real change and not the
+      proportions. A row in a list is delimited by the rows above and below it;
+      a tile has nothing beside it but a gap, so it has to carry its own edge or
+      it is a floating icon. The chrome is the app's own button chrome —
+      --bg-input on --border-default — because that is what every other pressable
+      thing in this window wears, and the one thing this menu must not do is
+      invent a fourth kind of button.
+
+      FIFTY-EIGHT PIXELS is the mockup's height and it is not arbitrary: a
+      16-pixel mark, an 11-pixel label, five of gap between them and enough air
+      above and below that the pair reads as one object rather than as two
+      things that happened to land in the same box.
+    */
+    .menu-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-width: 0;
+      height: 58px;
+      padding: 0 4px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      color: var(--text-secondary);
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+      transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+    }
+
+    /*
+      THE STRIP'S BUTTONS ARE THE SAME TILE LYING DOWN — same chrome, same
+      states, a third of the height, mark beside word instead of above it. That
+      is deliberate rather than economical: Home and Documents are pressable in
+      exactly the way Export is, and a navigation strip drawn in some other
+      idiom would be teaching a distinction that is not there. What separates
+      them from the acts is the SIZE and the position, which is the whole
+      argument for the shape.
+
+      THE TWO WITH WORDS SHARE THE ROW AND THE TWO WITHOUT TAKE A SQUARE. Home
+      and Documents flex, so hosted — where Home is not drawn at all — Documents
+      simply takes the width Home is not using and nothing is left hanging.
+    */
+    .menu-nav .menu-item {
+      flex: 1 1 0;
+      flex-direction: row;
+      gap: 6px;
+      height: 30px;
+      padding: 0 8px;
+    }
+    .menu-nav .menu-item.square { flex: 0 0 34px; padding: 0; }
+    .menu-nav .menu-icon { width: 14px; height: 14px; }
+
+    /*
+      THE HOST'S OWN COLOUR, the same amber the tree tints audio cards with, so
+      that an act belonging to another application reads as one at a glance
+      wherever it appears. Only the mark takes it: a whole tile in the host's
+      colour would compete with the accent this menu uses for "active".
+    */
+    .menu-item.audio .menu-icon { color: var(--audio); }
+
+    /*
+      THE STATES, AND THEY ARE WRITTEN AGAINST THE APP'S GLOBAL BUTTON RULES
+      RATHER THAN AROUND THEM. `button:hover` in styles.scss swaps the
+      background for --bg-hover, which is a translucent white meant to lift a
+      TRANSPARENT control and which would push an opaque --bg-input tile darker
+      instead. So the hover here names its own background, and the lift is
+      carried by the border and the text as much as by the fill.
+    */
+    .menu-item:hover {
+      background: var(--bg-active);
+      border-color: var(--border-strong);
+      color: var(--text-primary);
+    }
+    .menu-item:disabled { opacity: 0.35; cursor: default; }
+    .menu-item:disabled:hover {
+      background: var(--bg-input);
+      border-color: var(--border-default);
+      color: var(--text-secondary);
+    }
+    /*
+      ACTIVE IS A FILL — the dialog is open, the documents are up, the light
+      table is what you are looking at. The border goes transparent so the whole
+      tile reads as one washed shape rather than as a bordered box that happens
+      to be tinted; the background paints under it either way, which is what
+      makes that legal.
+    */
+    .menu-item.active {
+      background: var(--accent-soft);
+      border-color: transparent;
+      color: var(--accent);
+    }
+
+    /*
+      WAITING, which is not the same as ACTIVE and must not look identical.
+      Active means "this panel is open right now"; waiting means "this is the
+      step your book needs next". The SAME accent — this app has one word for
+      attention, and inventing a second colour for a second kind of it is how a
+      palette stops meaning anything — but drawn as a RING on a fainter wash
+      rather than as a fill, so a menu showing both still says which is which.
+      The ring used to be an inset shadow because the row had no border to
+      colour; the tile has one, so the ring is simply the tile's own edge in the
+      accent, which is a cleaner statement of the same thing.
+
+      IT PULSES ONCE AS IT ARRIVES AND THEN HOLDS: a permanently animating menu
+      is a menu people learn to look away from. The animation is a spreading
+      outer shadow now rather than a shadow list carrying the ring along with it,
+      because the ring is the border and no longer needs restating in every
+      keyframe.
+    */
+    .menu-item.waiting:not(.active) {
+      background: var(--accent-faint);
+      border-color: var(--accent);
+      color: var(--accent);
+      animation: notice 900ms cubic-bezier(0, 0, 0.2, 1) 1;
+    }
+    /* And it still answers a hover, which it would not otherwise: the waiting
+       rule outranks the plain hover, so without this the one tile the menu is
+       pointing at would be the one tile that went dead under the cursor. */
+    .menu-item.waiting:not(.active):hover { background: var(--accent-soft); }
+    @keyframes notice {
+      0% { box-shadow: 0 0 0 0 var(--accent-soft); }
+      60% { box-shadow: 0 0 0 7px transparent; }
+      100% { box-shadow: 0 0 0 0 transparent; }
+    }
+    .menu-item.active .menu-icon { transform: scale(1.1); }
+
+    /*
+      THE MARK, AND IT IS A STROKE ICON NOW RATHER THAN A CHARACTER. Sixteen
+      pixels square on the tiles and fourteen on the strip, drawn from the
+      library's symbol sheet — see the class docblock for why the typographic
+      glyphs (⌂ ☰ ▣ ⌦ ⇄ ≈ ⎘ ⓘ ♪) could not survive being made the largest thing
+      in the control. `currentColor` throughout, so every state above tints
+      the mark by tinting the tile, and the amber above is the one exception.
+    */
+    .menu-icon {
+      flex: 0 0 auto;
+      width: 16px; height: 16px;
+      transition: transform 150ms ease;
+    }
+    /*
+      THE ACTION'S NAME, UNDER THE MARK AND IN SENTENCE CASE. Eleven pixels
+      because it is a caption again rather than the thing being read — the mark
+      carries the recognition on a tile, which is exactly the trade a full-width
+      row could not make. It ellipses rather than wrapping: a two-line label
+      would push the pair off the tile's vertical centre and break the rhythm of
+      a grid, which is the same argument the row made about its own rhythm.
+    */
+    .menu-label {
+      min-width: 0; max-width: 100%;
+      font-size: 11px; font-weight: 500; line-height: 1.2;
+      letter-spacing: 0.01em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /*
+      ── COMPACT: THE MENU AT THIRTY PIXELS ───────────────────────────────────
+
+      The panel collapses to a stub and the acts go with it rather than
+      disappearing — putting the library away must not put Settings away. A
+      three-column grid of 58-pixel tiles cannot be drawn in 30 pixels of width
+      at all, so THE STUB KEEPS THE COLUMN OF ICONS IT HAS ALWAYS HAD: one mark
+      per row, one after another, which is the ordered list at a width that
+      cannot hold the words. The title attribute is on every one of them (it
+      always was), so they are one hover away — the same trade the panel's own
+      collapse makes.
+
+      AND THE CHROME COMES OFF WITH THE WORDS. A bordered box round a 26-pixel
+      mark in a 30-pixel stub is a border touching both edges of the column; the
+      tile's edge exists to separate it from the tiles beside it, and in a single
+      file with nothing beside it there is nothing to separate. The states keep
+      their fills, because those are saying something the shape is not.
+
+      THIS BLOCK COMES LAST ON PURPOSE. `:host(.compact) .menu-item` and
+      `.menu-nav .menu-item` are the same specificity, so source order is what
+      decides them, and compact has to be the one that wins.
+    */
+    :host(.compact) .menu { padding: 6px 2px; gap: 4px; }
+    :host(.compact) .menu-nav,
+    :host(.compact) .menu-acts {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    :host(.compact) .menu-item,
+    :host(.compact) .menu-nav .menu-item {
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      gap: 0;
+      background: transparent;
+      border-color: transparent;
+      border-radius: var(--radius-md);
+    }
+    :host(.compact) .menu-item:hover {
+      background: var(--bg-hover);
+      border-color: transparent;
+    }
+    :host(.compact) .menu-item.active { background: var(--accent-soft); }
+    :host(.compact) .menu-item.waiting:not(.active) {
+      background: var(--accent-faint);
+      border-color: var(--accent);
+    }
+    :host(.compact) .menu-label { display: none; }
+    :host(.compact) .menu-icon,
+    :host(.compact) .menu-nav .menu-icon { width: 16px; height: 16px; }
+  

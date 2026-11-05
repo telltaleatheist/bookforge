@@ -1,0 +1,208 @@
+
+    /* --grow is the inspector's: the share of the column this section was dragged to. */
+    :host {
+      flex: var(--grow, 1) 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    :host(.shut) { flex: 0 0 auto; }
+
+    .top { display: flex; align-items: center; }
+    .plus {
+      flex: 0 0 auto; margin-right: 8px;
+      width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+      color: var(--text-secondary); font-size: 15px; line-height: 1; cursor: pointer;
+    }
+    .plus:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    .plus:disabled { opacity: 0.4; cursor: default; }
+    .convs { flex-shrink: 0; border-bottom: 1px solid var(--border-subtle); }
+    .conv-head {
+      display: flex; align-items: baseline; gap: 6px; width: 100%;
+      padding: 4px 12px 6px; background: transparent; border: none; text-align: left; cursor: pointer;
+    }
+    .conv-head:hover { background: var(--bg-hover); }
+    .conv-now { flex: 1; min-width: 0; font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conv-count { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+    .conv-list { list-style: none; margin: 0; padding: 0 0 6px; max-height: 280px; overflow-y: auto; }
+    .conv { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 12px; }
+    .conv.on .conv-title { font-weight: 600; }
+    .conv-pick {
+      flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+      padding: 4px 6px; background: transparent; border: none; border-radius: var(--radius-sm); text-align: left; cursor: pointer;
+    }
+    .conv-pick:hover:not(:disabled) { background: var(--bg-hover); }
+    .conv-title { font-size: 12px; color: var(--text-primary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conv-meta { font-size: 10px; color: var(--text-tertiary); }
+    .conv-x {
+      flex: 0 0 auto; width: 20px; height: 20px; background: transparent; border: none; border-radius: var(--radius-sm);
+      color: var(--text-tertiary); font-size: 11px; cursor: pointer;
+    }
+    .conv-x:hover:not(:disabled) { background: var(--bg-hover); color: var(--error); }
+    .head {
+      display: flex; align-items: baseline; gap: 8px;
+      flex: 1;
+      width: 100%;
+      padding: 10px 12px 8px;
+      background: transparent; border: none;
+      text-align: left; cursor: pointer;
+    }
+    .head:hover { background: var(--bg-hover); }
+    .twist { color: var(--text-tertiary); font-size: 9px; }
+    .label {
+      flex: 1;
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-tertiary);
+    }
+
+    /* The thread scrolls; the composer stays at the bottom of the section,
+       where a chat's box is. */
+    .body {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column;
+      padding: 0 12px 10px;
+    }
+    .thread {
+      flex: 1; min-height: 80px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 6px;
+      padding-bottom: 8px;
+    }
+    .empty { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
+
+    .msg {
+      max-width: 92%;
+      padding: 6px 9px;
+      border-radius: var(--radius-md);
+      font-size: 12px; line-height: 1.5;
+      white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    /* The person's message on the right, the model's on the left, the way
+       every chat a person has used draws the two voices. */
+    .msg.person {
+      align-self: flex-end;
+      background: var(--accent);
+      color: var(--text-inverse);
+    }
+    .msg.model {
+      align-self: flex-start;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+    }
+    .msg.model.problem { border-color: var(--warn); color: var(--warn); }
+
+    /* "Working" is one quiet line until it is opened: the rounds are there
+       for whoever wants them and out of the way of whoever does not. */
+    .working {
+      align-self: flex-start;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 2px 0;
+      background: transparent; border: none;
+      font-family: inherit; font-size: 11px;
+      color: var(--text-tertiary);
+      cursor: pointer;
+    }
+    .working:hover { color: var(--text-secondary); }
+    .working.active { color: var(--text-secondary); }
+    .spinner {
+      width: 9px; height: 9px;
+      border: 1.5px solid var(--border-strong);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .steps {
+      margin: 0; padding: 0 0 0 14px;
+      display: flex; flex-direction: column; gap: 3px;
+      font-size: 11px; line-height: 1.45;
+      color: var(--text-tertiary);
+    }
+    .says { display: block; font-style: italic; color: var(--text-secondary); }
+    .quiet { color: var(--text-tertiary); }
+    .status { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
+    .note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
+    .review { align-self: flex-start; }
+
+    .composer {
+      display: flex; flex-direction: column; gap: 6px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .request {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      min-height: 44px;
+      padding: 6px 8px;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      font-family: inherit; font-size: 12px; line-height: 1.45;
+    }
+    .request:focus { outline: none; border-color: var(--accent); }
+    .continuing {
+      margin: 0;
+      font-size: 11px; line-height: 1.4;
+      color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .pick { display: flex; flex-direction: column; gap: 8px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-tertiary);
+    }
+    .pick select { width: 100%; min-width: 0; }
+    .bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .bar .spacer { flex: 1; }
+
+    .chain { margin: 0; font-size: 11px; font-weight: 600; color: var(--accent); }
+    .presets { display: flex; flex-wrap: wrap; gap: 4px; }
+    .preset {
+      max-width: 100%; height: 24px; padding: 0 9px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border-default); border-radius: 12px;
+      font-family: inherit; font-size: 11px; cursor: pointer;
+    }
+    .preset:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .preset:disabled { opacity: 0.5; cursor: not-allowed; }
+    .places-head { margin: 2px 0 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+    .places { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+    .place {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+      width: 100%; padding: 5px 8px; text-align: left;
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+      font-family: inherit; cursor: pointer;
+    }
+    .place:hover { border-color: var(--border-strong); }
+    .place.on { border-color: var(--accent); }
+    .place-note { font-size: 12px; line-height: 1.35; }
+    .place-quote {
+      font-size: 11px; line-height: 1.35; color: var(--text-tertiary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+    }
+
+    .primary, .ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 28px; padding: 0 12px;
+      border-radius: var(--radius-md);
+      font-size: 12px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .primary { border: none; background: var(--accent); color: var(--text-inverse); }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .ghost {
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+    }
+    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .primary:disabled, .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+  

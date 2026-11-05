@@ -30,7 +30,7 @@
  */
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 
-import type { Job } from '@shared/types';
+import type { Job } from '@owen/foundry-core/shared/types';
 
 @Component({
   selector: 'app-run-progress',

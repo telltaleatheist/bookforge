@@ -1,0 +1,19 @@
+
+    @for (toast of shown(); track toast.id) {
+      <div class="toast">
+        <!--
+          `pre-line` because a good half of what lands here is a REPORT rather
+          than a sentence: the capture intake writes one line per outcome, and
+          collapsing those newlines would run nine findings into one paragraph.
+          It is the one piece of rendering this tray does to the string, and it
+          preserves the writer's own line breaks without honouring runs of spaces
+          — a message is prose, not a table.
+        -->
+        <p class="said">{{ toast.text }}</p>
+        <button class="x" type="button"
+                (click)="dismiss(toast.id)"
+                title="Dismiss"
+                aria-label="Dismiss this notice">✕</button>
+      </div>
+    }
+  

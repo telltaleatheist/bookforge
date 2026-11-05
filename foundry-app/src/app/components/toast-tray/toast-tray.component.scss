@@ -1,0 +1,100 @@
+
+    /*
+      SHRINK TO FIT, so an empty tray is an empty box and not an invisible sheet
+      over the corner of the window. A fixed element with no width takes the
+      width of its content, and with no toasts there is no content: zero pixels,
+      nothing to intercept a click, nothing to hover. That is also why the pause
+      listeners can live on the host — the box is the cards and the gaps between
+      them, so the pointer entering it means the pointer is in the stack.
+    */
+    :host {
+      position: fixed;
+      right: 16px;
+      /* The corner, in every window. Nothing floats down here any more — see
+         the header for what the old 424-pixel offset was clearing. */
+      bottom: 16px;
+      z-index: 1100;
+      display: flex;
+      flex-direction: column;
+      /*
+        Plain column with the newest appended LAST, which is what puts the newest
+        card at the bottom of the stack, nearest the corner. The box is anchored
+        by its bottom edge, so each arrival grows it upward and the older cards
+        move up rather than the new one landing on top of them.
+      */
+      justify-content: flex-end;
+      align-items: flex-end;
+      gap: 8px;
+      max-width: 400px;
+      /*
+        The ceiling is the top of the window with the tray's own offset taken off
+        it, top and bottom — 16 and 16. Four long reports at 40vh apiece cannot
+        fit in any window, and the overflow is clipped from the TOP, which takes
+        the oldest cards, the ones already closest to expiring, rather than the
+        one that just arrived.
+
+        IT FOLLOWED THE ANCHOR DOWN. While the tray sat at 424 this was
+        100vh minus 440, the same arithmetic against the same offset; a ceiling
+        left at the old number over a tray in the corner would have clipped four
+        hundred pixels of perfectly good window.
+      */
+      max-height: calc(100vh - 32px);
+      overflow: hidden;
+    }
+
+    .toast {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      /* The queue panel's shadow, verbatim: the two surfaces float over the same
+         window and a card that hovered at a different height would read as
+         belonging to a different app. */
+      box-shadow:
+        0 10px 15px -3px rgba(0, 0, 0, 0.2),
+        0 20px 40px -10px rgba(0, 0, 0, 0.35);
+      color: var(--text-primary);
+      font-size: 13px;
+      /* The dialogs' entrance, at the dialogs' timing (140ms, same curve): this
+         is the same act — something arriving over the window — and the house has
+         one gesture for it. */
+      animation: rise 140ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+    .said {
+      flex: 1 1 auto;
+      min-width: 0;
+      margin: 0;
+      white-space: pre-line;
+      line-height: 1.45;
+      /* A long report scrolls INSIDE its own card rather than growing one that
+         reaches the top of the window. 40vh is about as much of the screen as a
+         thing nobody asked to see may take. */
+      max-height: 40vh;
+      overflow-y: auto;
+      overflow-wrap: anywhere;
+    }
+
+    .x {
+      flex: 0 0 auto;
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 11px;
+      padding: 2px 4px; border-radius: var(--radius-sm);
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    /*
+      SOMEBODY WHO HAS ASKED FOR LESS MOTION STILL GETS THE SENTENCE, it simply
+      does not slide in. Nothing is lost with the animation off — the card says
+      what it says by being there, and the rise was only ever the manners.
+    */
+    @media (prefers-reduced-motion: reduce) {
+      .toast { animation: none; }
+    }
+  

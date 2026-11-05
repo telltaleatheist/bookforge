@@ -1,0 +1,40 @@
+
+    @if (hostOps.hostStatus(); as shown) {
+      @if (hostOps.opensStatus()) {
+        <button type="button" class="chip live" [title]="tip(shown)" (click)="open()">
+          <ng-container *ngTemplateOutlet="readout; context: { $implicit: shown }" />
+        </button>
+      } @else {
+        <div class="chip" role="status" [title]="tip(shown)">
+          <ng-container *ngTemplateOutlet="readout; context: { $implicit: shown }" />
+        </div>
+      }
+    }
+
+    <!--
+      THE HOST'S WORDS, WRITTEN ONCE. Both chips above draw this, so a change to
+      what the chip says cannot land in one of them and not the other.
+
+      THE ORDER IS THE ORDER OF THE DECLARATION: the mark, the headline, the
+      dimmer second line under it, the count of what is still waiting, and the
+      progress along the bottom edge. Every part after the headline is drawn only
+      when the host sent it — an absent detail is not an empty line, an absent
+      count is not a zero, and an absent percent is not a bar sitting at nothing,
+      which is the one reading that would be actively misleading.
+    -->
+    <ng-template #readout let-shown>
+      <span class="mark" aria-hidden="true"></span>
+      <span class="words">
+        <span class="headline">{{ shown.headline }}</span>
+        @if (shown.detail !== undefined) {
+          <span class="detail">{{ shown.detail }}</span>
+        }
+      </span>
+      @if (shown.pending !== undefined) {
+        <span class="pending">{{ shown.pending }}</span>
+      }
+      @if (shown.percent !== undefined) {
+        <span class="bar"><i [style.width.%]="shown.percent"></i></span>
+      }
+    </ng-template>
+  

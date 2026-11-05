@@ -1,0 +1,151 @@
+
+    :host { position: relative; display: block; height: 100%; overflow-y: auto; background: var(--bg-base); }
+
+    .home {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 24px 64px;
+      display: flex;
+      flex-direction: column;
+      gap: 40px;
+    }
+
+    .hero { text-align: center; }
+    .mark { font-size: 40px; color: var(--accent); line-height: 1; }
+    .hero h1 { margin: 10px 0 4px; font-size: 24px; font-weight: 700; }
+    .hero p { margin: 0 0 24px; font-size: 13px; color: var(--text-tertiary); }
+
+    .target {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 160px;
+      border: 2px dashed var(--border-default);
+      border-radius: var(--radius);
+      color: var(--text-tertiary);
+      font-size: 13px;
+      background: var(--bg-sunken);
+      transition: border-color 150ms ease, color 150ms ease;
+    }
+    .target:hover { border-color: var(--accent); color: var(--text-secondary); }
+
+    .actions { display: flex; gap: 8px; justify-content: center; margin-top: 20px; }
+
+    .recents header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+    .recents h2 {
+      flex: 1;
+      margin: 0;
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-tertiary); font-weight: 600;
+    }
+    .none { margin: 0; font-size: 13px; color: var(--text-tertiary); }
+
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { display: flex; align-items: center; border-bottom: 1px solid var(--border-subtle); }
+    li:last-child { border-bottom: none; }
+
+    /* A document inside a project: indented, hairlined off, and quieter than
+       the book it belongs to — the row above is the thing being chosen between,
+       and these are what that choice contains. */
+    li.detail { border-bottom: none; padding-left: 22px; }
+    li.detail .row { padding-top: 6px; padding-bottom: 6px; font-size: 12px; }
+    li.detail .none { padding: 6px 8px; font-size: 12px; }
+
+    .row {
+      flex: 1; min-width: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 8px;
+      background: transparent; border: none; border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 13px; text-align: left; cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .row:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-hover); }
+    .row:disabled { cursor: default; opacity: 0.55; }
+
+    .kind { flex: 0 0 auto; opacity: 0.6; font-size: 12px; }
+    .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .when { flex: 0 0 auto; font-size: 11px; color: var(--text-tertiary); }
+
+    .tag {
+      flex: 0 0 auto;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+      padding: 2px 8px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent);
+    }
+    .tag.gone { background: var(--error-soft); color: var(--error); }
+
+    /*
+      THE WAITING STEP, in the accent — this app's one word for attention, used
+      here for "do this next" rather than for "this is on".
+
+      It is a filled pill and not an outline, unlike the action menu's version of
+      the same idea, because the contexts are opposite: in the menu it sits among
+      other items that are sometimes active and has to be told apart from them,
+      and here it is the only coloured thing on a row of grey text. Both are the
+      same accent, which is what makes them read as one idea.
+
+      It does not pulse. A library of twenty books with three unread would be
+      three animations running forever on a screen somebody is reading.
+    */
+    .ocr {
+      flex: 0 0 auto;
+      margin-right: 2px;
+      padding: 3px 10px;
+      border: none; border-radius: 999px;
+      background: var(--accent); color: var(--text-inverse);
+      font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .ocr:hover { background: var(--accent-hover); }
+    .ocr:active { background: var(--accent-active); transform: scale(0.96); }
+
+    /* Primary / secondary / ghost, one shape apart: 32px tall, 6px radius, the
+       label at 13px/500. */
+    .primary, .ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 32px; padding: 0 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  transform 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .primary {
+      border: none;
+      background: var(--accent); color: var(--text-inverse);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    .primary:hover { background: var(--accent-hover); }
+    .primary:active { background: var(--accent-active); transform: scale(0.98); }
+    .ghost {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+    }
+    .ghost:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    .ghost:active { background: var(--bg-active); transform: scale(0.98); }
+
+    .link {
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 11px;
+    }
+    .link:hover { color: var(--accent); }
+    .x {
+      background: transparent; border: none; cursor: pointer;
+      color: var(--text-tertiary); font-size: 11px;
+      padding: 6px; border-radius: var(--radius-sm);
+    }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /* The one control in this app that destroys something wears the error
+       colour on hover — the same red the "not there any more" tag uses. Quiet
+       until the pointer is on it: it sits beside Reveal on every row, and a
+       permanently red button on a list of books reads as a warning about the
+       books rather than as an action. */
+    .x.danger:hover { background: var(--error-soft); color: var(--error); }
+  

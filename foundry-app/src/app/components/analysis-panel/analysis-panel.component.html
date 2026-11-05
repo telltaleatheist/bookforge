@@ -1,0 +1,151 @@
+
+    <!--
+      THE COLUMN NAMES ITSELF, exactly as the compare column does and for its
+      reason: a second view with no label is two things side by side and no way to
+      tell which is which.
+    -->
+    <header class="head">
+      <span class="tag">Analysis</span>
+      <span class="counts">{{ said() }}</span>
+      <button
+        type="button"
+        class="x"
+        title="Close the analysis"
+        aria-label="Close the analysis"
+        (click)="stage.stopAnalysis()"
+      >✕</button>
+    </header>
+
+    <!--
+      THERE ARE NO STRICTNESS BUTTONS any more (Owen, 2026-09-25: *"we wont have
+      two separate categories in this. confirmed only."*). Every card below is a
+      passage the verifier flagged, with its reason; the legend is the only filter.
+    -->
+
+    <!--
+      THE LEGEND, WHICH IS ALSO THE FILTER — what the category headings used to
+      carry, made into switches.
+
+      This is the clause docs/ANALYSIS.md §8 promised and the first cut deferred
+      out loud (*"a panel filter lights one category at a time when asked"*).
+      Pressing a row switches that category's cards off AND its highlights on the
+      paper, because they are one list: `hits` is what the panel draws and what
+      `litRanges` paints, so a filter can only ever move both.
+
+      THE COUNT DOES NOT MOVE WHEN A ROW IS SWITCHED OFF (`legendOf` counts
+      before the filter). A number that went to zero the moment you pressed it
+      would erase the label telling you what pressing it again would bring back.
+    -->
+    @if (analysis.legend().length > 1 || analysis.hidden().size > 0) {
+      <div class="legend" role="group" aria-label="Which categories to show">
+        @for (row of analysis.legend(); track row.category) {
+          <button
+            type="button"
+            class="key"
+            [class.off]="analysis.hidden().has(row.category)"
+            [attr.aria-pressed]="!analysis.hidden().has(row.category)"
+            (click)="analysis.toggleCategory(row.category)"
+          >
+            <span class="dot" [style.background]="ink(row.category)"></span>
+            <span class="key-name">{{ named(row.category) }}</span>
+            <span class="key-count">{{ row.count }}</span>
+          </button>
+        }
+      </div>
+    }
+
+    @if (analysis.problem(); as reason) {
+      <p class="problem">{{ reason }}</p>
+    }
+    @if (stale(); as caveat) {
+      <p class="problem">{{ caveat }}</p>
+    }
+
+    <div class="list" (click)="clearOnBackdrop($event)">
+      @for (card of cards(); track card.key) {
+        <!--
+          THE WHOLE CARD IS THE BUTTON. The chip that used to be the only target
+          named a block id nobody needed and was a chip-sized target inside a
+          paragraph-sized row; the card is the thing a person is looking at, so
+          the card is the thing that travels. Everything inside it is a `span`
+          rather than a `p` — a button may only hold phrasing content, and the
+          block layout is the stylesheet's.
+        -->
+        <button
+          type="button"
+          class="card"
+          [class.ghost]="card.found.struck"
+          [class.on]="analysis.selected() === card.key"
+          [style.--card-ink]="card.ink"
+          [style.--card-rest]="card.washRest"
+          [style.--card-deep]="card.washDeep"
+          [attr.data-key]="card.key"
+          (click)="travel(card.found)"
+        >
+          <span class="rail" [style.background]="card.ink"></span>
+          <span class="top">
+            <span class="cat" [style.color]="card.ink">{{ card.category }}</span>
+            @if (card.page > 0) {
+              <span class="at">≈ {{ card.page }}</span>
+            }
+          </span>
+          <span class="quote">
+            <span class="q-side">{{ card.found.quote.before }}</span><span
+              class="q-hit"
+            >{{ card.found.quote.hit }}</span><span
+              class="q-side"
+            >{{ card.found.quote.after }}</span>
+          </span>
+          <!--
+            THE VERIFIER'S REASON — its own one or two sentences about what the
+            author says here and why that is the claim (Owen, 2026-09-25: *"the
+            side panel should show the reasoning"*). Under the quotation, because
+            the quotation is what it is a reason about.
+          -->
+          @if (card.found.reason.length > 0) {
+            <span class="why">{{ card.found.reason }}</span>
+          }
+          <!--
+            THE OTHER CATEGORIES, NAMED RATHER THAN COUNTED, and each with the
+            verifier's reason for it — it flagged the passage for each of them
+            separately, so each has its own account.
+          -->
+          @for (other of card.also; track other.name) {
+            <span class="also">
+              <span class="also-name" [style.color]="other.ink">Also {{ other.name }}</span>
+              @if (other.reason.length > 0) { — {{ other.reason }} }
+            </span>
+          }
+        </button>
+      } @empty {
+        <p class="none">{{ empty() }}</p>
+      }
+
+      <!--
+        THE FOOT: what this book could not place, and which categories were never
+        calibrated. Sentences rather than a refusal (`BookLoad.unplaced`'s own
+        precedent) and at the END rather than the top, because they are caveats
+        about a list somebody is reading and not reasons not to read it.
+      -->
+      @if (analysis.unplaced().length > 0) {
+        <div class="foot">
+          <p class="foot-lede">
+            {{ analysis.unplaced().length }} passage(s) could not be placed on this book:
+          </p>
+          <ul>
+            @for (said of analysis.unplaced(); track $index) {
+              <li>{{ said }}</li>
+            }
+          </ul>
+        </div>
+      }
+      @if (untuned(); as names) {
+        <div class="foot">
+          <p class="foot-lede">
+            Nothing has calibrated {{ names }}, so the counts for those are a first draft — they
+            may turn up too much or too little.
+          </p>
+        </div>
+      }
+    </div>
+  

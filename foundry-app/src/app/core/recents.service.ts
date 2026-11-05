@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 
-import type { RecentDocument } from '@shared/types';
+import type { RecentDocument } from '@owen/foundry-core/shared/types';
 
 import { api } from './foundry';
 

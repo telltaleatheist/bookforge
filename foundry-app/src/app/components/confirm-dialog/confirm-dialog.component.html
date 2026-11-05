@@ -1,0 +1,54 @@
+
+    @if (ui.confirmOpen() && confirm.question(); as question) {
+      <div class="scrim" (click)="confirm.answer(question.dismissed)"></div>
+
+      <div
+        #card
+        class="card"
+        role="alertdialog"
+        aria-modal="true"
+        [attr.aria-label]="question.title"
+        tabindex="-1"
+        (keydown.escape)="confirm.answer(question.dismissed)"
+      >
+        <header class="head">
+          <span class="title">{{ question.title }}</span>
+        </header>
+
+        <div class="body">
+          <!-- The lead sentence, in the reading colour: it is what is TRUE, and
+               the paragraphs under it are what that means. A composer with
+               nothing to lead with (the delete card, whose headline is its whole
+               statement) leaves it empty and the card closes up around it. -->
+          @if (question.message.length > 0) {
+            <p class="lead">{{ question.message }}</p>
+          }
+          @for (line of question.detail; track line) {
+            <p class="line">{{ line }}</p>
+          }
+        </div>
+
+        @if (question.checkbox; as box) {
+          <label class="standing">
+            <input type="checkbox" [checked]="ticked()" (change)="tick($event)" />
+            <span>{{ box.label }}</span>
+          </label>
+        }
+
+        <!--
+          IN MAIN'S ORDER, WHICH IS THE SAFETY RATHER THAN THE STYLING: the
+          destructive answer is last and aimed at, and the one worth pressing is
+          focused. Nothing here re-sorts them.
+        -->
+        <footer class="foot">
+          @for (choice of question.choices; track choice.key) {
+            <button
+              [class]="choice.danger ? 'danger' : choice.key === question.preferred ? 'primary' : 'ghost'"
+              [attr.data-preferred]="choice.key === question.preferred ? '1' : null"
+              (click)="confirm.answer(choice.key, ticked())"
+            >{{ choice.label }}</button>
+          }
+        </footer>
+      </div>
+    }
+  

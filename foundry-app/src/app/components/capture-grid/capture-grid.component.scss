@@ -1,0 +1,113 @@
+
+    .table { position: relative; }
+    /* A hairline and a wash. The band is a statement about a region, not an
+       object in its own right, so it does not compete with the photographs. */
+    .band {
+      position: absolute;
+      z-index: 2;
+      border: 1px solid var(--accent);
+      background: var(--accent-faint);
+      pointer-events: none;
+    }
+    .menu-scrim { position: fixed; inset: 0; z-index: 1099; }
+    .menu {
+      position: fixed;
+      z-index: 1100;
+      padding: 4px;
+      display: flex; flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      box-shadow: 0 12px 24px -8px rgba(0, 0, 0, 0.5);
+    }
+    .menu button {
+      display: block; width: 100%;
+      padding: 6px 10px;
+      border: none; border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer;
+    }
+    .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /*
+     * The sort dropdown wears the context menu's own clothes and hangs off its
+     * button instead of the pointer: same card, same rows, anchored under the
+     * control that opened it. Declared after `.menu` so the anchor overrides
+     * the pointer positioning at equal specificity — the cascade rule this
+     * repo checks by hand (cascade-check reports equal-specificity collisions;
+     * this one is deliberate and order-resolved).
+     */
+    .sortwrap { position: relative; }
+    .sortmenu { position: absolute; left: auto; top: calc(100% + 4px); right: 0; }
+
+    /* The table and the strip side by side; the header above the table only. */
+    :host { display: flex; flex-direction: row; height: 100%; min-height: 0; }
+    .column { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+    header button {
+      padding: 3px 9px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md, 6px);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    header button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    header button:disabled { opacity: 0.4; cursor: default; }
+    .note { font-style: italic; }
+
+    .table {
+      flex: 1;
+      min-width: 0;
+      align-content: start;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      padding: 10px;
+      overflow-y: auto;
+    }
+
+    .slot { position: relative; }
+    /*
+      The landing is a line down the leading edge rather than a gap that opens
+      up: an insertion that reflows the whole grid moves every other card out
+      from under the pointer while the person is still aiming at one.
+
+      AND THE LAST CARD CAN CARRY IT ON THE OTHER SIDE, which is the only way to
+      draw an insertion AFTER everything: there is no slot past the end to put a
+      leading line on, so the end of the book is the trailing edge of the last
+      card. Same hairline, same colour, mirrored inset — one landing indicator
+      with two seats, rather than a second mark a person has to learn.
+    */
+    .slot.landing::before, .slot.trailing::after {
+      content: '';
+      position: absolute;
+      inset: -5px auto -5px -6px;
+      width: 2px;
+      background: var(--accent, #4c9aff);
+    }
+    .slot.trailing::after { inset: -5px -6px -5px auto; }
+
+    .empty { color: var(--text-tertiary); font-size: 12px; padding: 20px; }
+
+    .dropzone {
+      flex: 0 0 130px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 10px;
+      padding: 10px;
+      border: 1px dashed var(--border-default);
+      border-radius: var(--radius-md, 6px);
+      color: var(--text-tertiary);
+      font-size: 12px;
+      text-align: center;
+    }
+    .dropzone.hot { border-color: var(--accent, #4c9aff); color: var(--text-primary); background: var(--bg-hover); }
+  

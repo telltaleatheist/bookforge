@@ -1,9 +1,9 @@
 import { Injectable, signal } from '@angular/core';
 
-import { offeredFrom } from '@shared/host-ops';
-import type { HostNodeAction, HostOperationOffer, HostOperationState, HostStatus } from '@shared/host-ops';
-import { fold } from '@shared/original';
-import type { HostNode, NodeOutput } from '@shared/types';
+import { offeredFrom } from '@owen/foundry-core/shared/host-ops';
+import type { HostNodeAction, HostOperationOffer, HostOperationState, HostStatus } from '@owen/foundry-core/shared/host-ops';
+import { fold } from '@owen/foundry-core/shared/original';
+import type { HostNode, NodeOutput } from '@owen/foundry-core/shared/types';
 
 import { api } from './foundry';
 

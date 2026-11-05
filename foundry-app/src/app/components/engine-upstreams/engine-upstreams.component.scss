@@ -1,0 +1,33 @@
+
+    :host { display: flex; flex-direction: column; gap: 8px; }
+    .upstream {
+      display: flex; flex-direction: column; gap: 6px;
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+      padding: 8px;
+    }
+    .row { display: flex; align-items: center; gap: 6px; }
+    .who { font-size: 12px; font-weight: 600; }
+    .spacer { flex: 1; }
+    .wide { flex: 1; min-width: 0; }
+    .small { font-size: 11px; color: var(--text-tertiary); margin: 0; }
+    .mono { font-family: var(--font-mono); }
+    .warn { color: var(--warn); }
+    .ok { color: var(--ok); }
+    .badge {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--ok); background: var(--ok-soft); border-radius: 999px; padding: 2px 8px;
+    }
+    .primary, .ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 26px; padding: 0 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+    }
+    .primary { border: none; background: var(--accent); color: var(--text-inverse); }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ghost { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); }
+    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+  

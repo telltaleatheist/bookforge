@@ -1,0 +1,106 @@
+
+    :host { display: block; }
+    .doors { display: flex; flex-direction: column; gap: 6px; }
+
+    .door {
+      display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left;
+      width: 100%; padding: 8px 10px;
+      background: var(--bg-input); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm); cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .door:hover { background: var(--bg-hover); border-color: var(--border-default); }
+    .door-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+    .door-note { font-size: 11px; color: var(--text-tertiary); }
+
+    /*
+     * NOT A DOOR — it is the sentence above the doors, and the one control in it
+     * is a retry of something the app already did. Drawn flat rather than as a
+     * fourth pressable row, because a row that looked like the three below it
+     * would read as a fourth alternative to them.
+     */
+    .blurb { display: flex; flex-direction: column; gap: 6px; padding: 0 2px 4px; }
+
+    .panel {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 10px; margin-bottom: 4px;
+      background: var(--bg-sunken); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-tertiary);
+    }
+    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .small { font-size: 11px; color: var(--text-tertiary); margin: 0; word-break: break-word; }
+    .warn { color: var(--warn); margin: 0; font-size: 12px; }
+    .ok { color: var(--ok); }
+
+    .steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+    .steps li { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+    .step-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .step-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .cmd {
+      display: block; font-family: var(--font-mono); font-size: 11px;
+      background: var(--bg-input); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm); padding: 5px 7px;
+      user-select: all; word-break: break-all;
+    }
+
+    .badge {
+      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px;
+    }
+    .badge.held { color: var(--ok); background: var(--ok-soft); }
+    .badge.stopped { color: var(--warn); background: transparent; border: 1px solid var(--warn); }
+
+    /* A job type under "Installing what Foundry needs" — indented, never a row. */
+    .child {
+      display: flex; flex-direction: column; gap: 2px;
+      padding-left: 12px; font-size: 11px; color: var(--text-secondary);
+    }
+    /* A row nobody has reached yet is present and plainly not started. */
+    .steps li[data-state="waiting"] { opacity: 0.45; }
+
+    .primary, .ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 26px; padding: 0 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .primary { border: none; background: var(--accent); color: var(--text-inverse); }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .ghost { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); }
+    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* The uninstall plan's rows, and the one control that is not a door. */
+    .check { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .check input { margin-top: 2px; flex: 0 0 auto; }
+    .rows { display: flex; flex-direction: column; gap: 2px; }
+    .row { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .row.fatal, .row.fatal .act, .row.fatal .said { color: var(--warn); }
+    .act {
+      flex: 0 0 auto; min-width: 46px;
+      font-family: var(--font-mono); font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-tertiary);
+    }
+    .what { flex: 1; min-width: 0; }
+    .said { color: var(--text-tertiary); }
+    .size { flex: 0 0 auto; font-size: 10px; color: var(--text-tertiary); }
+
+    .danger {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 26px; padding: 0 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px; font-weight: 500; line-height: 1; cursor: pointer;
+      border: 1px solid var(--warn); background: transparent; color: var(--warn);
+    }
+    .danger:disabled { opacity: 0.5; cursor: not-allowed; }
+  

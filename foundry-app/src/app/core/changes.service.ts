@@ -1,8 +1,8 @@
 import { Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
 
-import { positionOf } from '@shared/ledger';
-import type { ReplayedRow } from '@shared/ops';
-import { NO_DIFF, wordDiff, type ChangeRange, type WordDiff } from '@shared/word-diff';
+import { positionOf } from '@owen/foundry-core/shared/ledger';
+import type { ReplayedRow } from '@owen/foundry-core/shared/ops';
+import { NO_DIFF, wordDiff, type ChangeRange, type WordDiff } from '@owen/foundry-core/shared/word-diff';
 
 import { LedgerService } from './ledger.service';
 import { StageService } from './stage.service';
