@@ -365,6 +365,12 @@ Anything the renderer (Listen) also needs (text core, acronyms) goes under `shar
 | 7 | prep (`lang`, `normalize`, `epub`, `chapters`, `paragraph_packer` packing, `prep`) — needs **B1** (budget from `/v1/voices`) | `prep` phase, tools env for narrator entirely | session-state/provenance/gaps.json equal for every Higgs book in the library (re-prep to scratch, never Z:); Owen narrates a book end to end |
 | 8 | remove `python/narrator` (after Crucible C1 owns engine/serve), `electron/scripts/*.py`, narrator-spawn phases, tools-env narrator bootstrap, Python test suites (their vectors now live in TS fixtures) | — | `grep -r narrator.compat` empty; app builds with no Python env |
 
+**Prep in TypeScript (step 7, on `feat/narrator-prep`). Not called by anything yet.**
+
+- `electron/narrator/text/prep.ts` is the whole of `prep_session` for Higgs; `prep-door.ts` and `prep-worker.ts` run it off the main thread. The bridge still spawns the Python.
+- Every libxml2 call goes through the `Libxml2` interface in `text/html/lxml.ts`. `libxml2-wasm.ts` implements it and has never run, because the binary waits on Emscripten. So `tools/test-narrator-prep.js` feeds prep what lxml gave the Python.
+- Known differences from the Python: a cover JPEG is sharp's rather than Pillow's (a CMYK cover comes out sRGB), a Chinese word in a TOC title gets Unidecode's `Bei Jing` rather than pypinyin's `beijing`, and Orpheus is refused by name.
+
 **For the flip: how a voice's edges reach assembly (lead's ruling, 2026-11-05). Not built yet.**
 `GET /v1/voices` carries `edges {pads, fade_in_ms, fade_out_ms}` per voice and per arm, once a real release has it.
 - Record `edges` in the session when it renders. Assembly reads the session's record and never asks a server, so a

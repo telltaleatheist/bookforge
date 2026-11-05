@@ -1,10 +1,10 @@
 # libxml2 as WebAssembly
 
-**Status: the shim and build script have never been compiled or run.** There is no
-`libxml2.wasm` yet. Installing Emscripten is waiting on Owen.
+**Status: the shim, the build script and `electron/narrator/text/html/libxml2-wasm.ts` have never been
+compiled or run.** There is no `libxml2.wasm` yet. Installing Emscripten is waiting on Owen.
 
-Narrator's prep reads every EPUB document through libxml2's HTML parser and serializer before
-BeautifulSoup sees it, and real books depend on that parser's recovery rules: 247 documents in
+Narrator's prep reads every EPUB's package files through libxml2's XML parser, and its nav and
+every document through its HTML parser and serializer before BeautifulSoup sees them, and real books depend on that parser's recovery rules: 247 documents in
 the library change structure under it and 17 are not well-formed XML. So prep keeps the same
 engine at the same version instead of a copy of its rules. See `docs/NARRATOR-TS-PORT-MAP.md`.
 
@@ -20,7 +20,8 @@ engine at the same version instead of a copy of its rules. See `docs/NARRATOR-TS
 The app and its install use only the committed binary. They never need Emscripten.
 
 `shim.c` also holds the parts of lxml's own behaviour that have to touch libxml2's nodes: the
-tail text after an element, `len(element)` and `find('body')`. The rest of lxml's and ebooklib's
+tail text after an element, `len(element)`, `find('body')`, and the tree as `.text`, `.tail` and
+`.nsmap` present it. The rest of lxml's and ebooklib's
 behaviour (the empty-body rule, the `<body>` strip, "Document is empty") belongs in TypeScript.
 
 ## Source

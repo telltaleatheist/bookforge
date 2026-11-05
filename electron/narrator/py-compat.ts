@@ -111,7 +111,7 @@ export function pyJsonDumps(value: unknown, depth = 0): string {
     if (value.length === 0) return '[]';
     return `[\n${value.map((item) => inner + pyJsonDumps(item, depth + 1)).join(',\n')}\n${outer}]`;
   }
-  const entries = Object.entries(value as Record<string, unknown>);
+  const entries = value instanceof Map ? [...value.entries()] as Array<[string, unknown]> : Object.entries(value as Record<string, unknown>);
   if (entries.length === 0) return '{}';
   return `{\n${entries.map(([key, item]) => `${inner}${jsonString(key)}: ${pyJsonDumps(item, depth + 1)}`).join(',\n')}\n${outer}}`;
 }
@@ -213,3 +213,42 @@ export function pyTruthy(value: unknown): boolean {
   if (typeof value === 'object') return Object.keys(value as object).length > 0;
   return true;
 }
+
+/** `posixpath.normpath`. Two leading slashes survive and three do not, and an empty path is `.`. */
+export function pyPosixNormpath(input: string): string {
+  if (input === '') return '.';
+  const lead = input.startsWith('/') ? (input.startsWith('//') && !input.startsWith('///') ? '//' : '/') : '';
+  const out: string[] = [];
+  for (const part of input.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part !== '..' || (lead === '' && out.length === 0) || (out.length > 0 && out[out.length - 1] === '..')) out.push(part);
+    else if (out.length > 0) out.pop();
+  }
+  return lead + out.join('/') || '.';
+}
+
+/** `posixpath.join` of two parts. It normalizes nothing, unlike Node's. */
+export function pyPosixJoin(a: string, b: string): string {
+  if (b.startsWith('/') || a === '') return b;
+  return a.endsWith('/') ? a + b : `${a}/${b}`;
+}
+
+/** `posixpath.dirname`: empty when there is no slash, where Node's says `.`. */
+export function pyPosixDirname(p: string): string {
+  const head = p.slice(0, p.lastIndexOf('/') + 1);
+  return head && !/^\/+$/.test(head) ? head.replace(/\/+$/, '') : head;
+}
+
+/** `posixpath.splitext`'s extension: dots leading the last component do not start one. */
+export function pyExtension(p: string): string {
+  const name = p.slice(p.lastIndexOf('/') + 1);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && /[^.]/.test(name.slice(0, dot)) ? name.slice(dot) : '';
+}
+
+const PERCENT_RUN = /(?:%[0-9a-fA-F]{2})+/g;
+const REPLACING_UTF8 = new TextDecoder('utf-8', { ignoreBOM: true });
+
+/** `urllib.parse.unquote`: only escapes decode, each run as UTF-8 with replacement. */
+export const pyUnquote = (text: string): string => text.replace(PERCENT_RUN, (run) =>
+  REPLACING_UTF8.decode(Buffer.from(run.replace(/%/g, ''), 'hex')));

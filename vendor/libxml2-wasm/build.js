@@ -23,7 +23,7 @@ const SOURCES = [
   'xmlsave', 'xmlstring',
 ];
 const ON = new Set(['TREE', 'OUTPUT', 'PUSH', 'SAX1', 'VALID', 'HTML']);
-const EXPORTS = ['bf_alloc', 'bf_free', 'bf_parse', 'bf_free_doc', 'bf_root', 'bf_find_body', 'bf_len', 'bf_tostring', 'bf_result_length'];
+const EXPORTS = ['bf_alloc', 'bf_free', 'bf_parse', 'bf_free_doc', 'bf_root', 'bf_find_body', 'bf_len', 'bf_tostring', 'bf_result_length', 'bf_parse_xml', 'bf_dump'];
 
 const CONFIG_H = `#define HAVE_FCNTL_H 1
 #define HAVE_INTTYPES_H 1

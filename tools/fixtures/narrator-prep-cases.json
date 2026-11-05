@@ -1,0 +1,7405 @@
+{
+"normalize": [
+[
+"Chapter One",
+"Chapter One"
+],
+[
+"The  Rise (and Fall)",
+"The Rise (and Fall)"
+],
+[
+"Part \u2014 Two",
+"Part - Two"
+],
+[
+"A\u2013B",
+"A-B"
+],
+[
+"C#",
+"C-"
+],
+[
+"Note_one",
+"Note one"
+],
+[
+"\u201cWhy?\u201d",
+"\"Why?\""
+],
+[
+"Stra\u00dfe",
+"Stra\u00dfe"
+],
+[
+"1993",
+"1993"
+],
+[
+"\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",
+"Ellenika"
+],
+[
+"\u041f\u0440\u0438\u0432\u0435\u0442 \u043c\u0438\u0440",
+"Privet mir"
+],
+[
+"\u3053\u3093\u306b\u3061\u306f",
+"konnichiha"
+],
+[
+"\uc548\ub155",
+"annyeong"
+],
+[
+"\u0645\u0631\u062d\u0628\u0627",
+"mrHb"
+],
+[
+"Hi \ud83d\ude00 there",
+"Hi there"
+],
+[
+"one\ntwo",
+"one two"
+],
+[
+"one\n\ntwo",
+"one [pause] two"
+],
+[
+"x\r\ny",
+"x [pause] y"
+],
+[
+"a\\b|c*d`e",
+"a b c d e"
+],
+[
+"sp\u00a0ace",
+"sp ace"
+],
+[
+"\u00a9 2020",
+"2020"
+],
+[
+"Wait...",
+"Wait..."
+],
+[
+"dot\u2022dot",
+"dot.dot"
+],
+[
+"[break]kept[pause:0.5]",
+"[break]kept[pause:0.5]"
+],
+[
+"word[heading]next",
+"word[heading]next"
+],
+[
+"\u203agone",
+"gone"
+],
+[
+"\ufb01ne",
+"\ufb01ne"
+],
+[
+"\u00aabc",
+"\u00aabc"
+],
+[
+"_",
+""
+],
+[
+"\u0661\u0662\u0663",
+"123"
+],
+[
+"\u2167",
+"VIII"
+],
+[
+"\u00bd",
+"\u00bd"
+],
+[
+"a\u0301b",
+"a\u0301b"
+],
+[
+"mix\u03b1",
+"mix\u03b1"
+],
+[
+"\u03b1mix",
+"\u03b1mix"
+],
+[
+"\u001fctl",
+"ctl"
+],
+[
+"e\ufefff",
+"e\ufefff"
+],
+[
+"   pad   ",
+"pad"
+],
+[
+"",
+""
+]
+],
+"unidecode": [
+[
+"\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",
+"Ellenika"
+],
+[
+"\u041f\u0440\u0438\u0432\u0435\u0442",
+"Privet"
+],
+[
+"\u5317\u4eac",
+"Bei Jing "
+],
+[
+"\u00e9",
+"e"
+],
+[
+"\ud83d\ude00",
+""
+],
+[
+"\ue000",
+""
+],
+[
+"\ud835\udc00",
+"A"
+],
+[
+"A1",
+"A1"
+]
+],
+"normpath": [
+[
+"",
+"."
+],
+[
+".",
+"."
+],
+[
+"..",
+".."
+],
+[
+"a/b",
+"a/b"
+],
+[
+"a//b/",
+"a/b"
+],
+[
+"/a",
+"/a"
+],
+[
+"//a",
+"//a"
+],
+[
+"///a",
+"/a"
+],
+[
+"a/../b",
+"b"
+],
+[
+"../a",
+"../a"
+],
+[
+"a/./b",
+"a/b"
+],
+[
+"a/b/../..",
+"."
+],
+[
+"/..",
+"/"
+],
+[
+"OEBPS/../x.html",
+"x.html"
+]
+],
+"dirname": [
+[
+"",
+""
+],
+[
+".",
+""
+],
+[
+"..",
+""
+],
+[
+"a/b",
+"a"
+],
+[
+"a//b/",
+"a//b"
+],
+[
+"/a",
+"/"
+],
+[
+"//a",
+"//"
+],
+[
+"///a",
+"///"
+],
+[
+"a/../b",
+"a/.."
+],
+[
+"../a",
+".."
+],
+[
+"a/./b",
+"a/."
+],
+[
+"a/b/../..",
+"a/b/.."
+],
+[
+"/..",
+"/"
+],
+[
+"OEBPS/../x.html",
+"OEBPS/.."
+],
+[
+"a/b/",
+"a/b"
+],
+[
+"a//b",
+"a"
+],
+[
+"//a/b",
+"//a"
+]
+],
+"join": [
+[
+"",
+"x",
+"x"
+],
+[
+"a",
+"x",
+"a/x"
+],
+[
+"a/",
+"x",
+"a/x"
+],
+[
+"a",
+"/x",
+"/x"
+],
+[
+"a",
+"",
+"a/"
+],
+[
+"a",
+"../x",
+"a/../x"
+]
+],
+"extension": [
+[
+"a.tar.gz",
+".gz"
+],
+[
+".hidden",
+""
+],
+[
+"..x",
+""
+],
+[
+"a.",
+"."
+],
+[
+"dir.x/file",
+""
+],
+[
+"a/.b",
+""
+],
+[
+"noext",
+""
+],
+[
+"X.JPG",
+".JPG"
+]
+],
+"unquote": [
+[
+"",
+""
+],
+[
+"#only",
+"#only"
+],
+[
+"a.xhtml#x",
+"a.xhtml#x"
+],
+[
+" a.xhtml ",
+" a.xhtml "
+],
+[
+"./a.xhtml",
+"./a.xhtml"
+],
+[
+".//a",
+".//a"
+],
+[
+"A%20B.xhtml",
+"A B.xhtml"
+],
+[
+"a\\b.xhtml",
+"a\\b.xhtml"
+],
+[
+"/OEBPS/C.xhtml",
+"/OEBPS/C.xhtml"
+],
+[
+"%E2%82%AC.html",
+"\u20ac.html"
+],
+[
+"%FF.html",
+"\ufffd.html"
+],
+[
+"%zz.html",
+"%zz.html"
+],
+[
+"\u00e9.html",
+"\u00e9.html"
+]
+],
+"docKey": [
+[
+null,
+null
+],
+[
+"",
+null
+],
+[
+"#only",
+null
+],
+[
+"a.xhtml#x",
+"a.xhtml"
+],
+[
+" a.xhtml ",
+"a.xhtml"
+],
+[
+"./a.xhtml",
+"a.xhtml"
+],
+[
+".//a",
+"a"
+],
+[
+"A%20B.xhtml",
+"a b.xhtml"
+],
+[
+"a\\b.xhtml",
+"a/b.xhtml"
+],
+[
+"/OEBPS/C.xhtml",
+"oebps/c.xhtml"
+],
+[
+"%E2%82%AC.html",
+"\u20ac.html"
+],
+[
+"%FF.html",
+"\ufffd.html"
+],
+[
+"%zz.html",
+"%zz.html"
+],
+[
+"\u00e9.html",
+"\u00e9.html"
+]
+],
+"sentences": [
+[
+"",
+1
+],
+[
+"Title",
+1
+],
+[
+"One. Two! Three?",
+3
+],
+[
+"Dots... and\u2026 more",
+2
+],
+[
+"He said \"go.\" Then left.",
+2
+],
+[
+"End.)",
+1
+],
+[
+"a.b",
+1
+],
+[
+"x.\u0085y",
+1
+],
+[
+"x.\u001fy",
+1
+],
+[
+"Odd?]",
+1
+],
+[
+"Done.\u201d",
+1
+]
+],
+"device": [
+[
+null,
+"cpu"
+],
+[
+"",
+"cpu"
+],
+[
+"cpu",
+"cpu"
+],
+[
+"CUDA",
+"cuda"
+],
+[
+"Mps",
+"mps"
+],
+[
+"tpu",
+"cpu"
+]
+],
+"language": [
+[
+"eng",
+[
+"eng",
+"en"
+]
+],
+[
+"en",
+[
+"eng",
+"en"
+]
+],
+[
+"fre",
+[
+"fra",
+"fr"
+]
+],
+[
+"fra",
+[
+"fra",
+"fr"
+]
+],
+[
+"fr",
+[
+"fra",
+"fr"
+]
+],
+[
+"deu",
+[
+"deu",
+"de"
+]
+],
+[
+"de",
+[
+"deu",
+"de"
+]
+],
+[
+"zzz",
+null,
+"Could not resolve ISO-639-1 code for language 'zzz': 'zzz' is not a valid Lang argument."
+],
+[
+"xx",
+null,
+"Could not resolve ISO-639-1 code for language 'xx': 'xx' is not a valid Lang argument."
+],
+[
+"EN",
+null,
+"Could not resolve ISO-639-1 code for language 'EN': 'EN' is not a valid Lang argument."
+],
+[
+"Eng",
+null,
+"Could not resolve ISO-639-1 code for language 'Eng': 'Eng' is not a valid Lang argument."
+],
+[
+"Ewe",
+[
+"ewe",
+"ee"
+]
+],
+[
+"aaa",
+[
+"aaa",
+"aa"
+]
+],
+[
+"zho",
+[
+"zho",
+"zh"
+]
+],
+[
+"english",
+[
+"english",
+"en"
+]
+],
+[
+"x",
+[
+"x",
+"en"
+]
+],
+[
+"en-US",
+[
+"en-US",
+"en"
+]
+]
+],
+"books": [
+{
+"name": "nav-with-cover",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXe47YzU4AQAAoAIAABEAAABPRUJQUy9jb250ZW50Lm9wZp2STW7DIBBGr0LZVvbE7qJS5BC1i+66qnoACmMbxQYEk5/evoTEjqNuqu7wfLw3mjHN9jQO7IAhGmc3vCpXfCsaL9VOdshSZuOG90R+DXA8HkujfVu60EG9Wj2D8y2/wU8JFs2IJLUkeYHXWs2834chs1oBDjiipQhVWUGitFqToQHFC3uXGotPz16d2zUwB+crKqAkF8SbCZFyNlWW6QcqZ/WveJC226epBNqczd/NQ1Ew6whZUYgGpgHSKNKaFiOJxhCOzOgNVxVnfcA2nfqqPPU0DpyNqI0s6NvjhkvvB6MkpY1Ajh/THjgsFfWkiPsvUH39P42dLFYe/m5gPjiPgQzGTN4pzTybSz+19La7V5oxrQtyeanJt4scnnVwW1v0xuKlQfKmHhd7NXVdFuvMXgm4vkDxA1BLAwQUAAAACADqaGVd5by4vbgAAAAIAQAADwAAAE9FQlBTL2NoMS54aHRtbCWPMW4EMQhFr4K2Xg0apZrIoUmVKsXmAt4MGSx5zcgm8ub2wXL1P7yPgCD2yPB85NLeLmJ2viL23pf+smg9cN22DZ8jc6EgHHcKliwzWcBpAs72Xfc/j6z0LvE0rvBZ2NlK4aQPgzsfqTQQrnyFnkwgQuNiXL4ZTKLBodxAC/xoddYlZV7gS7hALGo+6JCd5qy9QbKr93dX4LK3JeA5Nt1Eq83iN1PIiXSc4Tq8dZ0eB8R5Mo7v6B9QSwMEFAAAAAgA6mhlXcnkyPCEAAAApwAAABMAAABPRUJQUy9zdWIvY2gyLnhodG1sJY7BCgIxDER/pezBa8GrMSCCN2+K57QNdqHdljSL+vdm9ZB5yRCGgay1IISWPi4WGuM4xQkh7/GcqSuLu70aeLuh432JpQ1OrpPQU6hnM09LcjDjZQU/o67Cbke1H1xtwhAEld8KviMohcIGscn4yBZrBE14ZVsTmsgm/z+/dTL8Cn4BUEsDBBQAAAAIAOpoZV0AS1mMtAAAADUBAAAPAAAAT0VCUFMvbmF2LnhodG1sfY/BDoIwEER/pSmJN1ngosGyJ+968AcKFEtS2oYWgb+XwkEjiYdNJpmZl1kmfafI1CntcmGHsqDSe5sDjOMYt7VtYtM/IUuSExjrKLLS1DMyzV8kxHM/W1FQb6rFMgqZapFxInvRFLSSaTwFPsWbFgw4Mgh+OGe5xjvvPYNV7spuKKGS2QaIJoqP0ZBDdM7S7EKu3MkPD0L3Sy3jdgstf4qjap3/tzOyKcX0F7ziYPsbQgzfUEsDBBQAAAAIAOpoZV3/SFDiSAAAAE0AAAAPAAAAT0VCUFMvY292ZXIucG5n6wzwc+flkuJiYGDg9fRwCQLSHCDMwQQkvXM17wApEU8Xx5CKOclPeCIONPAaJIrKbhFiOM7OyGlmHRMPlGfwdPVzWeeU0AQAUEsBAhQAFAAAAAAA6mhlXW9hqywUAAAAFAAAAAgAAAAAAAAAAAAAAIABAAAAAG1pbWV0eXBlUEsBAhQAFAAAAAgA6mhlXR4L18mZAAAA3QAAABYAAAAAAAAAAAAAAIABOgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxQSwECFAAUAAAACADqaGVd7jtjNTgBAACgAgAAEQAAAAAAAAAAAAAAgAEHAQAAT0VCUFMvY29udGVudC5vcGZQSwECFAAUAAAACADqaGVd5by4vbgAAAAIAQAADwAAAAAAAAAAAAAAgAFuAgAAT0VCUFMvY2gxLnhodG1sUEsBAhQAFAAAAAgA6mhlXcnkyPCEAAAApwAAABMAAAAAAAAAAAAAAIABUwMAAE9FQlBTL3N1Yi9jaDIueGh0bWxQSwECFAAUAAAACADqaGVdAEtZjLQAAAA1AQAADwAAAAAAAAAAAAAAgAEIBAAAT0VCUFMvbmF2LnhodG1sUEsBAhQAFAAAAAgA6mhlXf9IUOJIAAAATQAAAA8AAAAAAAAAAAAAAIAB6QQAAE9FQlBTL2NvdmVyLnBuZ1BLBQYAAAAABwAHALEBAABeBQAAAAA=",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"2a1efa353a22cc2986b4fb803144b400": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c2"
+],
+[
+"href",
+"sub/ch2.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"n"
+],
+[
+"href",
+"nav.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+],
+[
+"properties",
+"nav"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"i"
+],
+[
+"href",
+"cover.png"
+],
+[
+"media-type",
+"image/png"
+],
+[
+"properties",
+"cover-image"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c2"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {
+"6a819791f7494d142a9478fe82037082": {
+"kind": "element",
+"tag": "html",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"xmlns:epub",
+"http://www.idpf.org/2007/ops"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "body",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "nav",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"epub:type",
+"toc"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "ol",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "li",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "a",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"href",
+"ch1.xhtml"
+]
+],
+"text": "One",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "li",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "span",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Part",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "ol",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "li",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "a",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"href",
+"sub/ch2.xhtml#x"
+]
+],
+"text": "Two \u2014 Dash",
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+]
+},
+{
+"kind": "element",
+"tag": "nav",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"epub:type",
+"page-list"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "ol",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "li",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "a",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"href",
+"ch1.xhtml#p1"
+]
+],
+"text": "1",
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+},
+"ebe0a22f07762a1f4646a53043e7378a": {
+"tostring": "PGJvZHkgY2xhc3M9ImMiPgogIDxoMj5DaGFwdGVyIFR3bzwvaDI+CiAgPHA+VW5jbG9zZWQgcGFyYWdyYXBoPC9wPgogIDxwPkFuZCA8aT5GdTwvaT50dXJlICZhbXA7IG1vcmU8YnIvPnRleHQ8L3A+CiAgPHRhYmxlPgogICAgPHRyPgogICAgICA8dGg+V2hvPC90aD4KICAgICAgPHRkPk1lPC90ZD4KICAgIDwvdHI+CiAgPC90YWJsZT4KPC9ib2R5Pgo=",
+"length": 4
+},
+"6a819791f7494d142a9478fe82037082": {
+"tostring": "PGJvZHk+CiAgPG5hdiBlcHViOnR5cGU9InRvYyI+CiAgICA8b2w+CiAgICAgIDxsaT4KICAgICAgICA8YSBocmVmPSJjaDEueGh0bWwiPk9uZTwvYT4KICAgICAgPC9saT4KICAgICAgPGxpPgogICAgICAgIDxzcGFuPlBhcnQ8L3NwYW4+CiAgICAgICAgPG9sPgogICAgICAgICAgPGxpPgogICAgICAgICAgICA8YSBocmVmPSJzdWIvY2gyLnhodG1sI3giPlR3byDigJQgRGFzaDwvYT4KICAgICAgICAgIDwvbGk+CiAgICAgICAgPC9vbD4KICAgICAgPC9saT4KICAgIDwvb2w+CiAgPC9uYXY+CiAgPG5hdiBlcHViOnR5cGU9InBhZ2UtbGlzdCI+CiAgICA8b2w+CiAgICAgIDxsaT4KICAgICAgICA8YSBocmVmPSJjaDEueGh0bWwjcDEiPjE8L2E+CiAgICAgIDwvbGk+CiAgICA8L29sPgogIDwvbmF2Pgo8L2JvZHk+Cg==",
+"length": 2
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\5b1300baffe4acd9a61c507c0832e38a\\\\nav-with-cover.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\nav-with-cover.epub\",\n  \"epub_content_hash\": \"1a243b71f030c0cf82de8e561ec5320f\",\n  \"total_sentences\": 3,\n  \"total_chapters\": 2,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 2,\n      \"raw_sentence_count\": 6,\n      \"sentence_start\": 0,\n      \"sentence_end\": 1\n    },\n    {\n      \"chapter_num\": 2,\n      \"sentence_count\": 1,\n      \"raw_sentence_count\": 1,\n      \"sentence_start\": 2,\n      \"sentence_end\": 2\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break][heading]Chapter One. It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends. Short. one.\",\n      \"[break]two.\"\n    ],\n    [\n      \"[break][heading]Chapter Two. Unclosed paragraph And Future & more text\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.790941\",\n  \"updated_at\": \"2026-11-05T13:07:21.790941\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\5b1300baffe4acd9a61c507c0832e38a\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\5b1300baffe4acd9a61c507c0832e38a\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\5b1300baffe4acd9a61c507c0832e38a\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\5b1300baffe4acd9a61c507c0832e38a\\\\nav-with-cover.epub\",\n  \"filename_noext\": \"nav-with-cover\",\n  \"cover\": \"<ROOT>\\\\session\\\\5b1300baffe4acd9a61c507c0832e38a\\\\nav-with-cover.jpg\",\n  \"final_name\": \"nav-with-cover.m4b\",\n  \"chapter_titles\": [\n    \"One\",\n    \"Part\",\n    \"Two - Dash\"\n  ],\n  \"chapter_docs\": [\n    \"ch1.xhtml\",\n    \"sub/ch2.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {\n    \"ch1.xhtml\": \"One\",\n    \"sub/ch2.xhtml\": \"Two - Dash\"\n  },\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\",\n    \"sub/ch2.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {\n    \"ch1.xhtml\": \"One\",\n    \"sub/ch2.xhtml\": \"Two - Dash\"\n  },\n  \"chapter_titles\": [\n    \"One\",\n    \"Part\",\n    \"Two - Dash\"\n  ]\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"1\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"2\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": "<ROOT>\\session\\5b1300baffe4acd9a61c507c0832e38a\\nav-with-cover.jpg"
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\5b1300baffe4acd9a61c507c0832e38a\\nav-with-cover.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 3 chapter titles from TOC (2 distinct documents)\n[TOC] Mapped 2/2 spine documents to a TOC title\n----------\nParsing doc 0 (paragraph policy)\n[paragraph policy] 5 block(s) -> 2 chunk(s); 1 merge(s), 3 join token(s) dropped, 0 paragraph(s) sentence-split\n----------\nParsing doc 1 (paragraph policy)\n[paragraph policy] 3 block(s) -> 1 chunk(s); 1 merge(s), 2 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 2 chapters saved to <ROOT>\\session\\5b1300baffe4acd9a61c507c0832e38a\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 3 gap(s) to <ROOT>\\session\\5b1300baffe4acd9a61c507c0832e38a\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\5b1300baffe4acd9a61c507c0832e38a\\session-state.json\n"
+},
+{
+"name": "ncx-only",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXX2rWyckAQAATQIAABEAAABPRUJQUy9jb250ZW50Lm9wZp2SwU4DIRCGXwW5Gpbd9WDSsDR68ObJ+AAUZrukLBCY2vr2Iuu2TYwXTzDz83+Tf4LYnmdHPiBlG/xAu6alWymi0ge1B1I0nwc6IcYN56fTqbEmjk1Ie9637SMPcaRX80MxSzEDKqNQLeaN0Rd/PCZXvUZzcDCDx8y7puPFZfQGLTqQT+RVGWDvkTyHcBD8Inw/0QkUhiRfbMpYtbVzq76BDt78kp3y+2NJJcFX7VKLO8aIDwiEMSn4GqBEUd6OkFEKizATawaqO0qmBGO5TV1znnB2lMxgrGL4GWGgKkZntcKyEV7l+7IHym8R/YrIxx3XU/8/jNfnlYNBN7X8k8AM7sqLFcKvyXK0HkghLMRlQKGWGUvMfp162+wqpXrL+fNd5BdQSwMEFAAAAAgA6mhlXeW8uL24AAAACAEAAA8AAABPRUJQUy9jaDEueGh0bWwljzFuBDEIRa+Ctl4NGqWayKFJlSrF5gLeDBksec3IJvLm9sFy9T+8j4Ag9sjwfOTS3i5idr4i9t6X/rJoPXDdtg2fI3OhIBx3CpYsM1nAaQLO9l33P4+s9C7xNK7wWdjZSuGkD4M7H6k0EK58hZ5MIELjYly+GUyiwaHcQAv8aHXWJWVe4Eu4QCxqPuiQneasvUGyq/d3V+CytyXgOTbdRKvN4jdTyIl0nOE6vHWdHgfEeTKO7+gfUEsDBBQAAAAIAOpoZV3J5MjwhAAAAKcAAAATAAAAT0VCUFMvc3ViL2NoMi54aHRtbCWOwQoCMQxEf6XswWvBqzEggjdviue0DXah3ZY0i/r3ZvWQeckQhoGstSCElj4uFhrjOMUJIe/xnKkri7u9Gni7oeN9iaUNTq6T0FOoZzNPS3Iw42UFP6Ouwm5HtR9cbcIQBJXfCr4jKIXCBrHJ+MgWawRNeGVbE5rIJv8/v3Uy/Ap+AVBLAwQUAAAACADqaGVdyrwC2qgAAAAuAQAADQAAAE9FQlBTL3RvYy5uY3iFj8EOgjAQRH+F7N0uYDRqWrh5UuMvlNJIE2gJXaH69QLGkOjB005mZl8yPA9NHfW688ZZAQmLIc+4VSEafesFVETtAXEYBlZK4x/MdTd8rve7LaZxvMGxirAAJm+VwIiQ/Vm28706YykypQD5Dk6y0HXGSQfKjqbzxHHWHJdQOUt6fPOdEqCqhIWKmhrwi1j8Ei/aky7/If29QFWlCxY/3B8575iGZi9QSwECFAAUAAAAAADqaGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOpoZV19q1snJAEAAE0CAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOpoZV3lvLi9uAAAAAgBAAAPAAAAAAAAAAAAAACAAVoCAABPRUJQUy9jaDEueGh0bWxQSwECFAAUAAAACADqaGVdyeTI8IQAAACnAAAAEwAAAAAAAAAAAAAAgAE/AwAAT0VCUFMvc3ViL2NoMi54aHRtbFBLAQIUABQAAAAIAOpoZV3KvALaqAAAAC4BAAANAAAAAAAAAAAAAACAAfQDAABPRUJQUy90b2MubmN4UEsFBgAAAAAGAAYAcgEAAMcEAAAAAA==",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"d0579ea9f930384a4bef5be5a6d72e94": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c2"
+],
+[
+"href",
+"sub/ch2.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"ncx"
+],
+[
+"href",
+"toc.ncx"
+],
+[
+"media-type",
+"application/x-dtbncx+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"toc",
+"ncx"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c2"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "html",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "body",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "ncx",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"xmlns",
+"http://www.daisy.org/z3986/2005/ncx/"
+],
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "navmap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "navpoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "navlabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "navpoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "navlabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+},
+"ebe0a22f07762a1f4646a53043e7378a": {
+"tostring": "PGJvZHkgY2xhc3M9ImMiPgogIDxoMj5DaGFwdGVyIFR3bzwvaDI+CiAgPHA+VW5jbG9zZWQgcGFyYWdyYXBoPC9wPgogIDxwPkFuZCA8aT5GdTwvaT50dXJlICZhbXA7IG1vcmU8YnIvPnRleHQ8L3A+CiAgPHRhYmxlPgogICAgPHRyPgogICAgICA8dGg+V2hvPC90aD4KICAgICAgPHRkPk1lPC90ZD4KICAgIDwvdHI+CiAgPC90YWJsZT4KPC9ib2R5Pgo=",
+"length": 4
+},
+"f1c23751be340fa5c086493763979ad2": {
+"tostring": "PGJvZHk+CiAgPG5jeCB4bWxucz0iaHR0cDovL3d3dy5kYWlzeS5vcmcvejM5ODYvMjAwNS9uY3gvIiB2ZXJzaW9uPSIyMDA1LTEiPgogICAgPG5hdm1hcD4KICAgICAgPG5hdnBvaW50IGlkPSJhIj4KICAgICAgICA8bmF2bGFiZWw+CiAgICAgICAgICA8dGV4dD5GaXJzdDwvdGV4dD4KICAgICAgICA8L25hdmxhYmVsPgogICAgICAgIDxjb250ZW50IHNyYz0iY2gxLnhodG1sIi8+CiAgICAgICAgPG5hdnBvaW50IGlkPSJiIj4KICAgICAgICAgIDxuYXZsYWJlbD4KICAgICAgICAgICAgPHRleHQ+TmVzdGVkPC90ZXh0PgogICAgICAgICAgPC9uYXZsYWJlbD4KICAgICAgICAgIDxjb250ZW50IHNyYz0ic3ViL2NoMi54aHRtbCIvPgogICAgICAgIDwvbmF2cG9pbnQ+CiAgICAgIDwvbmF2cG9pbnQ+CiAgICA8L25hdm1hcD4KICA8L25jeD4KPC9ib2R5Pgo=",
+"length": 1
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\9512c0d1d07ffb73be9e9cfcb0fea728\\\\ncx-only.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\ncx-only.epub\",\n  \"epub_content_hash\": \"ee496ffbee42967680b7ddd869a5ed13\",\n  \"total_sentences\": 3,\n  \"total_chapters\": 2,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 2,\n      \"raw_sentence_count\": 6,\n      \"sentence_start\": 0,\n      \"sentence_end\": 1\n    },\n    {\n      \"chapter_num\": 2,\n      \"sentence_count\": 1,\n      \"raw_sentence_count\": 1,\n      \"sentence_start\": 2,\n      \"sentence_end\": 2\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break][heading]Chapter One. It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends. Short. one.\",\n      \"[break]two.\"\n    ],\n    [\n      \"[break][heading]Chapter Two. Unclosed paragraph And Future & more text\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.822707\",\n  \"updated_at\": \"2026-11-05T13:07:21.822707\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\9512c0d1d07ffb73be9e9cfcb0fea728\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\9512c0d1d07ffb73be9e9cfcb0fea728\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\9512c0d1d07ffb73be9e9cfcb0fea728\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\9512c0d1d07ffb73be9e9cfcb0fea728\\\\ncx-only.epub\",\n  \"filename_noext\": \"ncx-only\",\n  \"cover\": true,\n  \"final_name\": \"ncx-only.m4b\",\n  \"chapter_titles\": [\n    \"First\",\n    \"Nested\"\n  ],\n  \"chapter_docs\": [\n    \"ch1.xhtml\",\n    \"sub/ch2.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {\n    \"ch1.xhtml\": \"First\",\n    \"sub/ch2.xhtml\": \"Nested\"\n  },\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\",\n    \"sub/ch2.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {\n    \"ch1.xhtml\": \"First\",\n    \"sub/ch2.xhtml\": \"Nested\"\n  },\n  \"chapter_titles\": [\n    \"First\",\n    \"Nested\"\n  ]\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"1\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"2\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\9512c0d1d07ffb73be9e9cfcb0fea728\\ncx-only.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 2 chapter titles from TOC (2 distinct documents)\n[TOC] Mapped 2/2 spine documents to a TOC title\n----------\nParsing doc 0 (paragraph policy)\n[paragraph policy] 5 block(s) -> 2 chunk(s); 1 merge(s), 3 join token(s) dropped, 0 paragraph(s) sentence-split\n----------\nParsing doc 1 (paragraph policy)\n[paragraph policy] 3 block(s) -> 1 chunk(s); 1 merge(s), 2 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 2 chapters saved to <ROOT>\\session\\9512c0d1d07ffb73be9e9cfcb0fea728\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 3 gap(s) to <ROOT>\\session\\9512c0d1d07ffb73be9e9cfcb0fea728\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\9512c0d1d07ffb73be9e9cfcb0fea728\\session-state.json\n"
+},
+{
+"name": "stamped-pdf",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRzU7EIBRGXwXZGkrRhUlDmYwLd66MD0DgtiXDX+gdO769TDtTTdwB534n+S7ycAmefEGZXYo9FU1LD0pmbU56BFJZnHs6IeaO82VZGmfz0KQy8qe2feEpD/Q3/FzDSgZAbTXqLdxZs+fzufg1aw0HDwEizlw0gteUNR069KCO5F1bYJ+ZvKZ0knwH1xFTQGMq6s2VGVd2f/lLP8CkaP9hr+N4rq0UxJXtd/nAGIkJgTCmJL8XqFV0dAPMqKRDCMTZnhpByVRgqKdJNJcJg6ckgHWa4XeGnuqcvTMa60b4ih/rHii/enfbnF2ETVpV1bsJxTp2g/z2B+oHUEsDBBQAAAAIAOpoZV22JmCHlQAAAMoAAAAPAAAAT0VCUFMvY2gxLnhodG1sJY7BCoQwDER/JXjXsOzJpRb2U+K22kK1oY1W/36rXoYw88iMcrIEOJaw5qFxIvxBLKV05d3FNOOr73s8LqbRylkyWomXYLUofA6Fjz1Gc2pl/A6GhNpxan8kdo7pHBpOMdv6gPUXstDC1gBTojkROyheXNwEvGSYthAqElkhXzyt5vajOJvAUZi6O8FaVPUpxWuf/gNQSwECFAAUAAAAAADqaGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOpoZV3d1Oj3+wAAAKIBAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOpoZV22JmCHlQAAAMoAAAAPAAAAAAAAAAAAAACAATECAABPRUJQUy9jaDEueGh0bWxQSwUGAAAAAAQABAD2AAAA8wIAAAAA",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"670af6eba0fa856b10cb88840bc20444": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"44b78d112b5792f419a06851a9f05533": {
+"tostring": "PGJvZHk+CiAgPGRpdiBkYXRhLWJmLWNhdGVnb3J5PSJwcm9zZSI+CiAgICA8cD5BIHN0YW1wZWQgcGFyYWdyYXBoIHdpdGhvdXQgaXRzIGZ1bGwgc3RvcDwvcD4KICAgIDxwPmFuZCBpdHMgb3RoZXIgaGFsZi48L3A+CiAgPC9kaXY+CjwvYm9keT4K",
+"length": 1
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\8a03a723885dcf384084067989df2a77\\\\stamped-pdf.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\stamped-pdf.epub\",\n  \"epub_content_hash\": \"49d155ef4c0ad3b6edee17e85a7d6471\",\n  \"total_sentences\": 1,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 1,\n      \"raw_sentence_count\": 1,\n      \"sentence_start\": 0,\n      \"sentence_end\": 0\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break]A stamped paragraph without its full stop and its other half.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.849064\",\n  \"updated_at\": \"2026-11-05T13:07:21.849064\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\8a03a723885dcf384084067989df2a77\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\8a03a723885dcf384084067989df2a77\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\8a03a723885dcf384084067989df2a77\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\8a03a723885dcf384084067989df2a77\\\\stamped-pdf.epub\",\n  \"filename_noext\": \"stamped-pdf\",\n  \"cover\": true,\n  \"final_name\": \"stamped-pdf.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"pdf-derived\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\8a03a723885dcf384084067989df2a77\\stamped-pdf.epub\n[provenance] pdf-derived (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=pdf-derived\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/1 spine documents to a TOC title\n[TOC] No TOC entry for: ['ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy)\n[tier 2] PDF-derived source: 2 blocks -> 1 after joining provisional fragments\n[paragraph policy] 1 block(s) -> 1 chunk(s); 0 merge(s), 0 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\8a03a723885dcf384084067989df2a77\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 1 gap(s) to <ROOT>\\session\\8a03a723885dcf384084067989df2a77\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\8a03a723885dcf384084067989df2a77\\session-state.json\n"
+},
+{
+"name": "stamp-on-body-only",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRzU7EIBRGXwXZGkrRhUlDmYwLd66MD0DgtiXDX+gdO769TDtTTdwB534n+S7ycAmefEGZXYo9FU1LD0pmbU56BFJZnHs6IeaO82VZGmfz0KQy8qe2feEpD/Q3/FzDSgZAbTXqLdxZs+fzufg1aw0HDwEizlw0gteUNR069KCO5F1bYJ+ZvKZ0knwH1xFTQGMq6s2VGVd2f/lLP8CkaP9hr+N4rq0UxJXtd/nAGIkJgTCmJL8XqFV0dAPMqKRDCMTZnhpByVRgqKdJNJcJg6ckgHWa4XeGnuqcvTMa60b4ih/rHii/enfbnF2ETVpV1bsJxTp2g/z2B+oHUEsDBBQAAAAIAOpoZV3CfjXlcwAAAKYAAAAPAAAAT0VCUFMvY2gxLnhodG1sXY5BCsMwDAS/InxP8wHH0KcotR0Z3EjICk1+X8en0tPC7jCsJ3vX4FeOF0Q0nNY8vdDSxnotTpRbcr/D4k4X/kEoOxglGBZLp3kJTxBU3BSF4FOM+DAo1iAftUIzFj9L6BzucfTcBQqENT/GMt+yHuPfF1BLAQIUABQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAAAAAAAAAAACAAQAAAABtaW1ldHlwZVBLAQIUABQAAAAIAOpoZV0eC9fJmQAAAN0AAAAWAAAAAAAAAAAAAACAAToAAABNRVRBLUlORi9jb250YWluZXIueG1sUEsBAhQAFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAAAAAAAAAAAAAIABBwEAAE9FQlBTL2NvbnRlbnQub3BmUEsBAhQAFAAAAAgA6mhlXcJ+NeVzAAAApgAAAA8AAAAAAAAAAAAAAIABMQIAAE9FQlBTL2NoMS54aHRtbFBLBQYAAAAABAAEAPYAAADRAgAAAAA=",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"670af6eba0fa856b10cb88840bc20444": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"09433fc95806578444f2cbe0391e93d3": {
+"tostring": "PGJvZHkgZGF0YS1iZi1jYXRlZ29yeT0icHJvc2UiIGRhdGEtYmYtY2F0PSJ4Ij5kYXRhLWJmLWNhdGVnb3J5IGluIHRoZSBib2R5IHRleHQ8cD5BIHBhcmFncmFwaCB3aXRob3V0IGl0cyBmdWxsIHN0b3A8L3A+PHA+YW5kIGl0cyBvdGhlciBoYWxmLjwvcD48L2JvZHk+Cg==",
+"length": 2
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\a49ecdfc8a4c9968813e69ed5f1d847d\\\\stamp-on-body-only.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\stamp-on-body-only.epub\",\n  \"epub_content_hash\": \"d07710a0b04423ff9c7d81ee1db1c104\",\n  \"total_sentences\": 1,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 1,\n      \"raw_sentence_count\": 1,\n      \"sentence_start\": 0,\n      \"sentence_end\": 0\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break]A paragraph without its full stop and its other half.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.875147\",\n  \"updated_at\": \"2026-11-05T13:07:21.875147\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\a49ecdfc8a4c9968813e69ed5f1d847d\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\a49ecdfc8a4c9968813e69ed5f1d847d\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\a49ecdfc8a4c9968813e69ed5f1d847d\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\a49ecdfc8a4c9968813e69ed5f1d847d\\\\stamp-on-body-only.epub\",\n  \"filename_noext\": \"stamp-on-body-only\",\n  \"cover\": true,\n  \"final_name\": \"stamp-on-body-only.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\a49ecdfc8a4c9968813e69ed5f1d847d\\stamp-on-body-only.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/1 spine documents to a TOC title\n[TOC] No TOC entry for: ['ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy)\n[paragraph policy] 2 block(s) -> 1 chunk(s); 1 merge(s), 1 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\a49ecdfc8a4c9968813e69ed5f1d847d\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 1 gap(s) to <ROOT>\\session\\a49ecdfc8a4c9968813e69ed5f1d847d\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\a49ecdfc8a4c9968813e69ed5f1d847d\\session-state.json\n"
+},
+{
+"name": "one-per-row",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRzU7EIBRGXwXZGkrRhUlDmYwLd66MD0DgtiXDX+gdO769TDtTTdwB534n+S7ycAmefEGZXYo9FU1LD0pmbU56BFJZnHs6IeaO82VZGmfz0KQy8qe2feEpD/Q3/FzDSgZAbTXqLdxZs+fzufg1aw0HDwEizlw0gteUNR069KCO5F1bYJ+ZvKZ0knwH1xFTQGMq6s2VGVd2f/lLP8CkaP9hr+N4rq0UxJXtd/nAGIkJgTCmJL8XqFV0dAPMqKRDCMTZnhpByVRgqKdJNJcJg6ckgHWa4XeGnuqcvTMa60b4ih/rHii/enfbnF2ETVpV1bsJxTp2g/z2B+oHUEsDBBQAAAAIAOpoZV3lvLi9uAAAAAgBAAAPAAAAT0VCUFMvY2gxLnhodG1sJY8xbgQxCEWvgrZeDRqlmsihSZUqxeYC3gwZLHnNyCby5vbBcvU/vI+AIPbI8Hzk0t4uYna+Ivbel/6yaD1w3bYNnyNzoSAcdwqWLDNZwGkCzvZd9z+PrPQu8TSu8FnY2UrhpA+DOx+pNBCufIWeTCBC42JcvhlMosGh3EAL/Gh11iVlXuBLuEAsaj7okJ3mrL1Bsqv3d1fgsrcl4Dk23USrzeI3U8iJdJzhOrx1nR4HxHkyju/oH1BLAQIUABQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAAAAAAAAAAACAAQAAAABtaW1ldHlwZVBLAQIUABQAAAAIAOpoZV0eC9fJmQAAAN0AAAAWAAAAAAAAAAAAAACAAToAAABNRVRBLUlORi9jb250YWluZXIueG1sUEsBAhQAFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAAAAAAAAAAAAAIABBwEAAE9FQlBTL2NvbnRlbnQub3BmUEsBAhQAFAAAAAgA6mhlXeW8uL24AAAACAEAAA8AAAAAAAAAAAAAAIABMQIAAE9FQlBTL2NoMS54aHRtbFBLBQYAAAAABAAEAPYAAAAWAwAAAAA=",
+"cap": 400,
+"floor": 120,
+"rows": true,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"670af6eba0fa856b10cb88840bc20444": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\46c616577de17ec90681d6c0a5ab97dc\\\\one-per-row.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\one-per-row.epub\",\n  \"epub_content_hash\": \"ca7e5da01d7deb924ce82c6295b5a588\",\n  \"total_sentences\": 5,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 5,\n      \"raw_sentence_count\": 6,\n      \"sentence_start\": 0,\n      \"sentence_end\": 4\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break][heading]Chapter One.\",\n      \"[break]It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends.\",\n      \"[break]Short.\",\n      \"[break]one.\",\n      \"[break]two.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.900655\",\n  \"updated_at\": \"2026-11-05T13:07:21.900655\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\46c616577de17ec90681d6c0a5ab97dc\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\46c616577de17ec90681d6c0a5ab97dc\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\46c616577de17ec90681d6c0a5ab97dc\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\46c616577de17ec90681d6c0a5ab97dc\\\\one-per-row.epub\",\n  \"filename_noext\": \"one-per-row\",\n  \"cover\": true,\n  \"final_name\": \"one-per-row.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 0,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    },\n    \"sentence_per_paragraph\": true,\n    \"why\": \"sentence_per_paragraph: each source row is exactly one generation chunk, so no merge floor and no cap split ran at prep. The budget below is the voice's certificate, recorded because the render still guards every take against it; a row longer than the cap is the operator's chunk and the engine's truncation guard answers for it.\"\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"1\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"2\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"3\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"4\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=True, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\46c616577de17ec90681d6c0a5ab97dc\\one-per-row.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy, ONE CHUNK PER SOURCE ROW (sentence_per_paragraph): no merge floor, no cap split; cap=400 chars is the render's guard, source=epub-native\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/1 spine documents to a TOC title\n[TOC] No TOC entry for: ['ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy, one chunk per row)\n[sentence_per_paragraph] one chunk per source row: 5 block(s) -> 5 chunk(s); the 120-char merge floor and the cap split were NOT applied (0 chunk(s) over the cap, kept whole)\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\46c616577de17ec90681d6c0a5ab97dc\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 5 gap(s) to <ROOT>\\session\\46c616577de17ec90681d6c0a5ab97dc\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\46c616577de17ec90681d6c0a5ab97dc\\session-state.json\n"
+},
+{
+"name": "skip-headings",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRzU7EIBRGXwXZGkrRhUlDmYwLd66MD0DgtiXDX+gdO769TDtTTdwB534n+S7ycAmefEGZXYo9FU1LD0pmbU56BFJZnHs6IeaO82VZGmfz0KQy8qe2feEpD/Q3/FzDSgZAbTXqLdxZs+fzufg1aw0HDwEizlw0gteUNR069KCO5F1bYJ+ZvKZ0knwH1xFTQGMq6s2VGVd2f/lLP8CkaP9hr+N4rq0UxJXtd/nAGIkJgTCmJL8XqFV0dAPMqKRDCMTZnhpByVRgqKdJNJcJg6ckgHWa4XeGnuqcvTMa60b4ih/rHii/enfbnF2ETVpV1bsJxTp2g/z2B+oHUEsDBBQAAAAIAOpoZV3lvLi9uAAAAAgBAAAPAAAAT0VCUFMvY2gxLnhodG1sJY8xbgQxCEWvgrZeDRqlmsihSZUqxeYC3gwZLHnNyCby5vbBcvU/vI+AIPbI8Hzk0t4uYna+Ivbel/6yaD1w3bYNnyNzoSAcdwqWLDNZwGkCzvZd9z+PrPQu8TSu8FnY2UrhpA+DOx+pNBCufIWeTCBC42JcvhlMosGh3EAL/Gh11iVlXuBLuEAsaj7okJ3mrL1Bsqv3d1fgsrcl4Dk23USrzeI3U8iJdJzhOrx1nR4HxHkyju/oH1BLAQIUABQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAAAAAAAAAAACAAQAAAABtaW1ldHlwZVBLAQIUABQAAAAIAOpoZV0eC9fJmQAAAN0AAAAWAAAAAAAAAAAAAACAAToAAABNRVRBLUlORi9jb250YWluZXIueG1sUEsBAhQAFAAAAAgA6mhlXd3U6Pf7AAAAogEAABEAAAAAAAAAAAAAAIABBwEAAE9FQlBTL2NvbnRlbnQub3BmUEsBAhQAFAAAAAgA6mhlXeW8uL24AAAACAEAAA8AAAAAAAAAAAAAAIABMQIAAE9FQlBTL2NoMS54aHRtbFBLBQYAAAAABAAEAPYAAAAWAwAAAAA=",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": true,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"670af6eba0fa856b10cb88840bc20444": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\5306eed494cd766d8f114289f5448f0d\\\\skip-headings.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\skip-headings.epub\",\n  \"epub_content_hash\": \"1860bb32d3623797f6aa266a96531f3f\",\n  \"total_sentences\": 1,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 1,\n      \"raw_sentence_count\": 5,\n      \"sentence_start\": 0,\n      \"sentence_end\": 0\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break]It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends. Short. one. two.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.920378\",\n  \"updated_at\": \"2026-11-05T13:07:21.920378\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\5306eed494cd766d8f114289f5448f0d\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\5306eed494cd766d8f114289f5448f0d\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\5306eed494cd766d8f114289f5448f0d\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\5306eed494cd766d8f114289f5448f0d\\\\skip-headings.epub\",\n  \"filename_noext\": \"skip-headings\",\n  \"cover\": true,\n  \"final_name\": \"skip-headings.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=True\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\5306eed494cd766d8f114289f5448f0d\\skip-headings.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/1 spine documents to a TOC title\n[TOC] No TOC entry for: ['ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy)\n[paragraph policy] 5 block(s) -> 1 chunk(s); 1 merge(s), 3 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\5306eed494cd766d8f114289f5448f0d\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 1 gap(s) to <ROOT>\\session\\5306eed494cd766d8f114289f5448f0d\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\5306eed494cd766d8f114289f5448f0d\\session-state.json\n"
+},
+{
+"name": "skips-and-blanks",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXRgTpqYbAQAAngIAABEAAABPRUJQUy9jb250ZW50Lm9wZp2SwW7DIBBEf4VyreyN20OliBC1h956qvoBBJYYBQPCmzr9+xI7TiI1l+YGM7yBHSHWh86zb8y9i2HFm3rB11IkpXdqi6x4oV/xligtAYZhqJ1Jto55C0+LxQvEZPkFfi6wFB2SMorUBC+NPvNpn/3IGg3oscNAPTR1A4UyekmOPMpX9qEMVl+JvcW4E3A2jkd0RkUxy3eXexq9Wbl2P1HHYP7YXoXtvkwlMYzeeS8eqoqFSMiqSgqYByijqOAs9iSFI+yYMyuuOGsz2rKoDy11nrMOjVMV/SQsYkreaUWlDhjtx1IChyt+M/Ob+3g78/Y+XjdzgG6bf0XApY0+uYBTaIkquVMj80VX2uaGZm9o5VnHK07BcPp/8hdQSwMEFAAAAAgA6mhlXXd0V7YTAAAAGgAAAA0AAABPRUJQUy9hLnhodG1ss8koyc2xs0nKT6m0s9GHUmAxAFBLAwQUAAAACADqaGVdzQsHCSgAAAAvAAAADQAAAE9FQlBTL2IueGh0bWyzySjJzbGzScpPqbTLz8upVChJrShRyMxTKMlIVQCJ2uiD5Wz0wQoBUEsDBBQAAAAIAOpoZV2wFB1wdgAAAJYAAAANAAAAT0VCUFMvZi54aHRtbC2NSw7DIAxErxJxAKyqKyKHS/QESXELKh+LuCK5fYnobjSa9wa9pDgdKeZ9UV6EZ4DWmm53XeobbsYYOK6NsuhpdRYlSCQrCCMgjHor7rS401NCyRPxd5vlZFrUq5YsaRWh2h1sH5/ATE4jcIf/QE9DANeX/QFQSwMEFAAAAAgA6mhlXeW8uL24AAAACAEAAA8AAABPRUJQUy9jaDEueGh0bWwljzFuBDEIRa+Ctl4NGqWayKFJlSrF5gLeDBksec3IJvLm9sFy9T+8j4Ag9sjwfOTS3i5idr4i9t6X/rJoPXDdtg2fI3OhIBx3CpYsM1nAaQLO9l33P4+s9C7xNK7wWdjZSuGkD4M7H6k0EK58hZ5MIELjYly+GUyiwaHcQAv8aHXWJWVe4Eu4QCxqPuiQneasvUGyq/d3V+CytyXgOTbdRKvN4jdTyIl0nOE6vHWdHgfEeTKO7+gfUEsBAhQAFAAAAAAA6mhlXW9hqywUAAAAFAAAAAgAAAAAAAAAAAAAAIABAAAAAG1pbWV0eXBlUEsBAhQAFAAAAAgA6mhlXR4L18mZAAAA3QAAABYAAAAAAAAAAAAAAIABOgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxQSwECFAAUAAAACADqaGVdGBOmphsBAACeAgAAEQAAAAAAAAAAAAAAgAEHAQAAT0VCUFMvY29udGVudC5vcGZQSwECFAAUAAAACADqaGVdd3RXthMAAAAaAAAADQAAAAAAAAAAAAAAgAFRAgAAT0VCUFMvYS54aHRtbFBLAQIUABQAAAAIAOpoZV3NCwcJKAAAAC8AAAANAAAAAAAAAAAAAACAAY8CAABPRUJQUy9iLnhodG1sUEsBAhQAFAAAAAgA6mhlXbAUHXB2AAAAlgAAAA0AAAAAAAAAAAAAAIAB4gIAAE9FQlBTL2YueGh0bWxQSwECFAAUAAAACADqaGVd5by4vbgAAAAIAQAADwAAAAAAAAAAAAAAgAGDAwAAT0VCUFMvY2gxLnhodG1sUEsFBgAAAAAHAAcApwEAAGgEAAAAAA==",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"9d6345fcfdba01cf4c9f18fa62bf135f": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+],
+[
+"href",
+"a.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+],
+[
+"href",
+"b.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"f"
+],
+[
+"href",
+"f.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"f"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"b256d97fbb697428b7a1286ea33539c0": {
+"tostring": "PGJvZHkvPgo=",
+"length": 0
+},
+"3ed4b9253c9dd7bb1774b25af41373bb": {
+"tostring": "PGJvZHk+b25seSB0ZXh0IGluIHRoZSBib2R5PC9ib2R5Pgo=",
+"length": 0
+},
+"0afc28fd3389f47d1e8cea14eb38f75a": {
+"tostring": "PGJvZHk+CiAgPHNlY3Rpb24gZXB1Yjp0eXBlPSJmcm9udG1hdHRlciI+CiAgICA8cD5Ta2lwcGVkLjwvcD4KICA8L3NlY3Rpb24+CjwvYm9keT4K",
+"length": 1
+},
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\57edc96c5cd6530db482271bfa2388d4\\\\skips-and-blanks.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\skips-and-blanks.epub\",\n  \"epub_content_hash\": \"14d8a45be09f7a310983b30cabdf9cdb\",\n  \"total_sentences\": 2,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 2,\n      \"raw_sentence_count\": 6,\n      \"sentence_start\": 0,\n      \"sentence_end\": 1\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break][heading]Chapter One. It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends. Short. one.\",\n      \"[break]two.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.948010\",\n  \"updated_at\": \"2026-11-05T13:07:21.948010\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\57edc96c5cd6530db482271bfa2388d4\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\57edc96c5cd6530db482271bfa2388d4\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\57edc96c5cd6530db482271bfa2388d4\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\57edc96c5cd6530db482271bfa2388d4\\\\skips-and-blanks.epub\",\n  \"filename_noext\": \"skips-and-blanks\",\n  \"cover\": true,\n  \"final_name\": \"skips-and-blanks.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"1\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\57edc96c5cd6530db482271bfa2388d4\\skips-and-blanks.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/4 spine documents to a TOC title\n[TOC] No TOC entry for: ['a.xhtml', 'b.xhtml', 'f.xhtml', 'ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy)\nNo body found. Skip to next doc...\n----------\nParsing doc 1 (paragraph policy)\nNo body found. Skip to next doc...\n----------\nParsing doc 2 (paragraph policy)\nNo body part. Skip to next doc...\n----------\nParsing doc 3 (paragraph policy)\n[paragraph policy] 5 block(s) -> 2 chunk(s); 1 merge(s), 3 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\57edc96c5cd6530db482271bfa2388d4\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 2 gap(s) to <ROOT>\\session\\57edc96c5cd6530db482271bfa2388d4\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\57edc96c5cd6530db482271bfa2388d4\\session-state.json\n"
+},
+{
+"name": "no-title",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXf1GnQPNAAAAQgEAABEAAABPRUJQUy9jb250ZW50Lm9wZk2QQW7EIAxFr0LZVsShXVSKCHMWC5wEFQgKnsn09qXJdNqd0ee9b9lc7imKG201rHmUuuvlxZqC7hNnEi3LdZQLcxkA9n3vgi9Tt24zvPX9B6xlkn/we4OtScTokfGEB++efLlu8WC9A4qUKHMF3WlolHdDxDxfW6ulbOD/27woJfLKJJSyBn4LWhXmMFFlawJTEsGP0mkplo2mNi26uy+cohSJfEDFX4VGiaXE4JDbxnDEr21PCT/ep62WkOmUNlXznkJ9fHuE8LiR/QZQSwMEFAAAAAgA6mhlXeW8uL24AAAACAEAAA8AAABPRUJQUy9jaDEueGh0bWwljzFuBDEIRa+Ctl4NGqWayKFJlSrF5gLeDBksec3IJvLm9sFy9T+8j4Ag9sjwfOTS3i5idr4i9t6X/rJoPXDdtg2fI3OhIBx3CpYsM1nAaQLO9l33P4+s9C7xNK7wWdjZSuGkD4M7H6k0EK58hZ5MIELjYly+GUyiwaHcQAv8aHXWJWVe4Eu4QCxqPuiQneasvUGyq/d3V+CytyXgOTbdRKvN4jdTyIl0nOE6vHWdHgfEeTKO7+gfUEsBAhQAFAAAAAAA6mhlXW9hqywUAAAAFAAAAAgAAAAAAAAAAAAAAIABAAAAAG1pbWV0eXBlUEsBAhQAFAAAAAgA6mhlXR4L18mZAAAA3QAAABYAAAAAAAAAAAAAAIABOgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxQSwECFAAUAAAACADqaGVd/UadA80AAABCAQAAEQAAAAAAAAAAAAAAgAEHAQAAT0VCUFMvY29udGVudC5vcGZQSwECFAAUAAAACADqaGVd5by4vbgAAAAIAQAADwAAAAAAAAAAAAAAgAEDAgAAT0VCUFMvY2gxLnhodG1sUEsFBgAAAAAEAAQA9gAAAOgCAAAAAA==",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"c358b8ba8121373592fd0eea89b8746c": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\5dd9abe9d3a7c2135b7de57901003b47\\\\no-title.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\no-title.epub\",\n  \"epub_content_hash\": \"1dd8a7065c0ae33f305d9905bca2ed09\",\n  \"total_sentences\": 2,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 2,\n      \"raw_sentence_count\": 6,\n      \"sentence_start\": 0,\n      \"sentence_end\": 1\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break][heading]Chapter One. It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends. Short. one.\",\n      \"[break]two.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:21.976170\",\n  \"updated_at\": \"2026-11-05T13:07:21.976170\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"no-title\",\n    \"creator\": null,\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\5dd9abe9d3a7c2135b7de57901003b47\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\5dd9abe9d3a7c2135b7de57901003b47\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\5dd9abe9d3a7c2135b7de57901003b47\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\5dd9abe9d3a7c2135b7de57901003b47\\\\no-title.epub\",\n  \"filename_noext\": \"no-title\",\n  \"cover\": true,\n  \"final_name\": \"no-title.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"1\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": true
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\5dd9abe9d3a7c2135b7de57901003b47\\no-title.epub\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/1 spine documents to a TOC title\n[TOC] No TOC entry for: ['ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy)\n[paragraph policy] 5 block(s) -> 2 chunk(s); 1 merge(s), 3 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\5dd9abe9d3a7c2135b7de57901003b47\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 2 gap(s) to <ROOT>\\session\\5dd9abe9d3a7c2135b7de57901003b47\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\5dd9abe9d3a7c2135b7de57901003b47\\session-state.json\n"
+},
+{
+"name": "empty-title",
+"epub": "UEsDBBQAAAAAAOpoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA6mhlXdmMcH/GAAAAMAEAABEAAABPRUJQUy9jb250ZW50Lm9wZkWQQW7EIAxFr0LZVuDQLipFhDkLAmeCCgQFTzO9fd1kOt1Z+v89fdle7iWLL9x6WuskjR7kxdnmw6e/ouCs9kkuRG0E2Pddp9hmvW5XeBuGD1jbLP/hd4adLUg+evInPMbw5NttywcbA2DGgpU6GG2AqRhGSpQRnH1RStSVUCjlLPzpWOxrmrGTs4mwiBQnGYwUy4YzX4vR94VKlqJgTF7Rd8NJ+tZyCp54HxzxK6+S8Ot92npLFU8pq9h7Cs1Re4Tw+Ij7AVBLAwQUAAAACADqaGVd5by4vbgAAAAIAQAADwAAAE9FQlBTL2NoMS54aHRtbCWPMW4EMQhFr4K2Xg0apZrIoUmVKsXmAt4MGSx5zcgm8ub2wXL1P7yPgCD2yPB85NLeLmJ2viL23pf+smg9cN22DZ8jc6EgHHcKliwzWcBpAs72Xfc/j6z0LvE0rvBZ2NlK4aQPgzsfqTQQrnyFnkwgQuNiXL4ZTKLBodxAC/xoddYlZV7gS7hALGo+6JCd5qy9QbKr93dX4LK3JeA5Nt1Eq83iN1PIiXSc4Tq8dZ0eB8R5Mo7v6B9QSwECFAAUAAAAAADqaGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADqaGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOpoZV3ZjHB/xgAAADABAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOpoZV3lvLi9uAAAAAgBAAAPAAAAAAAAAAAAAACAAfwBAABPRUJQUy9jaDEueGh0bWxQSwUGAAAAAAQABAD2AAAA4QIAAAAA",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"02993145b1ce3141d70c7061dae6c36b": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "PrepError",
+"message": "No chapters produced from <ROOT>\\session\\6c27d5ebc3f6668c36ab7573927ab63d\\empty-title.epub. get_chapters() printed the reason above (no spine documents, an extraction failure on one document, or every document skipped as front/back matter)."
+}
+},
+{
+"name": "cover-la-refused",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXajth4sYAQAA8QEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRy27DIBBFf4WyrTB2u6gUYaJ20V1XVT8AwdhG4SWYNOnfl5DESdUdM2funQdie/SOfEMuNoaRDl1Pt1IkpXdqBlJZKCNdENOG88Ph0FmTpi7mmT/1/QuPaaI38XMVS+EBlVGozuKN0as+7bNrWqM5OPAQsPChG3hVGb1Biw7kK/lQBthXIm8x7gRfwalEZ1AYs3y3uWBj18w9/QQdg/mHnQrzvm4lITS2xuKBMRIiAmFMCn5doK6igp2goBQWwRNrRqoHSpYMU30tQ3dc0DtKPBirGP4kGKlKyVmtsF6EN/xY70D5nYVdHWI9XZfC/NfB+joUb+mUY4KMFsqlmjV4suO34UqyAc4Nqm/tcXYfWtkF8suXyl9QSwMEFAAAAAgA62hlXeW8uL24AAAACAEAAA8AAABPRUJQUy9jaDEueGh0bWwljzFuBDEIRa+Ctl4NGqWayKFJlSrF5gLeDBksec3IJvLm9sFy9T+8j4Ag9sjwfOTS3i5idr4i9t6X/rJoPXDdtg2fI3OhIBx3CpYsM1nAaQLO9l33P4+s9C7xNK7wWdjZSuGkD4M7H6k0EK58hZ5MIELjYly+GUyiwaHcQAv8aHXWJWVe4Eu4QCxqPuiQneasvUGyq/d3V+CytyXgOTbdRKvN4jdTyIl0nOE6vHWdHgfEeTKO7+gfUEsDBBQAAAAIAOtoZV1dn4hOPQAAAEUAAAAPAAAAT0VCUFMvY292ZXIucG5n6wzwc+flkuJiYGDg9fRwCQLSHCDMwQIk89jKgCQDj6eLY0jFnOQECRkgr4OB0cv11WmQhKern8s6p4QmAFBLAQIUABQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAAAAAAAAAAACAAQAAAABtaW1ldHlwZVBLAQIUABQAAAAIAOtoZV0eC9fJmQAAAN0AAAAWAAAAAAAAAAAAAACAAToAAABNRVRBLUlORi9jb250YWluZXIueG1sUEsBAhQAFAAAAAgA62hlXajth4sYAQAA8QEAABEAAAAAAAAAAAAAAIABBwEAAE9FQlBTL2NvbnRlbnQub3BmUEsBAhQAFAAAAAgA62hlXeW8uL24AAAACAEAAA8AAAAAAAAAAAAAAIABTgIAAE9FQlBTL2NoMS54aHRtbFBLAQIUABQAAAAIAOtoZV1dn4hOPQAAAEUAAAAPAAAAAAAAAAAAAACAATMDAABPRUJQUy9jb3Zlci5wbmdQSwUGAAAAAAUABQAzAQAAnQMAAAAA",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"dcc52ded40947329de68611ddf853d89": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"i"
+],
+[
+"href",
+"cover.png"
+],
+[
+"media-type",
+"image/png"
+],
+[
+"properties",
+"cover-image"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"files": {
+"session-state.json": "{\n  \"version\": 2,\n  \"session_id\": \"fixed-session\",\n  \"epub_path\": \"<ROOT>\\\\session\\\\6a497f97c2659c0ac0c79af5719f6989\\\\cover-la-refused.epub\",\n  \"source_epub_path\": \"<ROOT>\\\\cover-la-refused.epub\",\n  \"epub_content_hash\": \"2943fda10a58935737434fb3e759ca8b\",\n  \"total_sentences\": 2,\n  \"total_chapters\": 1,\n  \"chapters\": [\n    {\n      \"chapter_num\": 1,\n      \"sentence_count\": 2,\n      \"raw_sentence_count\": 6,\n      \"sentence_start\": 0,\n      \"sentence_end\": 1\n    }\n  ],\n  \"chapter_sentences\": [\n    [\n      \"[break][heading]Chapter One. It begins here, with a sentence that goes on for a while. Then another one follows it, and it ends. Short. one.\",\n      \"[break]two.\"\n    ]\n  ],\n  \"language\": \"eng\",\n  \"language_iso1\": \"en\",\n  \"voice\": null,\n  \"fine_tuned\": \"internal\",\n  \"custom_model\": null,\n  \"custom_model_dir\": null,\n  \"orpheus_model_dir\": null,\n  \"orpheus_adapter_dir\": null,\n  \"orpheus_base_dir\": null,\n  \"tts_engine\": \"higgs-v3\",\n  \"device\": \"cpu\",\n  \"output_format\": \"m4b\",\n  \"audiobooks_dir\": null,\n  \"created_at\": \"2026-11-05T13:07:22.018818\",\n  \"updated_at\": \"2026-11-05T13:07:22.018818\",\n  \"status\": \"prepared\",\n  \"metadata\": {\n    \"title\": \"A Made-Up Book\",\n    \"creator\": \"Second\",\n    \"language\": \"en\"\n  },\n  \"session_dir\": \"<ROOT>\\\\session\",\n  \"process_dir\": \"<ROOT>\\\\session\\\\6a497f97c2659c0ac0c79af5719f6989\",\n  \"chapters_dir\": \"<ROOT>\\\\session\\\\6a497f97c2659c0ac0c79af5719f6989\\\\chapters\",\n  \"chapters_dir_sentences\": \"<ROOT>\\\\session\\\\6a497f97c2659c0ac0c79af5719f6989\\\\chapters\\\\sentences\",\n  \"epub_path_internal\": \"<ROOT>\\\\session\\\\6a497f97c2659c0ac0c79af5719f6989\\\\cover-la-refused.epub\",\n  \"filename_noext\": \"cover-la-refused\",\n  \"cover\": false,\n  \"final_name\": \"cover-la-refused.m4b\",\n  \"chapter_titles\": [],\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"bookforge_metadata\": {},\n  \"higgs_voice\": \"voice-x\",\n  \"bookforge_chunking\": {\n    \"policy\": \"paragraph\",\n    \"engine\": \"higgs-v3\",\n    \"floor_chars\": 120,\n    \"source_kind\": \"epub-native\",\n    \"walls\": [\n      \"chapter-start\",\n      \"heading\",\n      \"scene-break\",\n      \"table\"\n    ],\n    \"budget\": {\n      \"voice\": \"voice-x\",\n      \"max_chars\": 400,\n      \"max_chars_per_sec\": 0.0\n    }\n  }\n}",
+"chapter-provenance.json": "{\n  \"chapter_docs\": [\n    \"ch1.xhtml\"\n  ],\n  \"chapter_titles_by_doc\": {},\n  \"chapter_titles\": []\n}",
+"chapters/sentences/gaps.json": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"gaps\": {\n    \"0\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    },\n    \"1\": {\n      \"before\": 0.0,\n      \"after\": 0.6\n    }\n  }\n}"
+},
+"cover": false
+},
+"stdout": "[PREP] fine_tuned=internal, voice=None, tts_engine=higgs-v3, sentence_per_paragraph=False, skip_headings=False\nInput is already an EPUB - using it directly, no Calibre pass: <ROOT>\\session\\6a497f97c2659c0ac0c79af5719f6989\\cover-la-refused.epub\nget_cover() error: cannot write mode LA as JPEG\n[provenance] epub-native (read from the book: data-bf-category / data-bf-cat)\n[chunking] paragraph policy: floor=120 chars, cap=400 chars, source=epub-native\n[TOC] Extracted 0 chapter titles from TOC (0 distinct documents)\n[TOC] Mapped 0/1 spine documents to a TOC title\n[TOC] No TOC entry for: ['ch1.xhtml'] (these use their own first sentence as title)\n----------\nParsing doc 0 (paragraph policy)\n[paragraph policy] 5 block(s) -> 2 chunk(s); 1 merge(s), 3 join token(s) dropped, 0 paragraph(s) sentence-split\n[TOC] Chapter provenance for 1 chapters saved to <ROOT>\\session\\6a497f97c2659c0ac0c79af5719f6989\\chapter-provenance.json\n[gaps] higgs-v3 does not pad its own audio: wrote 2 gap(s) to <ROOT>\\session\\6a497f97c2659c0ac0c79af5719f6989\\chapters\\sentences\\gaps.json\nSession state saved to <ROOT>\\session\\6a497f97c2659c0ac0c79af5719f6989\\session-state.json\n"
+},
+{
+"name": "no-body-element",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXd3U6Pf7AAAAogEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRzU7EIBRGXwXZGkrRhUlDmYwLd66MD0DgtiXDX+gdO769TDtTTdwB534n+S7ycAmefEGZXYo9FU1LD0pmbU56BFJZnHs6IeaO82VZGmfz0KQy8qe2feEpD/Q3/FzDSgZAbTXqLdxZs+fzufg1aw0HDwEizlw0gteUNR069KCO5F1bYJ+ZvKZ0knwH1xFTQGMq6s2VGVd2f/lLP8CkaP9hr+N4rq0UxJXtd/nAGIkJgTCmJL8XqFV0dAPMqKRDCMTZnhpByVRgqKdJNJcJg6ckgHWa4XeGnuqcvTMa60b4ih/rHii/enfbnF2ETVpV1bsJxTp2g/z2B+oHUEsDBBQAAAAIAOtoZV2KVFplKwAAAD8AAAAPAAAAT0VCUFMvY2gxLnhodG1ss8koyc2xs8lITUyxsynJLMlJtauw0YcwbPQhwmlFibmpxaklQAEkJlgjAFBLAQIUABQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAAAAAAAAAAACAAQAAAABtaW1ldHlwZVBLAQIUABQAAAAIAOtoZV0eC9fJmQAAAN0AAAAWAAAAAAAAAAAAAACAAToAAABNRVRBLUlORi9jb250YWluZXIueG1sUEsBAhQAFAAAAAgA62hlXd3U6Pf7AAAAogEAABEAAAAAAAAAAAAAAIABBwEAAE9FQlBTL2NvbnRlbnQub3BmUEsBAhQAFAAAAAgA62hlXYpUWmUrAAAAPwAAAA8AAAAAAAAAAAAAAIABMQIAAE9FQlBTL2NoMS54aHRtbFBLBQYAAAAABAAEAPYAAACJAgAAAAA=",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"670af6eba0fa856b10cb88840bc20444": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"0ea8f64930d6f88c2ecf96c6badd2ad6": null
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "PrepError",
+"message": "No chapters produced from <ROOT>\\session\\ae480863110ae70e9f2de6748c6256b4\\no-body-element.epub. get_chapters() printed the reason above (no spine documents, an extraction failure on one document, or every document skipped as front/back matter)."
+}
+},
+{
+"name": "tight-cap-refused",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXd3U6Pf7AAAAogEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRzU7EIBRGXwXZGkrRhUlDmYwLd66MD0DgtiXDX+gdO769TDtTTdwB534n+S7ycAmefEGZXYo9FU1LD0pmbU56BFJZnHs6IeaO82VZGmfz0KQy8qe2feEpD/Q3/FzDSgZAbTXqLdxZs+fzufg1aw0HDwEizlw0gteUNR069KCO5F1bYJ+ZvKZ0knwH1xFTQGMq6s2VGVd2f/lLP8CkaP9hr+N4rq0UxJXtd/nAGIkJgTCmJL8XqFV0dAPMqKRDCMTZnhpByVRgqKdJNJcJg6ckgHWa4XeGnuqcvTMa60b4ih/rHii/enfbnF2ETVpV1bsJxTp2g/z2B+oHUEsDBBQAAAAIAOtoZV3kk2dQYAAAABMFAAAPAAAAT0VCUFMvY2gxLnhodG1s7dRRCoAgDMbxq4QHcERPxtpdCiUDTbHB7PYVniLw4QdjfM9/9BzDUGM4r0V55jwDiIiWSaeyw2iMgfptFKF3qyXkg4MjRmgHQntvyd6EmSQV23Vd9wcI+W1Yqxd8oaMHUEsBAhQAFAAAAAAA62hlXW9hqywUAAAAFAAAAAgAAAAAAAAAAAAAAIABAAAAAG1pbWV0eXBlUEsBAhQAFAAAAAgA62hlXR4L18mZAAAA3QAAABYAAAAAAAAAAAAAAIABOgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxQSwECFAAUAAAACADraGVd3dTo9/sAAACiAQAAEQAAAAAAAAAAAAAAgAEHAQAAT0VCUFMvY29udGVudC5vcGZQSwECFAAUAAAACADraGVd5JNnUGAAAAATBQAADwAAAAAAAAAAAAAAgAExAgAAT0VCUFMvY2gxLnhodG1sUEsFBgAAAAAEAAQA9gAAAL4CAAAAAA==",
+"cap": 100,
+"floor": 50,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"670af6eba0fa856b10cb88840bc20444": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"e5c054cdd9df7cff0a1855d918eb19e7": {
+"tostring": "PGJvZHk+CiAgPHA+d29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3Jkd29yZHdvcmR3b3JkPC9wPgo8L2JvZHk+Cg==",
+"length": 1
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "PrepError",
+"message": "No chapters produced from <ROOT>\\session\\e35c8a33f7bd1799016b3b1676d06439\\tight-cap-refused.epub. get_chapters() printed the reason above (no spine documents, an extraction failure on one document, or every document skipped as front/back matter)."
+}
+},
+{
+"name": "refuse-missing-member",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXf7yD5MOAQAA1gEAABEAAABPRUJQUy9jb250ZW50Lm9wZmWRwW7DIAyGX4VxnRI322FSRai6w247TXsABE6CSgCBu2ZvP5K0WafdgM/fL9uIwzQ69oUp2+Bb3tQ7fpAiKn1SPbLCfG75QBT3AJfLpbYmdnVIPTztdi8QYsd/5eciSzEiKaNIrfLe6M2P5+QW12hAhyN6ytDUDRTL6D1ZciiP7F0ZrD4jew3hJGADc4lOqCgk+WZTpoXdXu7pB+rgzT/slO/PZSqJfmHbXTxUFfOBkFWVFHAboIyivO0wkxSWcGTWtFw3nA0Ju3IamnoaaHScjWisqug7YstVjM5qRWUjsODHsgcOdxHTLaEPHmud898AwolgfoW5l62DHK3HNaXIJWhtolnKrhCu/yZ/AFBLAwQUAAAACADraGVd5by4vbgAAAAIAQAADwAAAE9FQlBTL2NoMS54aHRtbCWPMW4EMQhFr4K2Xg0apZrIoUmVKsXmAt4MGSx5zcgm8ub2wXL1P7yPgCD2yPB85NLeLmJ2viL23pf+smg9cN22DZ8jc6EgHHcKliwzWcBpAs72Xfc/j6z0LvE0rvBZ2NlK4aQPgzsfqTQQrnyFnkwgQuNiXL4ZTKLBodxAC/xoddYlZV7gS7hALGo+6JCd5qy9QbKr93dX4LK3JeA5Nt1Eq83iN1PIiXSc4Tq8dZ0eB8R5Mo7v6B9QSwECFAAUAAAAAADraGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOtoZV3+8g+TDgEAANYBAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOtoZV3lvLi9uAAAAAgBAAAPAAAAAAAAAAAAAACAAUQCAABPRUJQUy9jaDEueGh0bWxQSwUGAAAAAAQABAD2AAAAKQMAAAAA",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"d49949bd4f3eccdcb6dc60b19f30d0ec": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"x"
+],
+[
+"href",
+"gone.css"
+],
+[
+"media-type",
+"text/css"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "KeyError",
+"message": "\"There is no item named 'OEBPS/gone.css' in the archive\""
+}
+},
+{
+"name": "refuse-nav-no-ol",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXRFhXRMQAQAA9QEAABEAAABPRUJQUy9jb250ZW50Lm9wZo2Ry24DIQxFf4WyrWacaReVIoYoXXTXVdUPsMCTQWEAgfPo35dMnlI33QHH99rXqNVx8mJPubgYetm1C7nSKqHZ4oZEZaH0cmROS4DD4dA6m4Y25g28LBZvENMg7+LXKtZqIkaLjGfx0pqbPu2yn7XWAHmaKHCBru2gqqxZsmNPei0+0VLzncR7jFsFN3AqMZmQY9YfLhee2fXlkX6RicH+wR7DZldTaQozu93VU9OIEJlE02gF1wA1CgY3UGGtHNMknO2l6aQYMw31NHbtceTJSzGRddjwT6JeYkreGeS6EZjxc92DhAeLcHUIuP+/g0g5JsrsqMzKkyXcByzJBTo3qd61z3nGbi67QLh8q/4FUEsDBBQAAAAIAOtoZV3lvLi9uAAAAAgBAAAPAAAAT0VCUFMvY2gxLnhodG1sJY8xbgQxCEWvgrZeDRqlmsihSZUqxeYC3gwZLHnNyCby5vbBcvU/vI+AIPbI8Hzk0t4uYna+Ivbel/6yaD1w3bYNnyNzoSAcdwqWLDNZwGkCzvZd9z+PrPQu8TSu8FnY2UrhpA+DOx+pNBCufIWeTCBC42JcvhlMosGh3EAL/Gh11iVlXuBLuEAsaj7okJ3mrL1Bsqv3d1fgsrcl4Dk23USrzeI3U8iJdJzhOrx1nR4HxHkyju/oH1BLAwQUAAAACADraGVdiTt+OXMAAACMAAAADwAAAE9FQlBTL25hdi54aHRtbCWMQQ6DIBAAv0L2AaztpQlZ9gt9AyoWE4SNYtHfF9LLXGYyFMoW1bXFdBgv52ghlCIGsdaq11kWnfcPPofhhVkOYBrzfDMl91U9N+UWb6HkqakzMsWVyamw+8XCFB766n/gd/KEjgm7xx5iWzT+d9gr/gFQSwECFAAUAAAAAADraGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOtoZV0RYV0TEAEAAPUBAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOtoZV3lvLi9uAAAAAgBAAAPAAAAAAAAAAAAAACAAUYCAABPRUJQUy9jaDEueGh0bWxQSwECFAAUAAAACADraGVdiTt+OXMAAACMAAAADwAAAAAAAAAAAAAAgAErAwAAT0VCUFMvbmF2LnhodG1sUEsFBgAAAAAFAAUAMwEAAMsDAAAAAA==",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"b26fa0ac572128c9459ed1a72b136905": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"n"
+],
+[
+"href",
+"nav.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+],
+[
+"properties",
+"nav"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {
+"a798213b4375f7ec3680e618a8632aa7": {
+"kind": "element",
+"tag": "html",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"xmlns:epub",
+"http://www.idpf.org/2007/ops"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "body",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "nav",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"epub:type",
+"toc"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "ul",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "li",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "a",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"href",
+"ch1.xhtml"
+]
+],
+"text": "One",
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+},
+"a798213b4375f7ec3680e618a8632aa7": {
+"tostring": "PGJvZHk+CiAgPG5hdiBlcHViOnR5cGU9InRvYyI+CiAgICA8dWw+CiAgICAgIDxsaT4KICAgICAgICA8YSBocmVmPSJjaDEueGh0bWwiPk9uZTwvYT4KICAgICAgPC9saT4KICAgIDwvdWw+CiAgPC9uYXY+CjwvYm9keT4K",
+"length": 1
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "AttributeError",
+"message": "'NoneType' object has no attribute 'findall'"
+}
+},
+{
+"name": "refuse-nav-no-toc",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXRFhXRMQAQAA9QEAABEAAABPRUJQUy9jb250ZW50Lm9wZo2Ry24DIQxFf4WyrWacaReVIoYoXXTXVdUPsMCTQWEAgfPo35dMnlI33QHH99rXqNVx8mJPubgYetm1C7nSKqHZ4oZEZaH0cmROS4DD4dA6m4Y25g28LBZvENMg7+LXKtZqIkaLjGfx0pqbPu2yn7XWAHmaKHCBru2gqqxZsmNPei0+0VLzncR7jFsFN3AqMZmQY9YfLhee2fXlkX6RicH+wR7DZldTaQozu93VU9OIEJlE02gF1wA1CgY3UGGtHNMknO2l6aQYMw31NHbtceTJSzGRddjwT6JeYkreGeS6EZjxc92DhAeLcHUIuP+/g0g5JsrsqMzKkyXcByzJBTo3qd61z3nGbi67QLh8q/4FUEsDBBQAAAAIAOtoZV3lvLi9uAAAAAgBAAAPAAAAT0VCUFMvY2gxLnhodG1sJY8xbgQxCEWvgrZeDRqlmsihSZUqxeYC3gwZLHnNyCby5vbBcvU/vI+AIPbI8Hzk0t4uYna+Ivbel/6yaD1w3bYNnyNzoSAcdwqWLDNZwGkCzvZd9z+PrPQu8TSu8FnY2UrhpA+DOx+pNBCufIWeTCBC42JcvhlMosGh3EAL/Gh11iVlXuBLuEAsaj7okJ3mrL1Bsqv3d1fgsrcl4Dk23USrzeI3U8iJdJzhOrx1nR4HxHkyju/oH1BLAwQUAAAACADraGVdp+Tz3yIAAAAnAAAADwAAAE9FQlBTL25hdi54aHRtbLPJKMnNsbNJyk+ptLMpsMvLV8hLLLPRL7Cz0YeI6YMVAABQSwECFAAUAAAAAADraGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOtoZV0RYV0TEAEAAPUBAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOtoZV3lvLi9uAAAAAgBAAAPAAAAAAAAAAAAAACAAUYCAABPRUJQUy9jaDEueGh0bWxQSwECFAAUAAAACADraGVdp+Tz3yIAAAAnAAAADwAAAAAAAAAAAAAAgAErAwAAT0VCUFMvbmF2LnhodG1sUEsFBgAAAAAFAAUAMwEAAHoDAAAAAA==",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"b26fa0ac572128c9459ed1a72b136905": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [
+[
+"dc",
+"http://purl.org/dc/elements/1.1/"
+]
+],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}title",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "A Made-Up Book",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}creator",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "Second",
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://purl.org/dc/elements/1.1/}language",
+"prefix": "dc",
+"nsDecls": [],
+"attrs": [],
+"text": "en",
+"tail": null,
+"children": []
+},
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"n"
+],
+[
+"href",
+"nav.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+],
+[
+"properties",
+"nav"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {
+"abf167464e1dab34c2d93febb8edc6df": {
+"kind": "element",
+"tag": "html",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "body",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "p",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "no nav",
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+},
+"abf167464e1dab34c2d93febb8edc6df": {
+"tostring": "PGJvZHk+CiAgPHA+bm8gbmF2PC9wPgo8L2JvZHk+Cg==",
+"length": 1
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "IndexError",
+"message": "list index out of range"
+}
+},
+{
+"name": "refuse-no-dc",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXQDckpioAAAA+QAAABEAAABPRUJQUy9jb250ZW50Lm9wZkWP0Q6CMAxFf2X21YwxfTAxY3xLAx0ssrFAI/j3TiDy1vT0nramXsMg3jTNfowV6KKE2pqEzQs7EpnFuYKeOT2VWpal8G1yxTh16laWDzUmB2f4nsPWBGJskdGai5QijkxCSmvU2Q8YvaOZrfFMQfi2gkaD6Cdyuep1sfYcBhCBWo+SP4kqwJQG3yDnRWrD13wbqJ/3b5uTj7RLsyp7d6Hexg6ojtfsF1BLAwQUAAAACADraGVd5by4vbgAAAAIAQAADwAAAE9FQlBTL2NoMS54aHRtbCWPMW4EMQhFr4K2Xg0apZrIoUmVKsXmAt4MGSx5zcgm8ub2wXL1P7yPgCD2yPB85NLeLmJ2viL23pf+smg9cN22DZ8jc6EgHHcKliwzWcBpAs72Xfc/j6z0LvE0rvBZ2NlK4aQPgzsfqTQQrnyFnkwgQuNiXL4ZTKLBodxAC/xoddYlZV7gS7hALGo+6JCd5qy9QbKr93dX4LK3JeA5Nt1Eq83iN1PIiXSc4Tq8dZ0eB8R5Mo7v6B9QSwECFAAUAAAAAADraGVdb2GrLBQAAAAUAAAACAAAAAAAAAAAAAAAgAEAAAAAbWltZXR5cGVQSwECFAAUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAAAAAAAAAAAAgAE6AAAATUVUQS1JTkYvY29udGFpbmVyLnhtbFBLAQIUABQAAAAIAOtoZV0A3JKYqAAAAPkAAAARAAAAAAAAAAAAAACAAQcBAABPRUJQUy9jb250ZW50Lm9wZlBLAQIUABQAAAAIAOtoZV3lvLi9uAAAAAgBAAAPAAAAAAAAAAAAAACAAd4BAABPRUJQUy9jaDEueGh0bWxQSwUGAAAAAAQABAD2AAAAwwIAAAAA",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"abfd60e905103df44bb44f968b170fcc": {
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}package",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.idpf.org/2007/opf"
+]
+],
+"attrs": [
+[
+"version",
+"3.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}metadata",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "comment",
+"tag": "",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": " note ",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}manifest",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}item",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"c1"
+],
+[
+"href",
+"ch1.xhtml"
+],
+[
+"media-type",
+"application/xhtml+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}spine",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.idpf.org/2007/opf}itemref",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"idref",
+"c1"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "KeyError",
+"message": "'http://purl.org/dc/elements/1.1/'"
+}
+},
+{
+"name": "refuse-no-opf",
+"epub": "UEsDBBQAAAAAAOtoZV1vYassFAAAABQAAAAIAAAAbWltZXR5cGVhcHBsaWNhdGlvbi9lcHViK3ppcFBLAwQUAAAACADraGVdHgvXyZkAAADdAAAAFgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxVjsEOwiAQRH+l4Wpa9EoAExPPmvgFK90qEXYJUKN/L3qoeptk5s2M3j5i6O6Yi2cyYjOsxdZqx1TBE+Z/p2tZKkbMmRRD8UURRCyqOsUJaWQ3R6SqPjG1lAirM3OdfMDyld00h9AnqFcjDvvd8STfQMMHTpPoIo4e+vpMaASkFLyD2o5IxnMqDXM3uOCqLQlptfzpl8uufQFQSwMEFAAAAAgA62hlXeW8uL24AAAACAEAAA8AAABPRUJQUy9jaDEueGh0bWwljzFuBDEIRa+Ctl4NGqWayKFJlSrF5gLeDBksec3IJvLm9sFy9T+8j4Ag9sjwfOTS3i5idr4i9t6X/rJoPXDdtg2fI3OhIBx3CpYsM1nAaQLO9l33P4+s9C7xNK7wWdjZSuGkD4M7H6k0EK58hZ5MIELjYly+GUyiwaHcQAv8aHXWJWVe4Eu4QCxqPuiQneasvUGyq/d3V+CytyXgOTbdRKvN4jdTyIl0nOE6vHWdHgfEeTKO7+gfUEsBAhQAFAAAAAAA62hlXW9hqywUAAAAFAAAAAgAAAAAAAAAAAAAAIABAAAAAG1pbWV0eXBlUEsBAhQAFAAAAAgA62hlXR4L18mZAAAA3QAAABYAAAAAAAAAAAAAAIABOgAAAE1FVEEtSU5GL2NvbnRhaW5lci54bWxQSwECFAAUAAAACADraGVd5by4vbgAAAAIAQAADwAAAAAAAAAAAAAAgAEHAQAAT0VCUFMvY2gxLnhodG1sUEsFBgAAAAADAAMAtwAAAOwBAAAAAA==",
+"cap": 400,
+"floor": 120,
+"rows": false,
+"skip": false,
+"xml": {
+"7e1a77900a2d22aad56f143cdb7f5858": {
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}container",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"urn:oasis:names:tc:opendocument:xmlns:container"
+]
+],
+"attrs": [
+[
+"version",
+"1.0"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfiles",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{urn:oasis:names:tc:opendocument:xmlns:container}rootfile",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"full-path",
+"OEBPS/content.opf"
+],
+[
+"media-type",
+"application/oebps-package+xml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+},
+"f1c23751be340fa5c086493763979ad2": {
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}ncx",
+"prefix": null,
+"nsDecls": [
+[
+null,
+"http://www.daisy.org/z3986/2005/ncx/"
+]
+],
+"attrs": [
+[
+"version",
+"2005-1"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navMap",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"a"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "First",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"ch1.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navPoint",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"id",
+"b"
+]
+],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}navLabel",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": null,
+"tail": null,
+"children": [
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}text",
+"prefix": null,
+"nsDecls": [],
+"attrs": [],
+"text": "Nested",
+"tail": null,
+"children": []
+}
+]
+},
+{
+"kind": "element",
+"tag": "{http://www.daisy.org/z3986/2005/ncx/}content",
+"prefix": null,
+"nsDecls": [],
+"attrs": [
+[
+"src",
+"sub/ch2.xhtml"
+]
+],
+"text": null,
+"tail": null,
+"children": []
+}
+]
+}
+]
+}
+]
+}
+]
+}
+},
+"html": {},
+"body": {
+"a1a7ff3e24b6748bc37c86421d99b37d": {
+"tostring": "PGJvZHk+CiAgPGgxPkNoYXB0ZXIgT25lPC9oMT4KICA8cD5JdCBiZWdpbnMgaGVyZSwgd2l0aCBhIHNlbnRlbmNlIHRoYXQgZ29lcyBvbiBmb3IgYSB3aGlsZS4gVGhlbiBhbm90aGVyIG9uZSBmb2xsb3dzIGl0LCBhbmQgaXQgZW5kcy48L3A+CiAgPHA+U2hvcnQuPC9wPgogIDx1bD4KICAgIDxsaT5vbmU8L2xpPgogICAgPGxpPnR3bzwvbGk+CiAgPC91bD4KPC9ib2R5Pgo=",
+"length": 4
+}
+},
+"expect": {
+"root": "<ROOT>",
+"refused": "EpubException",
+"message": "'Can not find container file'"
+}
+}
+]
+}
