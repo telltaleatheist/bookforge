@@ -1,8 +1,7 @@
 /**
  * libxml2 2.11.9 as WebAssembly, behind the {@link Libxml2} surface. See `vendor/libxml2-wasm/README.md`.
  *
- * NEVER RUN. The binary does not exist yet: building it waits on installing Emscripten. Written
- * against `shim.c` so the rest of prep has its real shape; the corpus comparison is its test.
+ * Runs the committed binary. Not yet held to Python byte for byte: gate 1, the corpus comparison, is its test.
  * Sync and heavy, so it belongs off the main thread (`prep-worker.ts`).
  */
 
@@ -86,6 +85,23 @@ export class Libxml2Wasm implements Libxml2 {
         throw new Error(`libxml2.wasm called ${from}.${name}, which prep's surface should never reach.`);
       };
     }
+    // The services the C runtime itself uses. Its start-up reads the environment, which is empty here:
+    // nothing prep reaches consults one, and an empty one keeps every machine's parse the same. Memory
+    // growth is only a notice; every read of the memory takes `memory.buffer` afresh.
+    const memoryAt = (): DataView => new DataView((this.lib.memory as WebAssembly.Memory).buffer);
+    const wasi = (imports.wasi_snapshot_preview1 ??= {});
+    wasi.environ_sizes_get = (count: number, size: number): number => {
+      memoryAt().setUint32(count, 0, true);
+      memoryAt().setUint32(size, 0, true);
+      return 0;
+    };
+    wasi.environ_get = (): number => 0;
+    // dict.c seeds its hash randomization from `time(NULL)`, as lxml's own libxml2 does. Nothing it writes depends on it.
+    wasi.clock_time_get = (_id: number, _precision: bigint, out: number): number => {
+      memoryAt().setBigUint64(out, BigInt(Date.now()) * 1000000n, true);
+      return 0;
+    };
+    (imports.env ??= {}).emscripten_notify_memory_growth = (): void => {};
     this.lib = new WebAssembly.Instance(module, imports).exports as unknown as Exports;
     this.lib._initialize?.();
   }
