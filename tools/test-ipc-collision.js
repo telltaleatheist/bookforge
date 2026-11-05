@@ -47,7 +47,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..');
-const CHANNELS_DOC = path.join(REPO, 'foundry-app', 'IPC-CHANNELS.md');
+const { WINDOW_MAIN, NODE_DIST } = require('./foundry-core-lib.js');
 const ELECTRON_DIR = path.join(REPO, 'electron');
 
 /**
@@ -80,24 +80,33 @@ const test = (name, fn) => tests.push({ name, fn });
 // ── Reading Foundry's side ──────────────────────────────────────────────────
 
 /**
- * Every channel name in the doc's two tables.
- *
- * Both tables are `| \`family:verb\` | prose |`, so one row shape reads both:
- * the first cell, backticked, of a table row. The `family:verb` shape is
- * required rather than assumed — it is the invariant the doc exists to prove,
- * and a bare name in there would be the one collision class that cannot be
- * absorbed silently, so it is worth failing on.
+ * Every channel the window's main half and the library name, read from the code:
+ * doors, pushes, and what the preload asks for and listens to.
  */
 function foundryChannels() {
-  const text = fs.readFileSync(CHANNELS_DOC, 'utf-8');
   const names = new Set();
   const malformed = [];
-  for (const line of text.split(/\r?\n/)) {
-    const row = /^\|\s*`([^`]+)`\s*\|/.exec(line);
-    if (!row) continue;
-    const name = row[1].trim();
-    if (/^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*$/.test(name)) names.add(name);
-    else malformed.push(name);
+  const CALLS = [
+    /ipcMain\s*\.\s*(?:handle|handleOnce|on|once)\s*\(\s*['"`]([^'"`]+)['"`]/g,
+    /\bbroadcast\s*\(\s*['"`]([^'"`]+)['"`]/g,
+    /\.send\s*\(\s*['"`]([^'"`]+)['"`]/g,
+    /\bipcRenderer\s*\.\s*(?:invoke|on|once|send)\s*\(\s*['"`]([^'"`]+)['"`]/g,
+    /\b(?:ask|subscribe)\s*\(\s*['"`]([^'"`]+)['"`]/g,
+  ];
+  const files = [
+    ...fs.readdirSync(WINDOW_MAIN).filter((f) => f.endsWith('.ts')).map((f) => path.join(WINDOW_MAIN, f)),
+    ...fs.readdirSync(NODE_DIST).filter((f) => f.endsWith('.js')).map((f) => path.join(NODE_DIST, f)),
+  ];
+  for (const file of files) {
+    // Comments quote old channels and example calls, and neither is a channel.
+    const text = fs.readFileSync(file, 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    for (const pattern of CALLS) {
+      for (const hit of text.matchAll(pattern)) {
+        const name = hit[1].trim();
+        if (/^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*$/.test(name)) names.add(name);
+        else malformed.push(`${name} (${path.basename(file)})`);
+      }
+    }
   }
   return { names, malformed };
 }
@@ -159,24 +168,18 @@ function bookforgeChannels() {
 
 // ── The tests ───────────────────────────────────────────────────────────────
 
-test('the vendored channel list is where the keeper expects it', () => {
-  assert.ok(fs.existsSync(CHANNELS_DOC),
-    `${path.relative(REPO, CHANNELS_DOC)} is missing. It is copied out of the Foundry repo `
-    + 'alongside the subtree (see foundry-app/VENDORED.md) and is the authority this test reads.');
-});
-
 test('the parse still finds Foundry\'s channels — it has not become a no-op', () => {
   const { names } = foundryChannels();
   assert.ok(names.size >= MIN_FOUNDRY_CHANNELS,
-    `only ${names.size} channel names were parsed out of ${path.basename(CHANNELS_DOC)}, and at `
-    + `least ${MIN_FOUNDRY_CHANNELS} are expected. The doc's table format has changed, so this `
-    + 'test is no longer reading it — fix the parse rather than lowering the floor.');
+    `only ${names.size} channel names were found in the window and the library, and at `
+    + `least ${MIN_FOUNDRY_CHANNELS} are expected. The call sites have changed shape, so this `
+    + 'test is no longer reading them — fix the parse rather than lowering the floor.');
 });
 
 test('every name Foundry publishes is family:verb', () => {
   const { malformed } = foundryChannels();
   assert.deepStrictEqual(malformed, [],
-    `${malformed.join(', ')} in ${path.basename(CHANNELS_DOC)} ${malformed.length === 1 ? 'is' : 'are'} `
+    `${malformed.join(', ')} ${malformed.length === 1 ? 'is' : 'are'} `
     + 'not `family:verb`. A bare name is the one collision class hosting cannot absorb.');
 });
 
@@ -200,7 +203,7 @@ test('NO channel name is shared between BookForge and the hosted Foundry', () =>
     + collisions.map((c) => `        ${c}`).join('\n')
     + '\n        A duplicate ipcMain.handle throws at registration — BookForge will not start with '
     + 'the Foundry window mounted. A duplicate renderer event is worse: it fires on the other app\'s '
-    + 'messages and says nothing. Rename OURS; the vendored subtree is sealed.');
+    + 'messages and says nothing. Rename one of them.');
 });
 
 test('the families that overlap are named, so the near-misses stay visible', () => {
@@ -216,70 +219,6 @@ test('the families that overlap are named, so the near-misses stay visible', () 
     'no family is shared at all, which is not what either side reported — one of the two scans '
     + 'has read nothing.');
   console.log(`        shared families (verb-disjoint, by the test above): ${shared.join(', ')}`);
-});
-
-test('this audit says how old the list it audited is', () => {
-  /**
-   * A GREEN CHECK THAT PROVES NOTHING IS WORSE THAN A RED ONE.
-   *
-   * 2026-09-16: Foundry reported nine channels it had just added and asked
-   * whether any collided. This file answered 6/6 passed — against a vendored
-   * `IPC-CHANNELS.md` that was NINETEEN Foundry commits old and listed five of
-   * the nine nowhere. There was no collision (checked by hand against
-   * electron/main.ts and electron/preload.ts), so the answer was right; the
-   * check is not what made it right.
-   *
-   * The design above is NOT the defect and is not changed here. Foundry ruled
-   * the doc is the contract and their sources are theirs to rearrange, and
-   * "refreshing the subtree refreshes what this test checks against" is exactly
-   * right. What was missing is that a reader could not tell, from a pass, WHEN
-   * the thing that passed was written.
-   *
-   * So: when Foundry's own checkout is beside this one — a developer machine,
-   * not CI — say how far behind the vendored point is. When it is not there,
-   * say THAT, rather than letting silence read as freshness.
-   */
-  const vendored = fs.readFileSync(path.join(REPO, 'foundry-app', 'VENDORED.md'), 'utf-8');
-  /**
-   * THE TABLE'S `Source sha` ROW, AND NOTHING ELSE.
-   *
-   * The first cut of this matched on the words "committed at" followed by a
-   * bold sha, and found a line in a HISTORICAL section fifty lines down —
-   * reporting the subtree as 19 commits
-   * behind when the table said `24f586b` and the true answer was 14. A file that
-   * keeps its own history is a file where "the first sha I find" is the wrong
-   * sha — the same defect as reading a stated total instead of counting, one
-   * section along, and committed in the very change that was about checks
-   * lagging their input.
-   */
-  const at = /^\|\s*Source sha\s*\|\s*\*\*([0-9a-f]{7,40})\*\*/m.exec(vendored);
-  assert.ok(at, 'foundry-app/VENDORED.md no longer has a `| Source sha | **<sha>** |` row in its '
-    + 'header table, which is the only thing that makes this audit datable. A "committed at" '
-    + 'mention further down is NOT it: those are older vendoring points, and reading one reports '
-    + 'the subtree as staler than it is.');
-
-  const sibling = path.resolve(REPO, '..', 'foundry');
-  if (!fs.existsSync(path.join(sibling, '.git'))) {
-    console.log(`        vendored at ${at[1]}; Foundry's checkout is not beside this one, so how `
-      + 'far behind that is was NOT checked.');
-    return;
-  }
-  const { execFileSync } = require('child_process');
-  const git = (...args) => execFileSync('git', ['-C', sibling, ...args], { encoding: 'utf-8' }).trim();
-  let behind;
-  try { behind = Number(git('rev-list', '--count', `${at[1]}..HEAD`)); }
-  catch {
-    console.log(`        vendored at ${at[1]}; that commit is not in the checkout beside this one, `
-      + 'so how far behind it is was NOT checked.');
-    return;
-  }
-  const { names } = foundryChannels();
-  console.log(`        audited ${names.size} channels, vendored at ${at[1]}, `
-    + `${behind} Foundry commit(s) behind that checkout's HEAD.`);
-  // NOT AN ASSERTION. Being behind is the ordinary state — the subtree is
-  // vendored deliberately and on Owen's schedule, not on Foundry's. Failing
-  // here would make an unrelated app's commit turn this repo red, which is the
-  // coupling the vendoring exists to avoid. The number is the point.
 });
 
 (async () => {

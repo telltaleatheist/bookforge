@@ -544,7 +544,7 @@ async function main() {
   // (FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES, deleted with the downloaded engine).
   await check('the vendored engine reads $FOUNDRY_ENDPOINT_HEADERS, and the release floor is gone', () => {
     const bundle = fs.readFileSync(
-      path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs'), 'utf8');
+      require('./foundry-core-lib.js').ENGINE_BUNDLE, 'utf8');
     assert.ok(bundle.includes('FOUNDRY_ENDPOINT_HEADERS'),
       'the vendored engine never names $FOUNDRY_ENDPOINT_HEADERS — its page reader would drop the credential');
     assert.ok(/function resolveEndpointHeaders\(/.test(bundle),

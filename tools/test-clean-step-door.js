@@ -37,31 +37,9 @@ const REPO = path.resolve(__dirname, '..');
 const STUB = path.join(REPO, 'cli', 'electron-stub.js');
 const DOOR = path.join(REPO, 'cli', 'clean-step.js');
 
-// ── Which Foundry build to ask ──────────────────────────────────────────────
-// The vendored one is what the app executes and is therefore the one that
-// matters; a vendored build older than this wave has no `argsFor`, and the
-// checkout's own dist is then said out loud rather than substituted silently.
-const VENDORED = path.join(REPO, 'foundry-app', 'dist');
-const CHECKOUT = path.resolve(REPO, '..', 'foundry', 'app', 'dist');
-function foundryDist() {
-  for (const dir of [VENDORED, CHECKOUT]) {
-    const jq = path.join(dir, 'electron', 'job-queue.js');
-    if (!fs.existsSync(jq)) continue;
-    if (typeof require(jq).argsFor === 'function') {
-      if (dir !== VENDORED) {
-        console.log(`  note: ${VENDORED} has no argsFor yet — testing against ${dir}.`);
-      }
-      return dir;
-    }
-  }
-  console.error(
-    'No Foundry build here exports `argsFor` from electron/job-queue.js — neither the vendored\n'
-    + `${VENDORED} nor ${CHECKOUT}. Build the foundry app (npm run build:electron there) and\n`
-    + 're-vendor it; the door refuses to compose an argv of its own and so does this test.');
-  process.exit(1);
-}
-const FOUNDRY_DIST = foundryDist();
-const { argsFor } = require(path.join(FOUNDRY_DIST, 'electron', 'job-queue.js'));
+const { NODE_DIST, ENGINE_BUNDLE } = require('./foundry-core-lib.js');
+const { argsFor } = require(path.join(NODE_DIST, 'job-queue.js'));
+const FOUNDRY_DIST = path.dirname(NODE_DIST);
 
 const { startFakeCrucible, settingsRoutes, ENGINE_INFO_FIELDS } = require('./fake-crucible.js');
 
@@ -174,13 +152,12 @@ test('a concurrency that is not a whole number of blocks is not passed on', () =
  * `run.ts:1430`, `commands.ts:687`). The `--keep-model` half of the assertion
  * below — the field, and the plain-run line — is untouched.
  */
-test('the vendored app spells no flag the engine retired, on any line', () => {
-  const vendored = path.join(REPO, 'foundry-app');
+test('the library spells no flag the engine retired, on any line', () => {
   // `--server` is NOT here any more; see the ruling in the docblock above.
   const retired = ['--keep-model', '--ollama'];
   const offenders = [];
-  for (const rel of ['electron/job-queue.ts', 'shared/types.ts']) {
-    const source = fs.readFileSync(path.join(vendored, rel), 'utf8');
+  for (const rel of ['job-queue-args.js', '../shared/types.d.ts']) {
+    const source = fs.readFileSync(path.join(NODE_DIST, rel), 'utf8');
     for (const flag of retired) {
       /*
        * THE FLAG AS A QUOTED STRING LITERAL, which is what reaches an argv —
@@ -198,7 +175,7 @@ test('the vendored app spells no flag the engine retired, on any line', () => {
     'the vendored app composes a flag foundry 646e8a1 (v1.3.0) refuses by name, so a request '
     + 'crossing the seam would die at the engine\'s argument parser before a block was read');
   // And the field itself is gone from the request shape, so nothing can ask.
-  assert.ok(!/keepModel/.test(fs.readFileSync(path.join(vendored, 'shared/types.ts'), 'utf8')),
+  assert.ok(!/keepModel/.test(fs.readFileSync(path.join(NODE_DIST, '../shared/types.d.ts'), 'utf8')),
     'CleanRequest still declares keepModel, which is a door onto a flag that no longer exists');
   assert.ok(!argsFor({ ...BASE }).includes('--keep-model'));
 });
@@ -477,7 +454,13 @@ async function projectHalf() {
   const storedSettings = () => JSON.parse(execFileSync(
     process.execPath,
     ['--require', STUB, '-e',
-      `const s = require(${JSON.stringify(path.join(FOUNDRY_DIST, 'electron', 'app-settings.js'))}).readAppSettings();`
+      // The library reads userData through its platform port, set here from the shim's `app`.
+      `const { app } = require('electron');`
+      + `require(${JSON.stringify(path.join(FOUNDRY_DIST, 'node', 'platform.js'))}).setPlatform({`
+      + ` userDataDir: () => app.getPath('userData'), tempDir: () => app.getPath('temp'),`
+      + ` broadcast: () => {}, image: { createFromPath() { throw new Error('no image'); },`
+      + ` createFromBuffer() { throw new Error('no image'); } } });`
+      + `const s = require(${JSON.stringify(path.join(FOUNDRY_DIST, 'node', 'app-settings.js'))}).readAppSettings();`
       + `process.stdout.write(JSON.stringify({ llmServer: s.llmServer, cleanTextModel: s.cleanTextModel, vllmModel: s.vllmModel }))`],
     { encoding: 'utf8' },
   ).trim());
@@ -614,16 +597,16 @@ ${refused}`);
     }
   });
 
-  await atest('the engine is the bundle vendored with foundry-app, and it says which sources it is', async () => {
+  await atest('the engine is the library\'s bundle, and it says which sources it is', async () => {
     /*
      * The trap this used to guard — the door resolving to an installed component
      * older than the flags it composed — cannot happen any more: there is no
-     * component (2026-09-24). The engine is `foundry-app/engine/foundry-engine.cjs`,
+     * component (2026-09-24). The engine is the bundle in `@owen/foundry-core`,
      * the same file the app runs, run by this node. What is still worth proving
      * is that the door NAMES it, and that `--version` reports the source digest
      * the bundle was built from, because a path cannot say that.
      */
-    const bundle = path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs');
+    const bundle = ENGINE_BUNDLE;
     const out = await dryRun([]);
     const engine = out.split('\n').find((line) => line.startsWith('[clean] engine  '));
     assert.ok(engine, `no engine line in:\n${out}`);

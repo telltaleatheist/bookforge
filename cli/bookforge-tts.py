@@ -3289,7 +3289,7 @@ def _flag_registry():
                    help="--clean: the Foundry project dir directly, instead of resolving it "
                         "from --project's manifest", metavar="DIR")
     p.add_argument("--foundry-dist", dest="foundry_dist",
-                   help="--clean: which built Foundry to drive (default: foundry-app/dist, "
+                   help="--clean: which build of the library to drive (default: the installed @owen/foundry-core dist, "
                         "the build the running app executes)", metavar="DIR")
     p.add_argument("--concurrency", type=int, default=None,
                    help="--clean: blocks in flight at once (default: the engine's own, 4). "

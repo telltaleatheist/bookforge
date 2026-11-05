@@ -52,17 +52,15 @@
  *
  * ── WHICH ENGINE ANSWERS ────────────────────────────────────────────────────
  *
- * The one the hosted Foundry finds for itself: the bundle vendored in its app
- * folder, `foundry-app/engine/foundry-engine.cjs`, run by this process's own
- * node (foundry-app's engine.ts; `ELECTRON_RUN_AS_NODE` is inert under node).
- * There is no installed component to fall through to any more (2026-09-24), so
+ * The one the book window finds for itself: the bundle inside @owen/foundry-core,
+ * run by this process's own node (`ELECTRON_RUN_AS_NODE` is inert under node), so
  * the dry run's engine line and `--version` name the same bundle the app runs.
  *
  * ── WHICH BUILD OF FOUNDRY THIS DRIVES ──────────────────────────────────────
  *
- * `foundry-app/dist` — the vendored build the running app executes. `--foundry-dist`
- * points at another one (the foundry checkout's own `dist`, when a change has been
- * made there and not re-vendored yet). A build with no `argsFor` export is refused
+ * The installed @owen/foundry-core's `dist`, what the running app executes. `--foundry-dist`
+ * points at another build of the library (a foundry checkout's
+ * `packages/foundry-core/dist`, for a change not adopted yet). A build with no `argsFor` export is refused
  * BY NAME rather than fallen back from: composing the argv here instead would be
  * the parallel implementation this file exists not to be.
  */
@@ -74,7 +72,7 @@ const { refuseRetiredEngineFlags } = require('./retired-engine-flags.js');
 
 const REPO = path.resolve(__dirname, '..');
 const BF_DIST = path.join(REPO, 'dist', 'electron');
-const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
+const FOUNDRY_CORE_DIST = path.join(REPO, 'node_modules', '@owen', 'foundry-core', 'dist');
 
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
                      [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
@@ -173,10 +171,10 @@ async function main() {
   }
   const FOUNDRY_DIST = said(args['foundry-dist'])
     ? path.resolve(said(args['foundry-dist']))
-    : VENDORED_FOUNDRY_DIST;
+    : FOUNDRY_CORE_DIST;
   const fdist = (rel) => require(path.join(FOUNDRY_DIST, rel));
-  if (!fs.existsSync(path.join(FOUNDRY_DIST, 'electron', 'job-queue.js'))) {
-    throw new Error(`No Foundry build at ${FOUNDRY_DIST} — expected electron/job-queue.js under it.`);
+  if (!fs.existsSync(path.join(FOUNDRY_DIST, 'node', 'job-queue.js'))) {
+    throw new Error(`No Foundry build at ${FOUNDRY_DIST} — expected node/job-queue.js under it.`);
   }
 
   const libraryRoot = resolveLibraryRoot(args.library);
@@ -190,24 +188,36 @@ async function main() {
   // hosted placement reads it to open the session and compose the endpoint.
   const hostRegistry = require(path.join(BF_DIST, 'crucible', 'host-registry.js'));
   hostRegistry.refreshHostCrucibleRegistry();
-  fdist('electron/host.js').recordHost({
+  // What mountFoundry would have told the library. This door opens no window, so
+  // nothing pushes and nothing decodes an image.
+  const { app: stubApp } = require('electron');
+  fdist('node/platform.js').setPlatform({
+    userDataDir: () => stubApp.getPath('userData'),
+    tempDir: () => stubApp.getPath('temp'),
+    broadcast: () => {},
+    image: {
+      createFromPath() { throw new Error('clean-step decodes no image'); },
+      createFromBuffer() { throw new Error('clean-step decodes no image'); },
+    },
+  });
+  fdist('node/host.js').recordHost({
     libraryDir: path.join(libraryRoot, 'foundry'),
     onExport: () => {},
     servers: () => hostRegistry.hostCrucibleServers(),
   });
 
-  const { listProjects, readManifest, ledgerOf, positionStepId } = fdist('electron/projects.js');
+  const { listProjects, readManifest, ledgerOf, positionStepId } = fdist('node/projects.js');
   const { originalOf } = fdist('shared/original.js');
   const { positionOf } = fdist('shared/ledger.js');
   const { canCleanFrom } = fdist('shared/stages.js');
-  const { identifyCleanup, materializeCleanup } = fdist('electron/workspace.js');
-  const jobQueue = fdist('electron/job-queue.js');
+  const { identifyCleanup, materializeCleanup } = fdist('node/workspace.js');
+  const jobQueue = fdist('node/job-queue.js');
   if (typeof jobQueue.argsFor !== 'function') {
     throw new Error(
       `The Foundry build at ${FOUNDRY_DIST} does not export \`argsFor\` from electron/job-queue.js, `
       + 'so this door cannot show the command line a run would spawn — and it will not compose one '
-      + 'of its own, which would be a second answer to what a request runs. Re-vendor foundry-app '
-      + '(or pass --foundry-dist <foundry>/app/dist) and try again.');
+      + 'of its own, which would be a second answer to what a request runs. Adopt a current @owen/foundry-core '
+      + '(or pass --foundry-dist <foundry>/packages/foundry-core/dist) and try again.');
   }
 
   const fold = (p) => path.resolve(p).normalize();
@@ -321,7 +331,7 @@ async function main() {
   };
 
   const parentStep = await positionStepId(foundryProjectDir);
-  const engine = fdist('electron/engine.js').engineCommand();
+  const engine = fdist('node/engine.js').engineCommand();
   /*
    * THE LINE A RUN WOULD SPAWN needs the book, and the book is made when a run
    * starts (`materializeAtSpawn` -> `materializeCleanup`). So the preview makes it

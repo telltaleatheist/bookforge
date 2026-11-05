@@ -949,13 +949,12 @@ node --require ./cli/electron-stub.js cli/clean-step.js --project "<dir>" --dry-
   Ctrl+C aborts through an `AbortController` — the same gesture the ✕ makes on a running
   row — and the records written so far are kept, so a re-run asks only about the blocks
   with no answer.
-- **The engine is the vendored one** — `foundry-app/engine/foundry-engine.cjs`, the
-  same file the app runs, run by this process's node (since 2026-09-24 there is no
-  downloaded engine; `FOUNDRY_BIN` still overrides). The dry run prints the engine
+- **The engine is the library's** — `engine/foundry-engine.cjs` in `@owen/foundry-core`, the
+  same file the app runs, run by this process's node (`FOUNDRY_BIN` still overrides). The dry run prints the engine
   *and* what `foundry --version` said — `foundry X.Y.Z (src <digest>)`, the digest
   naming the exact Foundry sources the bundle was built from.
-- `--foundry-dist <dir>` names which built Foundry to drive. The default is
-  `foundry-app/dist`, the vendored build the running app executes; a build that does not
+- `--foundry-dist <dir>` names which build of the library to drive. The default is the
+  installed `@owen/foundry-core`'s `dist`, what the running app executes; a build that does not
   export `argsFor` is refused by name rather than fallen back from, because composing
   the command line here instead would be the parallel implementation this door exists
   not to be.

@@ -213,7 +213,7 @@ async function runCleanLines(opts, deps) {
   }
 
   // Asked for the book file's `engine` field and the log line, not as a gate:
-  // the engine is vendored with foundry-app, so it always has `clean-text --book`.
+  // the engine ships in @owen/foundry-core, so it always has `clean-text --book`.
   const installed = await d.foundryVersion();
   const settings = await d.cleanTextEngineSettings();
 

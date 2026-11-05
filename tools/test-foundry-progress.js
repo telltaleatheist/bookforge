@@ -209,12 +209,12 @@ test('leading whitespace does not hide a count', () => {
 
 console.log('\nthe mirror still matches the vendored source');
 
-const THEIRS = path.join(REPO, 'foundry-app', 'electron', 'engine.ts');
+const THEIRS = path.join(require('./foundry-core-lib.js').NODE_DIST, 'engine.js');
 const OURS = path.join(REPO, 'electron', 'foundry-host-queue.ts');
 
 test('the vendored engine still has the function this one mirrors', () => {
-  assert.ok(fs.existsSync(THEIRS), `${THEIRS} is missing — is the subtree vendored?`);
-  const src = fs.readFileSync(THEIRS, 'utf8');
+  assert.ok(fs.existsSync(THEIRS), `${THEIRS} is missing — is the library installed?`);
+  const src = require('./foundry-core-lib.js').libText('engine');
   assert.ok(
     /export function parseProgressLine\(/.test(src),
     'parseProgressLine has been renamed or removed in the vendored subtree. This mirror is now '
@@ -253,7 +253,7 @@ function patternsIn(source, fnDeclaration) {
 }
 
 test('the patterns, and their ORDER, are the ones in the vendored engine', () => {
-  const theirs = patternsIn(fs.readFileSync(THEIRS, 'utf8'), 'export function parseProgressLine(');
+  const theirs = patternsIn(fs.readFileSync(THEIRS, 'utf8'), 'function parseProgressLine(');
   const ours = patternsIn(fs.readFileSync(OURS, 'utf8'), 'export function parseFoundryProgressLine(');
   assert.ok(theirs.length >= 4, `expected at least 4 patterns in theirs, found ${theirs.length}`);
   assert.deepStrictEqual(
@@ -262,7 +262,7 @@ test('the patterns, and their ORDER, are the ones in the vendored engine', () =>
     'parseFoundryProgressLine has drifted from the vendored parseProgressLine.\n'
     + `        theirs: ${JSON.stringify(theirs)}\n`
     + `        ours:   ${JSON.stringify(ours)}\n`
-    + '        Re-read foundry-app/electron/engine.ts and mirror it, INCLUDING the order.',
+    + '        Re-read the library\'s engine module and mirror it, INCLUDING the order.',
   );
 });
 

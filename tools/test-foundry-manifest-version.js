@@ -37,7 +37,6 @@ const fs = require('fs');
 const path = require('path');
 
 const repo = path.resolve(__dirname, '..');
-const foundrySrc = path.join(repo, 'foundry-app', 'electron', 'projects.ts');
 const adoptSrc = path.join(repo, 'electron', 'foundry-adopt.ts');
 
 function read(file, what) {
@@ -54,11 +53,9 @@ function soleMatch(text, re, what, file) {
   return Number(found[0][1]);
 }
 
-const foundryText = read(foundrySrc, "Foundry's vendored projects.ts");
 const adoptText = read(adoptSrc, "BookForge's foundry-adopt.ts");
 
-const foundryVersion = soleMatch(
-  foundryText, /^const MANIFEST_VERSION = (\d+);/gm, 'MANIFEST_VERSION declaration', foundrySrc);
+const foundryVersion = require(require('path').join(require('./foundry-core-lib.js').NODE_DIST, 'projects-paths.js')).MANIFEST_VERSION;
 const bookforgeVersion = soleMatch(
   adoptText, /^export const FOUNDRY_MANIFEST_VERSION = (\d+);/gm,
   'FOUNDRY_MANIFEST_VERSION declaration', adoptSrc);
@@ -73,9 +70,9 @@ assert.strictEqual(bookforgeVersion, foundryVersion,
 // ever widens or narrows its accepted set, mirroring only its newest version is
 // no longer enough, and that is a decision rather than a rename.
 assert.ok(
-  /row\['version'\] !== MANIFEST_VERSION && row\['version'\] !== 1/.test(foundryText),
+  /row\['version'\] !== MANIFEST_VERSION && row\['version'\] !== 1/.test(require('./foundry-core-lib.js').libText('projects')),
   "Foundry's catalogue reader is no longer the pair {1, MANIFEST_VERSION}. BookForge's adopt "
-  + 'door mirrors that exact set; re-read foundry-app/electron/projects.ts and decide what this '
+  + 'door mirrors that exact set; re-read the library\'s projects module and decide what this '
   + 'side should now accept.');
 
 // And this side must stay DERIVED. A reintroduced bare literal is the original

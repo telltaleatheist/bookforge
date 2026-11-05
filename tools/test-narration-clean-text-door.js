@@ -57,9 +57,9 @@ if (!fs.existsSync(path.join(DIST, 'narration-clean-text.js'))) {
  * run by this node. There is no binary to look for and nothing to skip on —
  * a checkout without the bundle is a broken checkout, and this keeper says so.
  */
-const ENGINE_BUNDLE = path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs');
+const ENGINE_BUNDLE = require('./foundry-core-lib.js').ENGINE_BUNDLE;
 if (!fs.existsSync(ENGINE_BUNDLE)) {
-  throw new Error(`The vendored Foundry engine is missing: ${ENGINE_BUNDLE}. See foundry-app/VENDORED.md.`);
+  throw new Error(`The Foundry engine is missing: ${ENGINE_BUNDLE}. It ships in @owen/foundry-core.`);
 }
 /** Run the vendored engine directly, the way the app spawns it. */
 function runEngine(args, options) {

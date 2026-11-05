@@ -327,11 +327,11 @@ function foundryShipped(repo) {
   const override = process.env['FOUNDRY_HEAD_OVERRIDE']?.trim();
   if (override) return { rev: override, source: 'FOUNDRY_HEAD_OVERRIDE' };
 
-  const bundle = path.join(__dirname, '..', 'foundry-app', 'engine', 'foundry-engine.cjs');
+  const bundle = require('./foundry-core-lib.js').ENGINE_BUNDLE;
   if (!fs.existsSync(bundle)) {
     throw new Error(
-      `the vendored Foundry engine is missing (${bundle}). It is part of the foundry-app/ copy `
-      + '(foundry-app/VENDORED.md), so this checkout is incomplete.',
+      `the Foundry engine is missing (${bundle}). It ships in @owen/foundry-core, so this `
+      + 'checkout is incomplete.',
     );
   }
   const rev = vendoredEngineCommit(repo, bundle);
@@ -343,7 +343,7 @@ function foundryShipped(repo) {
       + 'Foundry, or set FOUNDRY_HEAD_OVERRIDE if you know which commit it is.',
     );
   }
-  return { rev, source: 'the vendored foundry-app/engine bundle' };
+  return { rev, source: 'the bundle in @owen/foundry-core' };
 }
 
 /**
@@ -351,20 +351,25 @@ function foundryShipped(repo) {
  * vendored bundle's bytes, or null. `--find-object` lists every commit that ADDED
  * or REMOVED that blob; the ones where the path still holds it are the carriers.
  */
+// Where the bundle has lived in Foundry: in the library since 33ab5e2, in app/ before.
+const ENGINE_PATHS = ['packages/foundry-core/engine/foundry-engine.cjs', 'app/engine/foundry-engine.cjs'];
+
 function vendoredEngineCommit(repo, bundle) {
   const id = execFileSync('git', ['hash-object', '--no-filters', bundle], { encoding: 'utf8' }).trim();
   const touched = execFileSync('git', [
-    '-C', repo, 'log', '--all', '--format=%H', `--find-object=${id}`, '--', 'app/engine/foundry-engine.cjs',
+    '-C', repo, 'log', '--all', '--format=%H', `--find-object=${id}`, '--', ...ENGINE_PATHS,
   ], { encoding: 'utf8' }).split('\n').filter(Boolean);
   for (const commit of touched) {
-    let at;
-    try {
-      at = execFileSync('git', ['-C', repo, 'rev-parse', `${commit}:app/engine/foundry-engine.cjs`],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    } catch {
-      continue;
+    for (const where of ENGINE_PATHS) {
+      let at;
+      try {
+        at = execFileSync('git', ['-C', repo, 'rev-parse', `${commit}:${where}`],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch {
+        continue;
+      }
+      if (at === id) return commit.slice(0, 7);
     }
-    if (at === id) return commit.slice(0, 7);
   }
   return null;
 }
@@ -788,8 +793,20 @@ function foundryRepo() {
   return { repo: null, tried: candidates };
 }
 
-/** One file out of one commit, as bytes, with CR stripped. Null when absent. */
+/**
+ * One file out of one commit, as bytes, with CR stripped. Null when absent.
+ *
+ * Foundry's engine `src/` and `test/` moved to `packages/foundry-core/{src,test}/engine/`
+ * at 33ab5e2 with no change to the files, so a path missing at a commit is looked for there.
+ */
 function blob(repo, rev, file) {
+  const at = blobAt(repo, rev, file);
+  const top = /^(src|test)\//.exec(file);
+  if (at !== null || top === null) return at;
+  return blobAt(repo, rev, `packages/foundry-core/${top[1]}/engine/${file.slice(top[0].length)}`);
+}
+
+function blobAt(repo, rev, file) {
   try {
     const out = execFileSync('git', ['-C', repo, 'show', `${rev}:${file}`], {
       encoding: 'buffer',

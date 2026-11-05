@@ -72,6 +72,7 @@ const { skipLine } = require('./keeper-skip.js');
 const { ENGINE_INFO_FIELDS } = require('./fake-crucible');
 
 const REPO = path.resolve(__dirname, '..');
+const { libText, windowIpcText, NODE_DIST, SHARED_DIST } = require('./foundry-core-lib.js');
 const HOST_REGISTRY = path.join(REPO, 'dist', 'electron', 'crucible', 'host-registry.js');
 
 if (!fs.existsSync(HOST_REGISTRY)) {
@@ -141,8 +142,8 @@ async function main() {
   console.log('\nThe vendored subtree, read rather than remembered\n');
 
   // ── 1. The engine spawn takes a per-run environment ──────────────────────
-  check('foundry-app/electron/engine.ts still takes `extraEnv` on runEngine', () => {
-    const engine = read('foundry-app', 'electron', 'engine.ts');
+  check('the library\'s engine module still takes `extraEnv` on runEngine', () => {
+    const engine = libText('engine');
     assert.ok(/export function runEngine\(/.test(engine),
       'runEngine is not exported from the vendored engine module any more');
     assert.ok(/extraEnv\?: Readonly<Record<string, string>>/.test(engine),
@@ -162,7 +163,7 @@ async function main() {
 
   // ── 2. The seam BookForge calls, and the one field it now depends on ─────
   check('the host seam `runJob` still carries no environment of its own', () => {
-    const jobQueue = read('foundry-app', 'electron', 'job-queue.ts');
+    const jobQueue = libText('job-queue');
     const options = /interface RunOptions \{[\s\S]*?\n\}/.exec(jobQueue);
     assert.ok(options !== null, 'the vendored RunOptions could not be found to read');
     assert.ok(!/\benv\b\s*\??:/.test(options[0]),
@@ -176,7 +177,7 @@ async function main() {
   });
 
   check('the host seam carries the `venue`, which is the whole of what BookForge sends', () => {
-    const jobQueue = read('foundry-app', 'electron', 'job-queue.ts');
+    const jobQueue = libText('job-queue');
     const options = /interface RunOptions \{[\s\S]*?\n\}/.exec(jobQueue);
     // `venue` since PK6 (it was `waitFor`, a preference the placement could re-decide).
     assert.ok(/venue\?: RunVenue \| null;/.test(options[0]),
@@ -187,7 +188,7 @@ async function main() {
     // Taken verbatim and matched EXACTLY, which is why the step checks the name
     // against this app's registry snapshot before handing a row over: a name
     // that misses is a `wait`, and a detached runJob waits for ever.
-    const dispatch = read('foundry-app', 'electron', 'crucible-dispatch.ts');
+    const dispatch = libText('crucible-dispatch');
     assert.ok(/slotNamed\(slots, pinned\)/.test(dispatch),
       'the vendored dispatcher no longer resolves a pinned name against its slot list; re-read '
       + 'how a `waitFor` is matched before trusting the preflight in '
@@ -196,7 +197,7 @@ async function main() {
 
   // ── 3. The vendored copy resolves a hosted credential — the live wiring ──
   check('the vendored registry reads BookForge\'s registry hosted (the placement this depends on)', () => {
-    const registry = read('foundry-app', 'electron', 'crucible-registry.ts');
+    const registry = libText('crucible-registry');
     assert.ok(/foundryHost\(\)\?\.servers/.test(registry),
       'THE HOSTED PLACEMENT IS GONE FROM THE VENDORED SUBTREE.\n'
       + '        This inverted on 2026-09-15: it used to be a TRIPWIRE waiting to go red on the '
@@ -290,12 +291,12 @@ async function main() {
      *     itself lives in the engine (`DEFAULT_TEXT_CONCURRENCY`), which is not
      *     vendored here, and must not be copied to this side.
      */
-    const dispatch = read('foundry-app', 'electron', 'crucible-dispatch.ts');
+    const dispatch = libText('crucible-dispatch');
     assert.ok(/door: 'openai',/.test(dispatch),
       'a Crucible placement no longer declares the openai door. If it came back as `ollama` the '
       + 'engine would use its NARROW pool (4, sized for a server whose parallelism is off) '
       + 'against a vLLM that batches — slower by several times and silent about it.');
-    const jobQueue = read('foundry-app', 'electron', 'job-queue.ts');
+    const jobQueue = libText('job-queue');
     assert.ok(/case 'openai': return \[\];/.test(jobQueue),
       'the vendored `serverArgs` no longer treats openai as the unspelled default door.');
     // The SERVER's admission depth wins since PK8 (`Placement.concurrency`); a
@@ -541,8 +542,7 @@ async function main() {
   // with our token.
   console.log('\nThe orchestrator hop, driven with the rows BookForge hands over\n');
 
-  const hopRegistry = require(path.join(
-    REPO, 'foundry-app', 'dist', 'electron', 'crucible-registry.js'));
+  const hopRegistry = require(path.join(NODE_DIST, 'crucible-registry.js'));
 
   /** `GET /v1/info` for an ENGINE, in the shape the SDK's reader demands. */
   const engineInfo = (name) => ({
@@ -699,7 +699,7 @@ async function main() {
   hopRegistry.forgetEngineTargets();
 
   check('the hosted PLACEMENT resolves the hop once, and the spawn uses that address', () => {
-    const dispatch = read('foundry-app', 'electron', 'crucible-dispatch.ts');
+    const dispatch = libText('crucible-dispatch');
     assert.ok(/const engine = \(await resolveEngine\(entry\)\)\.entry;/.test(dispatch),
       'placeOnCrucible no longer resolves the engine behind a registry entry. Hosted, the entry '
       + 'is BookForge\'s — if a person registered the tray rather than the engine, the act would '
@@ -719,7 +719,7 @@ async function main() {
      * and quit. Pinned here because the natural "fix" for somebody reading
      * `crucible:open` in isolation is to make it resolve like everything else.
      */
-    const ipc = read('foundry-app', 'electron', 'ipc.ts');
+    const ipc = windowIpcText();
     assert.ok(/ipcMain\.handle\('crucible:open'/.test(ipc),
       'the crucible:open channel is gone; re-read where a console address comes from.');
     // The handler is one line that delegates, so the claim is checked where the
@@ -733,7 +733,7 @@ async function main() {
       + 'resolving past it would take the operator to the machine with fewer buttons.');
     assert.ok(/const entry = crucibleServerNamed\(name\);/.test(opener[0]),
       'the console address is no longer composed from the registered entry itself.');
-    const pairing = read('foundry-app', 'electron', 'crucible-pairing.ts');
+    const pairing = libText('crucible-pairing');
     assert.ok(!/resolveEngine/.test(pairing),
       'the pairing-file door now follows the hop. A pairing file names the machine a person '
       + 'was handed; adopting it registers THAT address, and the hop is followed later, at the '
@@ -768,7 +768,7 @@ async function main() {
      * is exactly what BookForge's own preflight covers, which is why it is not
      * redundant with any of this.
      */
-    const dispatch = read('foundry-app', 'electron', 'crucible-dispatch.ts');
+    const dispatch = libText('crucible-dispatch');
     assert.ok(/function standingWait\(/.test(dispatch) && /function transientWait\(/.test(dispatch),
       'the standing/transient split is gone from the vendored dispatcher. Without it a hosted '
       + 'row pinned to a server that cannot do the work parks for ever.');
@@ -807,13 +807,22 @@ async function main() {
   // their lookup missing, the row parked for ever with nothing in any log.
   console.log('\nOur registry row -> their slot, by name\n');
 
-  const foundryHostMod = require(path.join(
-    REPO, 'foundry-app', 'dist', 'electron', 'host.js'));
-  const foundrySlots = require(path.join(
-    REPO, 'foundry-app', 'dist', 'shared', 'slots.js'));
+  const foundryHostMod = require(path.join(NODE_DIST, 'host.js'));
+  const foundrySlots = require(path.join(SHARED_DIST, 'slots.js'));
 
   /** Wire our registry into their mount seam, exactly as `main.ts` does. */
   function handOverToTheWindow() {
+    // What the mount tells the library first, from the same shim `app` the vendored build read.
+    const { app } = require('electron');
+    require(path.join(NODE_DIST, 'platform.js')).setPlatform({
+      userDataDir: () => app.getPath('userData'),
+      tempDir: () => app.getPath('temp'),
+      broadcast: () => {},
+      image: {
+        createFromPath() { throw new Error('this keeper decodes no image'); },
+        createFromBuffer() { throw new Error('this keeper decodes no image'); },
+      },
+    });
     foundryHostMod.recordHost({
       servers: () => hostRegistry.hostCrucibleServers(),
     });
@@ -921,10 +930,10 @@ async function main() {
   // code and the `none` reach are all deleted, and `slots?()` was never
   // offered by this app. What is left for the L re-vendor is the cloud half.
   check('the vendored copy still has its own cloud layer (the phase-15 re-vendor tripwire)', () => {
-    const present = fs.existsSync(path.join(REPO, 'foundry-app', 'electron', 'cloud-providers.ts'));
+    const present = fs.existsSync(path.join(NODE_DIST, 'cloud-providers.js'));
     assert.ok(present,
       'THIS IS NOT A REGRESSION — IT IS THE SECOND THING WE HAVE BEEN WAITING FOR.\n'
-      + '        foundry-app/electron/cloud-providers.ts is gone, so this subtree has been '
+      + '        the library\'s cloud-providers is gone, so this subtree has been '
       + 're-vendored at or past foundry\'s PHASE15 section 5.3 (their package L).\n'
       + '        DO NOT go looking for the hosted-text-act work in this message: that was the '
       + 'FIRST tripwire, it fired on 2026-09-15, and it is DONE — the vendor at foundry '
@@ -939,7 +948,7 @@ async function main() {
   });
 
   check('the vendored dispatcher still places on a cloud slot kind', () => {
-    const dispatch = read('foundry-app', 'electron', 'crucible-dispatch.ts');
+    const dispatch = libText('crucible-dispatch');
     assert.ok(/slot\.kind === 'cloud'/.test(dispatch),
       'the vendored dispatcher no longer knows a `cloud` slot kind. That is PHASE15 section 5.3 '
       + 'landing on their side: a class routed upstream is the ENGINE\'s business now, and the '

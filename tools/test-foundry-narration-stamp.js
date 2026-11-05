@@ -93,7 +93,7 @@ const ENGINE_WROTE = {
  * (electron/foundry-bridge.ts), run by this node. Nothing to look for and nothing
  * to skip on: without it the checkout is broken, and this keeper says so.
  */
-const ENGINE_BUNDLE = path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs');
+const ENGINE_BUNDLE = require('./foundry-core-lib.js').ENGINE_BUNDLE;
 function runEngine(args, options) {
   return execFileSync(process.execPath, [ENGINE_BUNDLE, ...args],
     { ...options, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
@@ -247,7 +247,7 @@ function check(name, fn) {
 
 async function main() {
   if (!fs.existsSync(ENGINE_BUNDLE)) {
-    throw new Error(`The vendored Foundry engine is missing: ${ENGINE_BUNDLE}. See foundry-app/VENDORED.md.`);
+    throw new Error(`The Foundry engine is missing: ${ENGINE_BUNDLE}. It ships in @owen/foundry-core.`);
   }
 
   const epub = require(path.join(DIST, 'epub-processor.js'));
