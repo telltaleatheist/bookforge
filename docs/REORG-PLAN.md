@@ -77,3 +77,5 @@ all four servers; BookForge merges.
 
 - Library files still over ~800 lines, left because they can be split any time without touching BookForge's window copy: node/workspace 2,370, capture 2,282, crucible-dispatch 2,062, book 1,972, ask-tools 1,622, crucible-registry 1,358, engine 1,182, app-settings 874, crucible-coordinate 816. `job-queue-carry` (1,527) is one linear function: splitting it is a rewrite, not a move.
 - Members made public so the split window modules can reach them: tidy back when convenient.
+
+(Owen's test list, B2 additions) Generate Sentences both ways in the studio; the AI setup page reads sensibly with no local-model text; ClipForge's cleanup still works. Old model folders stay on disk: whisper-models, llama-models. Packaging: build/entitlements.mac.plist still justifies DYLD for llama, review when a Mac package is next built.
