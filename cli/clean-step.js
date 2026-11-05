@@ -47,8 +47,8 @@
  * releases nor asks to keep — and `--keep-model` typed on its line is refused
  * by name rather than dropped (cli/retired-engine-flags.js).
  *
- * What this door DOES still start and stop is BookForge's own text SERVER,
- * which is a different act from loading a model into it — `--keep-server`.
+ * It starts and stops no server either: the act runs on a Crucible, as the app's
+ * does (`--keep-server` went with the local text-server arm, REORG B2).
  *
  * ── WHICH ENGINE ANSWERS ────────────────────────────────────────────────────
  *
@@ -79,7 +79,7 @@ const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
                      [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
                      [--remove-references on|off] [--remove-also <text>]
-                     [--keep-server] [--library <root>] [--foundry-dist <dir>] [--dry-run]
+                     [--library <root>] [--foundry-dist <dir>] [--dry-run]
                      [--glossary-only [--start-over]]
 
   --glossary-only is the app's "Pronunciation guide" step: it builds the book's
@@ -95,16 +95,14 @@ const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --found
   dialog's removal box: references a narrator would never read ("see fig. 1-1",
   "[image]"), and anything else named, asked of the check and the cleanup alike.
 
-  --crucible-server names a Crucible (an entry in crucible-servers.json, or the
-  reserved "local"). It sets the SAME venue field the app sets from a queue row,
-  so this door and the hosted press decide identically. Omitted, the routing
-  record decides (Settings -> Crucible Servers) exactly as it does in the app —
-  which is NOT the same as "run locally": with the legacy switch off and a
-  server enabled, the act goes to Crucible or is refused by name.
+  --crucible-server names a Crucible (an entry in crucible-servers.json). It sets
+  the SAME venue field the app sets from a queue row, so this door and the hosted
+  press decide identically. Omitted, the routing record decides (Settings ->
+  Crucible Servers) exactly as it does in the app: the act goes to a Crucible or is
+  refused by name. There is no local text engine.
 
   --server, --ollama and --keep-model were retired from the foundry engine by
-  646e8a1 (v1.3.0) and are refused by name. The local endpoint comes from the
-  app's own app-settings.json, as it does for the hosted press.`;
+  646e8a1 (v1.3.0) and are refused by name.`;
 
 function parseArgs(argv) {
   const a = {};
@@ -121,13 +119,6 @@ function parseArgs(argv) {
 }
 
 const said = (v) => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : null);
-
-/** Foundry's own settings file, the one `readAppSettings` reads. Named for the log. */
-function appSettingsPath() {
-  return path.join(
-    process.env.BOOKFORGE_USER_DATA || require('./electron-stub.js').USER_DATA,
-    'app-settings.json');
-}
 
 /** The library root, the same file `cli/library.js` reads. */
 function resolveLibraryRoot(override) {
@@ -211,7 +202,6 @@ async function main() {
   const { canCleanFrom } = fdist('shared/stages.js');
   const { identifyCleanup, materializeCleanup } = fdist('electron/workspace.js');
   const jobQueue = fdist('electron/job-queue.js');
-  const { readAppSettings } = fdist('electron/app-settings.js');
   if (typeof jobQueue.argsFor !== 'function') {
     throw new Error(
       `The Foundry build at ${FOUNDRY_DIST} does not export \`argsFor\` from electron/job-queue.js, `
@@ -237,51 +227,6 @@ async function main() {
       + 'nothing was planned. The dialog draws the same refusal by leaving the button off.');
   }
 
-  const settings = readAppSettings();
-  /*
-   * WHICH URL AND WHICH MODEL FIELD — and that is now ALL `llmServer` decides.
-   *
-   * Foundry 19f5e70 gave the text acts `--server ollama|vllm` and kept both
-   * servers' settings side by side so switching back cost no retyping.
-   * `646e8a1` (v1.3.0) deleted the second dialect and the flag with it, but NOT
-   * the two stored pairs — `vllmUrl`/`vllmModel` and `ollamaUrl`/`cleanTextModel`
-   * are both still written by Foundry's own Settings row, which lives in the
-   * sealed subtree and is theirs to retire. So the key survives its own name,
-   * purely as the selector between them, and `endpointKeysFor` (the app's own
-   * reader, imported rather than re-implemented — "the CLI mirrors the app's
-   * code path") says so once, by name, and hands back the two lookups.
-   *
-   * Under the vLLM pair the model is `vllmModel`, which is EMPTY by default and
-   * means "whatever the server is serving" — the engine asks /v1/models and
-   * records the served id. An empty model is therefore a real value here, not a
-   * missing one, and `argsFor` omits `--model` for it rather than sending an
-   * empty name. Since `646e8a1` that is true of every run, because the engine
-   * has no act-level model defaults left at all.
-   */
-  const { endpointKeysFor } = require(path.join(BF_DIST, 'narration-clean-text.js'));
-  const { urlKey, modelKey } = endpointKeysFor(settings.llmServer, appSettingsPath());
-  const ollama = settings[urlKey];
-  /*
-   * THE MODEL, AND UNDER vLLM IT IS THE PROFILE'S SERVED NAME.
-   *
-   * Owen, 2026-09-08: *"verify that when i run translate/simplify in foundry,
-   * they will correctly use the 27b model in vllm and not the 9b."* Foundry
-   * proves the served id itself by asking /v1/models — but only when the request
-   * NAMED one, and `vllmModel` is empty by default. So the host names it:
-   * `servedModelForRequest` answers with the profile's served id for an empty
-   * field, and REFUSES BY NAME when the field asks for a different model. A
-   * `--model` typed on this line goes through the same check, so a dev run cannot
-   * quietly record a cleanup against a model that did not do it.
-   */
-  const textServer = require(path.join(BF_DIST, 'text-server.js'));
-  /*
-   * THE GATE IS THE ENDPOINT, NOT A SERVER KIND — the same move
-   * `electron/queue-steps/foundry-job.ts` made, and for the same reason: with
-   * `--server` gone the only question left is whether this URL names the text
-   * server BookForge manages, which is what `textServerRoute` has always
-   * answered. A machine set to `ollama` whose URL happens to be BookForge's own
-   * server is now served rather than skipped.
-   */
   /*
    * ── WHERE THIS CLEANUP RUNS — the app's own decision, not a second one ────
    *
@@ -290,15 +235,15 @@ async function main() {
    * of naming the venue, and it lands in exactly the field the app fills from a
    * queue row's `waitForResolved`, so the two doors cannot disagree.
    *
-   * When the answer is a Crucible, `resolveCrucibleTextEngine` proves the act's
-   * model is RESIDENT there, composes `<url>/v1/openai` and builds the header
-   * map — or refuses by name, before anything is spawned and with no model
-   * loaded.
+   * The answer is a Crucible or a refusal by name. `resolveCrucibleTextEngine`
+   * proves the act's model is RESIDENT there, composes `<url>/v1/openai` and
+   * builds the header map — or refuses by name, before anything is spawned and
+   * with no model loaded.
    */
   const textVenue = require(path.join(BF_DIST, 'crucible', 'text-venue.js'));
   const venueHost = textVenue.processTextVenueHost();
   const venue = await textVenue.decideWhereTextActRuns(said(args['crucible-server']) ?? undefined, venueHost);
-  const crucible = venue.where === 'crucible'
+  const crucible =
     /*
      * `process`, not `spawn`: this door runs the act through Foundry's own
      * `runJob`, which spawns the engine with `env: process.env` and takes no
@@ -313,20 +258,15 @@ async function main() {
      * the cleanup's own engine is not resolved: its residency check would refuse
      * a glossary for a model the glossary never uses. Only the machine is needed.
      */
-    ? args['glossary-only'] === true
+    args['glossary-only'] === true
       ? { server: venue.server, model: '', act: 'clean', endpoint: '(not resolved — glossary only)', maskedHeaders: '(none)' }
       : await textVenue.resolveCrucibleTextEngine(
-        'clean', venue.server, venueHost, { headerReach: 'process' })
-    : null;
-
-  const profile = crucible === null && textServer.textServerRoute(ollama).manage
-    ? textServer.profileForKind('clean')
-    : null;
-  const model = crucible !== null
-    ? crucible.model
-    : profile === null
-      ? (said(args.model) ?? settings[modelKey])
-      : textServer.servedModelForRequest(said(args.model) ?? settings[modelKey], profile, 'clean');
+        'clean', venue.server, venueHost, { headerReach: 'process' });
+  if (args['keep-server'] !== undefined) {
+    throw new Error('--keep-server is gone: this run starts and stops no server of BookForge\'s, '
+      + 'because the act runs on a Crucible. Drop the flag.');
+  }
+  const model = crucible.model;
   let concurrency;
   if (args.concurrency !== undefined && args.concurrency !== true) {
     concurrency = Number(args.concurrency);
@@ -358,10 +298,9 @@ async function main() {
     stampPath: plan.stampPath,
     ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
     model,
-    // The endpoint the engine dials. A Crucible run replaces the app-settings
-    // URL entirely; the credential is NOT here and never is — it travels in the
-    // spawn's environment (crucible docs/PHASE7-LANES.md section 7.1(B)).
-    ollama: crucible === null ? ollama : crucible.endpoint,
+    // The endpoint the engine dials. The credential is NOT here and never is — it
+    // travels in the spawn's environment (crucible docs/PHASE7-LANES.md section 7.1(B)).
+    ollama: crucible.endpoint,
     // The row the run materialises its book out of when it starts.
     at: plan.at ?? null,
     stepId: plan.stepId,
@@ -425,25 +364,12 @@ async function main() {
     : `${standing.id}  ${standing.action} — ${standing.label}`}`);
   console.log(`[clean] parentStep       ${parentStep ?? '(none)'}`);
   console.log(`[clean] mints step       ${plan.stepId ?? '(none)'}`);
-  console.log(`[clean] model            ${model.length > 0 ? model : '(none — the served model, resolved and recorded by the engine)'}`
-    + `${said(args.model) ? ' (--model)' : profile !== null ? ` (text-server profile ${profile.id})` : ` (app-settings ${modelKey})`}`);
-  console.log(`[clean] venue            ${crucible === null
-    ? `the local text engines (${venue.because})`
-    : `crucible "${crucible.server}" (${venue.because}), act ${crucible.act}`}`);
-  console.log(`[clean] endpoint         ${crucible === null
-    ? `${ollama} (app-settings ${urlKey}, chosen by llmServer)`
-    : crucible.endpoint}`);
-  if (crucible !== null) {
-    // The ONLY rendering of the header map that exists: the credential is
-    // `Bearer ****<last 4>`, and nothing anywhere prints the whole of it.
-    console.log(`[clean] headers          ${crucible.maskedHeaders}  (in the spawn's environment, never on the line)`);
-  }
-  if (profile !== null) {
-    const route = textServer.textServerRoute(ollama);
-    console.log(`[clean] text server      ${route.manage
-      ? `BookForge starts and stops it (${profile.servedName}, ~/${profile.modelDir})`
-      : route.note}`);
-  }
+  console.log(`[clean] model            ${model.length > 0 ? model : '(none — glossary only)'} (the server's capability choice)`);
+  console.log(`[clean] venue            crucible "${crucible.server}" (${venue.because}), act ${crucible.act}`);
+  console.log(`[clean] endpoint         ${crucible.endpoint}`);
+  // The ONLY rendering of the header map that exists: the credential is
+  // `Bearer ****<last 4>`, and nothing anywhere prints the whole of it.
+  console.log(`[clean] headers          ${crucible.maskedHeaders}  (in the spawn's environment, never on the line)`);
   console.log(`[clean] concurrency      ${concurrency ?? "the engine's own default, unspelled here"}`);
   console.log(`[clean] removal          references ${removal.references ? 'on' : 'off'}`
     + `${removal.also.length > 0 ? `; also "${removal.also}"` : ''}`);
@@ -455,9 +381,7 @@ async function main() {
   console.log(`[clean] request          ${JSON.stringify(request, null, 2).split('\n').join('\n                         ')}`);
   console.log(`[clean] spawn            ${[engine.command, ...engine.args, ...argv].join(' ')}`);
 
-  console.log(`[clean] glossary         ${crucible === null
-    ? 'none — the narration glossary asks a Crucible, and this run goes to the local text engines'
-    : `decided on crucible "${crucible.server}" (its analysis model) before the engine starts, and handed to it as --fixed-readings`}`);
+  console.log(`[clean] glossary         decided on crucible "${crucible.server}" (its analysis model) before the engine starts, and handed to it as --fixed-readings`);
 
   if (dryRun) {
     console.log('[clean] DRY RUN — nothing was spawned, no model was loaded, no glossary was decided.');
@@ -476,26 +400,6 @@ async function main() {
   });
 
   /*
-   * ── THE ARBITER'S BRACKET, for a dev run ────────────────────────────────────
-   *
-   * Owen, 2026-09-08: *"build that piece. the arbiter that starts/stops it."*
-   * Foundry starts no server, and "the CLI mirrors the app's code path" — so this
-   * door brings the same profile up that `queue-steps/foundry-job.ts` would, and
-   * takes it down again unless `--keep-server` says somebody is making several
-   * runs back to back. The seconds are printed because that is the number a dev
-   * run exists to measure (~110 s on this PC, 2026-09-08).
-   */
-  let startedServer = null;
-  if (profile !== null && textServer.textServerRoute(ollama).manage) {
-    textServer.noteTextQueueBusy();
-    const readyAt = Date.now();
-    const up = await textServer.ensureTextServer(profile.id, (line) => console.log(`[clean] ${line}`));
-    startedServer = profile;
-    console.log(`[clean] text server      ${up.servedName} at ${up.url} `
-      + `(${((Date.now() - readyAt) / 1000).toFixed(1)}s to be ready)`);
-  }
-
-  /*
    * ── THE BOOK'S PRONUNCIATION GUIDE, AS THE APP READS (AND BUILDS) IT ─────────
    *
    * `queue-steps/foundry-job.ts` reads the guide in the cleanup's own step, in its
@@ -512,86 +416,68 @@ async function main() {
     throw new Error('--start-over rebuilds the pronunciation guide, which only the guide step does '
       + '(--glossary-only). A cleanup reads the guide as it stands and never starts it again.');
   }
-  if (glossaryOnly && crucible === null) {
-    throw new Error('--glossary-only asks a Crucible, and this run goes to the local text engines. '
-      + 'Name one with --crucible-server.');
+  const glossary = require(path.join(BF_DIST, 'narration-glossary.js'));
+  const source = glossary.guideOfRequest(request, (req, onLine) => jobQueue.printedFormsForRun(req, onLine));
+  if (!glossaryOnly && !glossary.hasGuide(source.files)) {
+    console.log('[clean] glossary: the step this is made from has no pronunciation guide yet, so it is built first');
   }
-  if (crucible !== null) {
-    const glossary = require(path.join(BF_DIST, 'narration-glossary.js'));
-    const source = glossary.guideOfRequest(request, (req, onLine) => jobQueue.printedFormsForRun(req, onLine));
-    if (!glossaryOnly && !glossary.hasGuide(source.files)) {
-      console.log('[clean] glossary: the step this is made from has no pronunciation guide yet, so it is built first');
-    }
-    const made = await glossary.ensureNarrationGlossary({
-      source,
-      server: crucible.server,
-      signal: controller.signal,
-      report: (line) => console.log(`[clean] ${line}`),
-      fromZero,
-    });
-    if (made.readingsPath !== null) fixedReadings = made.readingsPath;
-    if (glossaryOnly) {
-      const files = glossary.glossaryPathsFor(request);
-      const entries = made.forms === 0 ? [] : glossary.readGlossary(files.glossary, files.book).entries;
-      // The guide: each form, each of its meanings with the spots placed in it, and what is left.
-      for (const e of entries) {
-        console.log(`  ${String(e.count).padStart(5)}  ${e.kind.padEnd(12)} ${e.key.padEnd(24)} `
-          + `${e.decision === 'reading' ? '' : 'as printed — '}${e.by === 'person' ? '(yours) ' : ''}${e.why}`);
-        e.senses.forEach((sense, i) => {
-          const spots = e.occurrences.filter((o) => o.sense === i).length;
-          console.log(`         ${String(spots).padStart(5)} spot(s)  ${sense.meaning} -> `
-            + `${sense.reading.length > 0 ? `"${sense.reading}"` : 'as printed'}`
-            + `${sense.problem !== undefined ? `  [NOT READ: ${sense.problem}]` : ''}`);
-        });
-        const nowhere = e.occurrences.filter((o) => o.sense === null).length;
-        if (e.decision === 'reading' && nowhere > 0) {
-          console.log(`         ${String(nowhere).padStart(5)} spot(s)  placed in no meaning — left to their sentence`);
-        }
+  const guide = await glossary.ensureNarrationGlossary({
+    source,
+    server: crucible.server,
+    signal: controller.signal,
+    report: (line) => console.log(`[clean] ${line}`),
+    fromZero,
+  });
+  if (guide.readingsPath !== null) fixedReadings = guide.readingsPath;
+  if (glossaryOnly) {
+    const files = glossary.glossaryPathsFor(request);
+    const entries = guide.forms === 0 ? [] : glossary.readGlossary(files.glossary, files.book).entries;
+    // The guide: each form, each of its meanings with the spots placed in it, and what is left.
+    for (const e of entries) {
+      console.log(`  ${String(e.count).padStart(5)}  ${e.kind.padEnd(12)} ${e.key.padEnd(24)} `
+        + `${e.decision === 'reading' ? '' : 'as printed — '}${e.by === 'person' ? '(yours) ' : ''}${e.why}`);
+      e.senses.forEach((sense, i) => {
+        const spots = e.occurrences.filter((o) => o.sense === i).length;
+        console.log(`         ${String(spots).padStart(5)} spot(s)  ${sense.meaning} -> `
+          + `${sense.reading.length > 0 ? `"${sense.reading}"` : 'as printed'}`
+          + `${sense.problem !== undefined ? `  [NOT READ: ${sense.problem}]` : ''}`);
+      });
+      const nowhere = e.occurrences.filter((o) => o.sense === null).length;
+      if (e.decision === 'reading' && nowhere > 0) {
+        console.log(`         ${String(nowhere).padStart(5)} spot(s)  placed in no meaning — left to their sentence`);
       }
-      console.log(`[clean] glossary         ${files.glossary}`);
-      console.log(`[clean] readings         ${made.readingsPath ?? 'none — nothing in this book is read differently'}`
-        + ` (${made.readings} spot(s); ${made.asked} meaning question(s) and ${made.placed} placing(s) asked this time)`);
-      console.log('[clean] GLOSSARY ONLY — nothing was cleaned and no step landed.');
-      return;
     }
+    console.log(`[clean] glossary         ${files.glossary}`);
+    console.log(`[clean] readings         ${guide.readingsPath ?? 'none — nothing in this book is read differently'}`
+      + ` (${guide.readings} spot(s); ${guide.asked} meaning question(s) and ${guide.placed} placing(s) asked this time)`);
+    console.log('[clean] GLOSSARY ONLY — nothing was cleaned and no step landed.');
+    return;
   }
 
   const startedAt = Date.now();
   let last = null;
   let outcome;
-  try {
-    /*
-     * ONE HOLD, AND IT IS THE PLACEMENT'S. Hosted, `runJob` places the run on
-     * the venue named here: it opens that server's queue session, composes the
-     * endpoint, model and credential from the registry offered above, and closes
-     * the session when the run settles — `queue-steps/foundry-job.ts` hands it the
-     * same `venue` and takes no hold of its own. (This door used to take a lease
-     * around the act; a second hold on one server would now wait behind the
-     * first for ever.)
-     */
-    outcome = await jobQueue.runJob(request, {
-      parentStep,
-      signal: controller.signal,
-      venue: crucible === null ? null : { server: crucible.server },
-      ...(fixedReadings === undefined ? {} : { fixedReadings }),
-      onProgress: (line) => {
-        const counted = parseFoundryProgressLine(line);
-        if (counted === null) { console.log(`[clean] ${line}`); return; }
-        last = counted;
-        console.log(`clean-text: ${counted.page}/${counted.total}`);
-      },
-    });
-  } finally {
-    // Success, failure or Ctrl+C alike: the card goes back unless it was asked to
-    // stay.
-    if (startedServer !== null) {
-      if (args['keep-server'] === true) {
-        console.log(`[clean] --keep-server: ${startedServer.servedName} is left running on the card.`);
-      } else {
-        await textServer.stopTextServer('the clean run finished');
-      }
-    }
-  }
+  /*
+   * ONE HOLD, AND IT IS THE PLACEMENT'S. Hosted, `runJob` places the run on
+   * the venue named here: it opens that server's queue session, composes the
+   * endpoint, model and credential from the registry offered above, and closes
+   * the session when the run settles — `queue-steps/foundry-job.ts` hands it the
+   * same `venue` and takes no hold of its own. (This door used to take a lease
+   * around the act; a second hold on one server would now wait behind the
+   * first for ever.)
+   */
+  outcome = await jobQueue.runJob(request, {
+    parentStep,
+    signal: controller.signal,
+    venue: { server: crucible.server },
+    ...(fixedReadings === undefined ? {} : { fixedReadings }),
+    onProgress: (line) => {
+      const counted = parseFoundryProgressLine(line);
+      if (counted === null) { console.log(`[clean] ${line}`); return; }
+      last = counted;
+      console.log(`clean-text: ${counted.page}/${counted.total}`);
+    },
+  });
 
   const seconds = (Date.now() - startedAt) / 1000;
   const blocks = last === null ? null : last.total;

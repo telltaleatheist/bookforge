@@ -578,10 +578,14 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
    * owns the spawn. A second copy in a caller is a second server lifetime, and
    * the failure mode of the missing one is a card held against nothing.
    */
+  // `cli/clean-lines-step.js` is ClipForge's door. `cli/clean-step.js` left this list
+  // on 2026-11-04 (REORG B2): its act runs on a Crucible, and it manages no server.
   const doors = [
-    ['cli/clean-step.js', true],
     ['cli/clean-lines-step.js', false],
   ];
+  assert.ok(!/text-server\.js|ensureTextServer/.test(
+    fs.readFileSync(path.join(REPO, 'cli/clean-step.js'), 'utf8')),
+  'cli/clean-step.js brought the local text server back');
   for (const [rel, assertsModel] of doors) {
     const source = fs.readFileSync(path.join(REPO, rel), 'utf8');
     assert.ok(/ensureTextServer/.test(source), `${rel} must bring the server up`);

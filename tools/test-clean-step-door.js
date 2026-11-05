@@ -239,7 +239,7 @@ function fixtureProject() {
  * model is now READ FROM THE SERVER and every model assertion below is about
  * this id rather than about anything in app-settings.
  */
-const FAKE_CLEAN_MODEL = 'qwen3.5-9b';
+const FAKE_CLEAN_MODEL = 'qwen3.8-27b-4bit';
 
 /** One `GET /v1/models` row in the shape the SDK's `readModelInfo` requires. */
 function modelRow(id, resident) {
