@@ -43,7 +43,7 @@ Owen's test pass.
 **B — BookForge (bookforge pc 2), repo `bookforge`, worktrees only.**
 B1 (now) prep reads voice char budgets from `GET /v1/voices` instead of importing
 narrator's Higgs code · B2 BookForge's GPU-script callers switch to Crucible services
-(with C2) · **after A merges:** B3 BookForge onto `@owen/foundry-core` + the final
+(with C2; ClipForge is NOT changed — Owen: an ad hoc training tool; no dereverb in Crucible) · **after A merges:** B3 BookForge onto `@owen/foundry-core` + the final
 window copy, page tools removed · B4 BookForge colour scheme · B5 Narrate modal in the
 Foundry window. bookforge pc 2, while B3-B5 wait on Phase A: **B6 narrator's audiobook half → TypeScript**
 (assemble, render session/retakes, VTT, text rules, compat, cli/manifest, gap
