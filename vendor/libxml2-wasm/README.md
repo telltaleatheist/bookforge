@@ -36,6 +36,7 @@ libxml2 2.11.9, the version lxml 6.1.1's Windows wheel carries.
 ## Rebuilding
 
 1. Install Emscripten 6.0.13 somewhere outside the repo. No PATH or system change is needed:
-   `python emsdk.py install 6.0.13`, then `python emsdk.py activate 6.0.13`.
+   `python emsdk.py install 6.0.13`, then `python emsdk.py activate 6.0.13`. It is about 2 GB and only
+   the build needs it, so it can be deleted and re-downloaded this way.
 2. Run `node vendor/libxml2-wasm/build.js <tarball> <emsdk dir> <work dir>`.
 3. Run the byte comparison before committing a new binary.

@@ -68,7 +68,7 @@ function main() {
     .replace(/@MODULE_EXTENSION@/g, '')
     .replace(/@WITH_([A-Z0-9_]+)@/g, (_whole, name) => (ON.has(name) ? '1' : '0')));
 
-  const emcc = path.join(emsdk, 'upstream', 'emscripten', process.platform === 'win32' ? 'emcc.bat' : 'emcc');
+  const emcc = path.join(emsdk, 'upstream', 'emscripten', process.platform === 'win32' ? 'emcc.exe' : 'emcc');
   const output = path.join(__dirname, 'libxml2.wasm');
   run(emcc, [
     '-O2',
@@ -84,7 +84,7 @@ function main() {
     `-sEXPORTED_FUNCTIONS=${EXPORTS.map((name) => `_${name}`).join(',')}`,
     '-o',
     output,
-  ], { env: { ...process.env, EMSDK: emsdk } });
+  ], { shell: false, env: { ...process.env, EMSDK: emsdk, EM_CONFIG: path.join(emsdk, '.emscripten') } });
 
   const built = fs.readFileSync(output);
   const sha256 = crypto.createHash('sha256').update(built).digest('hex');
