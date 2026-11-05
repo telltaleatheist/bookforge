@@ -42,8 +42,11 @@ import {
 
       @if (view(); as v) {
         @if (v.phase === 'running') {
-          <p class="rep-line">{{ v.line }}</p>
-          @if (v.waiting) { <p class="rep-wait">Waiting: {{ v.waiting }}</p> }
+          @if (v.waiting) {
+            <p class="rep-wait">Waiting: {{ v.waiting }}</p>
+          } @else {
+            <p class="rep-line">{{ v.line }}</p>
+          }
           @if (progressWords(); as words) {
             <div class="rep-bar"><div class="rep-fill" [style.width.%]="progressPct()"></div></div>
             <p class="rep-meta">{{ words }}</p>
@@ -106,12 +109,12 @@ export class CrucibleRepairComponent {
 
   readonly running = computed(() => this.view()?.phase === 'running');
 
-  /** What is still broken: found and not put back. A verify-only run changes nothing. */
+  /** Found, not put back and not already under "Could not repair". */
   readonly stillBroken = computed(() => {
     const res = this.view()?.result;
     if (!res) return [];
-    const back = new Set(res.repaired.map((f) => `${f.subject.kind}/${f.subject.id}`));
-    return res.broken.filter((f) => !back.has(`${f.subject.kind}/${f.subject.id}`));
+    const said = new Set([...res.repaired, ...res.failed].map((f) => `${f.subject.kind}/${f.subject.id}`));
+    return res.broken.filter((f) => !said.has(`${f.subject.kind}/${f.subject.id}`));
   });
 
   readonly headline = computed(() => {

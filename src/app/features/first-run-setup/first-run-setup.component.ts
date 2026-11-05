@@ -792,8 +792,9 @@ export class FirstRunSetupComponent {
       title: 'Set up model processing',
       subtitle:
         'BookForge uses the shared Crucible engine for narration, transcription, alignment and '
-        + 'text cleanup. Install it on this computer or connect to another computer. You can '
-        + 'skip this step and connect an engine later in Settings.'
+        + 'text cleanup. It uses the one on this computer if there is one. If not, you can set '
+        + 'one up here or connect to another computer, or skip this step and connect one later '
+        + 'in Settings.'
     },
     {
       // It was titled "AI and cloud keys" until 2026-09-14. There are no cloud

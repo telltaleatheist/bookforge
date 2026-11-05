@@ -242,6 +242,9 @@ async function main() {
     const main = fs.readFileSync(path.join(REPO, 'electron/main.ts'), 'utf8');
     const press = main.slice(main.indexOf("ipcMain.handle('crucible:host-install',"));
     assert.ok(press.indexOf('crucible_already_here') < press.indexOf('runCrucibleInstall('), 'the press refuses first');
+    const firstRun = fs.readFileSync(path.join(REPO, 'src/app/features/first-run-setup/first-run-setup.component.ts'), 'utf8');
+    assert.ok(!/Install it on this computer/.test(firstRun), 'setup does not tell a machine with one to install it');
+    assert.ok(/It uses the one on this computer if there is one/.test(firstRun));
   });
 
   summary('test-crucible-repair');
