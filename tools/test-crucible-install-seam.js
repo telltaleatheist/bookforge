@@ -1178,16 +1178,6 @@ check('a Crucible venue is drawn as the SERVER, not as "this machine\'s GPU (WSL
   assert.ok(!/WSL/.test(label), `the card claims this machine's GPU for a run going to mac: ${label}`);
 });
 
-check('the legacy switch keeps today\'s local label exactly', () => {
-  const route = conversion.resolveVlmRouteWithVenue({
-    ...LOCAL_PC,
-    venue: { where: 'legacy-local-narrator', because: 'the legacy switch is on' },
-    venueRefusal: null,
-  });
-  assert.strictEqual(route.kind, 'wsl-server');
-  assert.strictEqual(conversion.vlmRouteLabel(route), "this machine's GPU (WSL)");
-});
-
 /*
  * INVERTED 2026-09-17, and the old name was the defect: "a TYPED endpoint still
  * wins, and the venue is not consulted."

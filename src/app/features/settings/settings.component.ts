@@ -2446,16 +2446,6 @@ export class SettingsComponent implements OnInit {
     this.updateToolPath('useWsl2ForOrpheus', enabled ? 'true' : '');
   }
 
-  /**
-   * A SEPARATE toggle from the Orpheus one, not a second reader of it. A machine
-   * can have a WSL env with vLLM for Orpheus and none for the page reader, or
-   * the reverse — one flag standing for both would send a conversion at an env
-   * that does not hold the model.
-   */
-  toggleWsl2ForVlm(enabled: boolean): void {
-    this.updateToolPath('useWsl2ForVlm', enabled ? 'true' : '');
-  }
-
   selectWslDistro(distro: string): void {
     this.updateToolPath('wslDistro', distro);
   }

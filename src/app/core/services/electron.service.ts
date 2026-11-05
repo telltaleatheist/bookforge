@@ -2390,20 +2390,12 @@ export class ElectronService {
   }
 
   /**
-   * Why the WSL page reader is unavailable (null when it is ready), and whether
-   * one is running.
-   *
-   * Answered by MAIN because it is a question about tool-paths.json and the host
-   * platform. Feed it to `resolveVlmRoute` rather than rendering it directly —
-   * an explicitly configured endpoint outranks it, and a card that showed this
-   * reason beside a working server would be telling the user to fix something
-   * that is not broken.
+   * Which machine would read the pages, as main decided it. Feed it to
+   * `resolveVlmRouteWithVenue` rather than rendering it directly.
    */
   async vlmReaderStatus(): Promise<
     | {
         success: true;
-        wslRefusal: string | null;
-        server: { running: boolean; url: string; model: string | null };
         /** Which machine a conversion would go to, as main decided it. */
         venue: VlmVenue | null;
         /** The venue decision's own refusal, when it could not decide. */
@@ -2418,25 +2410,12 @@ export class ElectronService {
     if (!raw?.success) {
       return { success: false, error: raw?.error ?? 'the page-reader status call returned nothing' };
     }
-    // A DISCRIMINATED result, and this is the check that makes it one. `null`
-    // means "no reason it cannot run"; ABSENT means main answered a shape this
-    // build does not understand. Collapsing the second into the first with `??`
-    // would read as "the reader is ready" and start a server nobody configured —
-    // a missing fact reported as the more convenient of its two possible values.
-    if (raw.wslRefusal !== null && typeof raw.wslRefusal !== 'string') {
-      return {
-        success: false,
-        error: 'BookForge asked which machine can read the pages and got an answer it could not '
-          + `read (wslRefusal was ${JSON.stringify(raw.wslRefusal)}).`,
-      };
-    }
     /*
      * THE VENUE IS OPTIONAL ON THE WIRE AND NOT OPTIONAL IN MEANING.
      *
      * An older main process answers no `venue` key at all, and `undefined` there
      * must NOT read as "no Crucible venue" — that is a missing fact reported as
-     * the more convenient of its possible values, which is exactly what the
-     * `wslRefusal` check above refuses to do. So an absent key becomes a null
+     * the more convenient of its possible values. So an absent key becomes a null
      * venue WITH a refusal sentence, and the card draws the refusal instead of
      * naming a machine on no evidence.
      */
@@ -2447,7 +2426,7 @@ export class ElectronService {
         ? 'BookForge asked which machine reads the pages and this build of the main process does '
           + 'not answer that question.'
         : null);
-    return { success: true, wslRefusal: raw.wslRefusal, server: raw.server, venue, venueRefusal };
+    return { success: true, venue, venueRefusal };
   }
 
   /**

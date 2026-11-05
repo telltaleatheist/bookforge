@@ -239,19 +239,17 @@ export class BookConversionService {
     // silently, and page reading is now the engine's like every other job.
     const status = await this.electron.vlmReaderStatus();
     if (!status.success) {
-      return { error: `BookForge could not check the WSL page reader: ${status.error}` };
+      return { error: `BookForge could not check which machine reads the pages: ${status.error}` };
     }
     /*
-     * THE VENUE, not just the WSL refusal. Until 2026-09-14 this asked
-     * `resolveVlmRoute` with three LOCAL facts, so on this PC the card said
-     * "this machine's GPU (WSL)" for a conversion `planVlmConversion` was about
-     * to send to a Crucible. Same three questions as the run now, in the same
-     * order, from the same main-process decision.
+     * THE VENUE. Until 2026-09-14 this asked `resolveVlmRoute` with three LOCAL
+     * facts, so on this PC the card named a local GPU for a conversion
+     * `planVlmConversion` was about to send to a Crucible. Same questions as the
+     * run now, in the same order, from the same main-process decision.
      */
     return resolveVlmRouteWithVenue({
       platform: this.electron.platform,
       arch: this.electron.arch,
-      wslReaderRefusal: status.wslRefusal,
       venue: status.venue,
       venueRefusal: status.venueRefusal,
     });

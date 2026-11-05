@@ -1732,14 +1732,11 @@ export interface ElectronAPI {
     readingsBank: (request: VlmConvertRequest) =>
       Promise<{ success: boolean; bank?: VlmReadingsBank; error?: string }>;
     /**
-     * Why the WSL page reader is unavailable (null when it is ready), and
-     * whether one is running right now. Fed to `resolveVlmRoute` by every
-     * surface that has to state whether a conversion can happen.
+     * Which machine would read the pages. Fed to `resolveVlmRouteWithVenue` by
+     * every surface that has to state whether a conversion can happen.
      */
     readerStatus: () => Promise<{
       success: boolean;
-      wslRefusal?: string | null;
-      server?: { running: boolean; url: string; model: string | null };
       /**
        * WHICH MACHINE THE RUN WOULD GO TO, read the way the run reads it
        * (`decideWherePagesRun`). Null when the decision itself refused, in which

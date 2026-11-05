@@ -595,13 +595,13 @@ async function main() {
       + 'machine does locally, whatever the routing record says');
   });
 
-  // ── 11. The WSL page server is still here, and still labelled dated ────────
-  await check('vlm-page-server is kept as a LABELLED stopgap, not a fallback', () => {
-    const source = fs.readFileSync(path.join(REPO, 'electron', 'vlm-page-server.ts'), 'utf8');
-    assert.ok(/DATED|scheduled for deletion/i.test(source),
-      'electron/vlm-page-server.ts lost its deletion note — PHASE3-VLM.md §7 names it, its '
-      + 'refusal, its three tool-paths keys and the wsl-server route as what this replaces');
-    assert.ok(source.includes('PHASE3-VLM'), source.slice(0, 400));
+  // ── 11. The WSL page server is gone (REORG B2) ─────────────────────────────
+  await check('vlm-page-server is deleted, and no door names the wsl-server route', () => {
+    assert.ok(!fs.existsSync(path.join(REPO, 'electron', 'vlm-page-server.ts')));
+    for (const rel of ['electron/vlm-convert.ts', 'shared/vlm/conversion.ts']) {
+      const source = fs.readFileSync(path.join(REPO, rel), 'utf8');
+      assert.ok(!/kind: 'wsl-server'|case 'wsl-server'/.test(source), `${rel} still routes to the WSL reader`);
+    }
   });
 
   // ── 12. A real request, so the map is proved on the WIRE ──────────────────

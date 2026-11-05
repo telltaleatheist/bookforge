@@ -170,9 +170,6 @@ export interface ToolPathsConfig {
   // no Windows flash-attn wheel exists for this torch build and the vision
   // tower falls back to eager attention over ~3,450 patches. So this is an
   // opt-in pointer at an env the user already built, never a managed download.
-  useWsl2ForVlm?: boolean;         // Serve the document vision model from WSL
-  wslVlmCondaEnv?: string;         // Conda env name holding vLLM (e.g. "dots")
-  wslVlmModel?: string;            // HF repo the server loads, e.g. "rednote-hilab/dots.ocr"
 
 
   /**
@@ -362,7 +359,6 @@ export function saveConfig(config: ToolPathsConfig): void {
  */
 const BOOLEAN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'useWsl2ForOrpheus',
-  'useWsl2ForVlm',
   'useWsl2ForHiggs',
 ]);
 
@@ -1232,7 +1228,7 @@ export function narratorRuntimeDeps(): NarratorRuntimeDep[] {
  * `--` DOES NOT FIX IT, which is worth stating because it is the obvious guess:
  * it stops wsl.exe parsing the rest as its own options, but the default shell
  * still runs the command. `--exec` (`-e`) is the flag that means "no shell",
- * and it is what `vlm-page-server.ts`, `cli/orpheus-batch-render.js` and
+ * and it is what `cli/orpheus-batch-render.js` and
  * `narrator/serve/__main__.py` were already using.
  *
  * WHAT IT COST: the Higgs doctor's patch probe is
@@ -1896,54 +1892,6 @@ export function getOrpheusStreamingArtifact(): 'adapter' | 'merged' {
 }
 
 /**
- * WSL routing for the document vision model that reads pages.
- *
- * The same explicit opt-in as `shouldUseWsl2ForOrpheus()`, and deliberately a
- * SEPARATE toggle rather than a second reader of that one: a machine can have a
- * WSL env with vLLM for Orpheus and none for the page reader, or the reverse,
- * and one flag standing for both would route a conversion at an env that does
- * not hold the model. Windows-only; every other platform either reads pages
- * locally (Apple Silicon, MLX) or is pointed at a server by URL.
- */
-export function shouldUseWsl2ForVlm(): boolean {
-  if (os.platform() !== 'win32') return false;
-  loadConfig();
-  return state.config.useWsl2ForVlm === true;
-}
-
-/**
- * The conda env in WSL that holds vLLM, or undefined when none is set.
- *
- * NO DEFAULT, unlike `getWslOrpheusCondaEnv()`. That one can name
- * 'orpheus_tts' because it is the name this project's own setup instructions
- * create (CLAUDE.md). There is no conventional name for a vLLM env a user built
- * themselves — the one on this machine is called `dots` — so a guess here would
- * send `conda run -n <wrong>` at the wall and report a conda error instead of
- * the setting nobody filled in.
- */
-export function getWslVlmCondaEnv(): string | undefined {
-  loadConfig();
-  const name = state.config.wslVlmCondaEnv?.trim();
-  return name && name.length > 0 ? name : undefined;
-}
-
-/**
- * The HuggingFace repo the WSL server loads, or undefined when none is set.
- *
- * It is a setting rather than a constant because the name has to match on both
- * sides: vLLM serves the repo it was started with, and foundry sends that same
- * string as the `model` field of every chat request (its registry calls it
- * `endpointModel`). Two places naming the model independently is how they come
- * to disagree, so the server is started from this value and foundry is told
- * this value.
- */
-export function getWslVlmModel(): string | undefined {
-  loadConfig();
-  const repo = state.config.wslVlmModel?.trim();
-  return repo && repo.length > 0 ? repo : undefined;
-}
-
-/**
  * Get WSL distro name from config
  */
 export function getWslDistro(): string | undefined {
@@ -2038,7 +1986,7 @@ export function getWslOrpheusCondaEnv(): string {
  *
  * Windows-only and explicitly opted into, exactly like `shouldUseWsl2ForOrpheus`.
  * It is a SEPARATE toggle rather than a second reader of the Orpheus one for the
- * same reason `useWsl2ForVlm` is separate: a machine can perfectly well have a
+ * same reason each door's toggle is separate: a machine can perfectly well have a
  * WSL env for one of these and not the other, and folding them together would
  * make enabling Orpheus silently promise a Higgs env that is not there.
  *
@@ -2054,7 +2002,7 @@ export function shouldUseWsl2ForHiggs(): boolean {
 /**
  * The conda env in WSL that holds the Higgs v3 serving stack.
  *
- * HAS A DEFAULT (`higgs3`), unlike `getWslVlmCondaEnv()`, and for the reason that
+ * HAS A DEFAULT (`higgs3`), and for the reason that
  * one gives for not having one: `higgs3` is a name BookForge's own installer
  * creates, so it is a true statement about a machine that ran the installer
  * rather than a guess about an env the user built themselves.

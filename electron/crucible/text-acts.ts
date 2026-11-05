@@ -70,8 +70,7 @@
  *
  * Ordered as that file orders them, so a diff against it reads straight down.
  * `echo`, `pages`, `tts`, `asr`, `align` and `rvc` are classes too and are NOT
- * text acts — `pages` is the VLM door and has its own server
- * (`electron/vlm-page-server.ts`).
+ * text acts — `pages` is the VLM door (`electron/crucible/pages.ts`).
  */
 export const CRUCIBLE_TEXT_ACTS = ['clean', 'translate', 'simplify', 'analysis'] as const;
 

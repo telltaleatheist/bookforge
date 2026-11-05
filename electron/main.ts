@@ -11810,7 +11810,6 @@ ipcMain.handle('narration:text-readiness', async (
    */
   ipcMain.handle('vlm:reader-status', async () => {
     try {
-      const { wslVlmRefusal, vlmPageServerStatus } = await import('./vlm-page-server.js');
       const { decideWherePagesRun, processPagesVenueHost } = await import('./crucible/pages.js');
       let venue: { where: 'crucible'; server: string; because: string } | null = null;
       let venueRefusal: string | null = null;
@@ -11822,8 +11821,6 @@ ipcMain.handle('narration:text-readiness', async (
       }
       return {
         success: true,
-        wslRefusal: wslVlmRefusal(),
-        server: vlmPageServerStatus(),
         venue,
         venueRefusal,
       };

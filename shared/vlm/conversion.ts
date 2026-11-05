@@ -513,7 +513,6 @@ export function vlmRouteLabel(route: VlmRoute): string {
   switch (route.kind) {
     case 'endpoint': return route.endpoint.url;
     case 'mlx-local': return 'this machine (MLX)';
-    case 'wsl-server': return "this machine's GPU (WSL)";
     // The server by NAME, never its URL: the name is what the person ranked in
     // Settings → Crucible Servers and what the queue row says it waits for, and
     // a card that printed `http://192.0.2.x:7100` would be telling them
@@ -536,21 +535,15 @@ export function vlmRouteLabel(route: VlmRoute): string {
  *                   preferring its own would be the app overruling them. Same
  *                   precedence as an external component beating a managed one.
  *  - `mlx-local`  — Apple silicon reads its own pages, no server involved.
- *  - `wsl-server` — Windows, where vLLM in a WSL env the user pointed at is the
- *                   only route that exists: vLLM has no Windows build, and
- *                   dots.ocr under transformers needs 23.9 GB for a 3B model
- *                   without flash-attn (measured 2026-08-07).
  *
  * PURE, and given every fact rather than reading any of them, so the sentence a
  * Windows user sees can be tested on a Mac — the property `vlmLocalReadingRefusal`
  * already had and the reason the picker card cannot promise a route the run then
- * denies. `wslReaderRefusal` is the caller's answer to "and if not WSL, why not",
- * which only the main process can know; a renderer passes what it was told.
+ * denies.
  */
 export type VlmRoute =
   | { kind: 'endpoint'; endpoint: VlmEndpointConfig }
   | { kind: 'mlx-local' }
-  | { kind: 'wsl-server' }
   /**
    * A Crucible server, by NAME. The fourth route, added 2026-09-14 for a card
    * rather than for a run: `planVlmConversion` has sent pages to a Crucible
@@ -582,8 +575,6 @@ export function resolveVlmRoute(facts: {
   arch: string;
   /** The Settings → AI → Reading pages value, already through `resolveVlmEndpoint`. */
   endpoint: VlmEndpointConfig | null;
-  /** Why the WSL page reader is unavailable, or null when it is ready to start. */
-  wslReaderRefusal: string | null;
 }): VlmRoute {
   if (facts.endpoint !== null) {
     return { kind: 'endpoint', endpoint: facts.endpoint };
@@ -591,17 +582,10 @@ export function resolveVlmRoute(facts: {
   if (vlmLocalReadingRefusal(facts.platform, facts.arch) === null) {
     return { kind: 'mlx-local' };
   }
-  if (facts.wslReaderRefusal === null) {
-    return { kind: 'wsl-server' };
-  }
-  // Neither route is open. Both halves are said: the reason THIS machine cannot
-  // read locally is a fact about the hardware and never changes, while the WSL
-  // reason is a setting the user can act on — and a message carrying only the
-  // first reads as "buy a Mac".
   return {
     kind: 'refused',
     reason:
-      `${vlmLocalReadingRefusal(facts.platform, facts.arch)} ${facts.wslReaderRefusal} `
+      `${vlmLocalReadingRefusal(facts.platform, facts.arch)} `
       + 'You can also point BookForge at any OpenAI-compatible server that already serves the '
       + 'document vision model: Settings → AI → Reading pages.',
   };
@@ -637,7 +621,6 @@ export function resolveVlmRoute(facts: {
 export function resolveVlmRouteWithVenue(facts: {
   platform: string;
   arch: string;
-  wslReaderRefusal: string | null;
   /** What main decided, or null when the decision refused. */
   venue: VlmVenue | null;
   /** The refusal's own sentence, when `venue` is null. */
@@ -673,7 +656,6 @@ export function resolveVlmRouteWithVenue(facts: {
     platform: facts.platform,
     arch: facts.arch,
     endpoint: null,
-    wslReaderRefusal: facts.wslReaderRefusal,
   });
 }
 

@@ -16,7 +16,7 @@
  * paragraph; the engine checkout's docs/VLLM.md §5, "BookForge's arbiter owns
  * that server's life"). This file is that owner.
  *
- * ── Shaped after vlm-page-server.ts, which is the proven one ────────────────
+ * ── Shaped after vlm-page-server.ts (deleted 2026-11-04, REORG B2) ───────────
  *
  * The reading server (electron/vlm-page-server.ts) is BookForge's working
  * WSL-hosted vLLM manager and every load-bearing piece below is its:

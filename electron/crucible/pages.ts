@@ -19,13 +19,9 @@
  * Crucible.** The engine is handed a base URL and a header map, and the word
  * Crucible never appears in foundry's source.
  *
- * What dies with it is the SPAWN half of `electron/vlm-page-server.ts` — 484
- * lines of `wsl.exe`, VRAM arithmetic and guest `pkill` that exist only because
- * vLLM has no Windows build. PHASE3-VLM.md §7 names it, `wslVlmRefusal`,
- * `useWsl2ForVlm`, `wslVlmCondaEnv`, `wslVlmModel` and the `wsl-server` arm of
- * `resolveVlmRoute` as what this deletes once it is live. It is NOT deleted
- * here: the legacy switch still routes to it, and it goes in a commit Owen
- * approves after his in-app pass (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3).
+ * It replaced `electron/vlm-page-server.ts`, the spawn of vLLM inside WSL, which
+ * with its tool-paths keys and `wsl-server` route is deleted (docs/REORG-PLAN.md,
+ * B2).
  *
  * ── THE BASE IS `<url>/openai/v1`, AND IT IS NOT `crucibleChatBase()` ───────
  *

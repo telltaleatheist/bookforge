@@ -153,7 +153,7 @@ check('an Intel Mac cannot, and neither can Windows or Linux', () => {
 check('a configured endpoint wins, even where a local reader exists', () => {
   const endpoint = resolveVlmEndpoint({ url: 'http://gpu.local:8000/v1', model: '', concurrency: 0 });
   const route = resolveVlmRoute({
-    platform: 'darwin', arch: 'arm64', endpoint, wslReaderRefusal: null,
+    platform: 'darwin', arch: 'arm64', endpoint,
   });
   // A server someone configured by hand is a deliberate choice about which GPU
   // does the work; preferring the local one would overrule them.
@@ -163,33 +163,17 @@ check('a configured endpoint wins, even where a local reader exists', () => {
 
 check('Apple silicon with nothing configured reads its own pages', () => {
   const route = resolveVlmRoute({
-    platform: 'darwin', arch: 'arm64', endpoint: null, wslReaderRefusal: 'not on a Mac',
+    platform: 'darwin', arch: 'arm64', endpoint: null,
   });
   assert.strictEqual(route.kind, 'mlx-local');
 });
 
-check('Windows with the WSL reader ready uses it', () => {
-  const route = resolveVlmRoute({
-    platform: 'win32', arch: 'x64', endpoint: null, wslReaderRefusal: null,
-  });
-  assert.strictEqual(route.kind, 'wsl-server');
-});
-
-check('with no route at all, both reasons are given and neither is buried', () => {
-  const route = resolveVlmRoute({
-    platform: 'win32',
-    arch: 'x64',
-    endpoint: null,
-    wslReaderRefusal: 'WSL2 for page reading is switched off.',
-  });
+check('with no route at all, the machine and the way out are both said', () => {
+  const route = resolveVlmRoute({ platform: 'win32', arch: 'x64', endpoint: null });
   assert.strictEqual(route.kind, 'refused');
-  // The hardware fact, which never changes...
   assert.ok(route.reason.includes('win32/x64'), 'the refusal does not name the machine');
-  // ...the setting the user CAN act on, which a message about Apple silicon
-  // alone would hide behind "buy a Mac"...
-  assert.ok(/switched off/.test(route.reason), 'the refusal drops the WSL reason');
-  // ...and the third way out.
   assert.ok(/Settings/.test(route.reason), 'the refusal does not say where to set an endpoint');
+  assert.ok(!/undefined|null/.test(route.reason), route.reason);
 });
 
 check('every route names the machine that will actually be busy', () => {
@@ -198,8 +182,6 @@ check('every route names the machine that will actually be busy', () => {
   // said "this machine (MLX)" — announcing the wrong GPU for a ninety-minute
   // run, on the one line that tells someone which GPU they cannot use.
   assert.match(vlmRouteLabel({ kind: 'mlx-local' }), /MLX/);
-  assert.match(vlmRouteLabel({ kind: 'wsl-server' }), /WSL/);
-  assert.ok(!/MLX/.test(vlmRouteLabel({ kind: 'wsl-server' })), 'the WSL route claims to be MLX');
   assert.strictEqual(
     vlmRouteLabel({
       kind: 'endpoint',

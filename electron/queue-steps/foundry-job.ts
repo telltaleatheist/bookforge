@@ -363,8 +363,8 @@ export const foundryJobStep: StepModule = {
     const kind = config.request.kind;
     /*
      * THE THREE THAT ASK A LANGUAGE MODEL, as a narrowed value rather than a
-     * boolean: `read` is the VISION model and has its own server
-     * (electron/vlm-page-server.ts), and a rendering asks nothing at all. Written
+     * boolean: `read` is the VISION model and has its own door
+     * (electron/crucible/pages.ts), and a rendering asks nothing at all. Written
      * this way so the venue block below is handed a kind the type system has
      * already agreed is a language act — the day a fourth arrives, this line is
      * the compile error.

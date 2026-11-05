@@ -85,7 +85,6 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { runFoundry } from './foundry-bridge';
-import { ensureVlmPageServer, recentServerLog, wslVlmRefusal } from './vlm-page-server';
 import {
   CruciblePagesError,
   decideWherePagesRun,
@@ -619,7 +618,6 @@ export async function planVlmConversion(
       platform: process.platform,
       arch: process.arch,
       endpoint: configured,
-      wslReaderRefusal: wslVlmRefusal(),
     });
     venueDecision =
       `Reading the pages at ${configured.url} — the endpoint set in Settings → AI → Reading pages. `
@@ -833,52 +831,29 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const stagedEpub = path.join(STAGING_DIR, `vlm-convert-${sha256.slice(0, 16)}.epub`);
 
-  // Started BEFORE the stage is claimed: this waits on the GPU arbiter — potentially behind a TTS job — and then
-  // on ~44 s of model load, and holding a project's stage lock through that
-  // would refuse every other stage for a run that has not begun.
+  // A page read starts NOTHING on this machine and takes NO local GPU lease: the
+  // rasteriser is PyMuPDF on the CPU, and the card that reads the pages belongs to
+  // the server, whose own `accelerator.guard` admits or refuses the work.
   //
-  // ONLY on the `wsl-server` route, which the plan reaches only when the legacy
-  // switch put it there. A Crucible page read starts NOTHING on this machine and
-  // takes NO local GPU lease: the rasteriser is PyMuPDF on the CPU, and the card
-  // that reads the pages belongs to the server, whose own `accelerator.guard`
-  // admits or refuses the work. RULING OWED, the same one `asr.ts` records and
-  // 2.4 records for renders: does a job on a REMOTE Crucible hold this machine's
-  // arbiter lease at all, and does one on `local` — this very card, through WSL —
-  // need it to coordinate with a local Ollama? Until ruled, the server's refusal
-  // is the answer, and the arbiter is not taken for work happening elsewhere.
-  const reader = route.kind === 'wsl-server' ? await ensureVlmPageServer() : null;
-  try {
-    // The ROUTE is the single authority on where the pages go. `route.endpoint`
-    // is a typed endpoint or the Crucible base the plan composed; `wsl-server`
-    // is the only case whose URL is not known until the server is up.
-    const endpoint = reader !== null
-      ? { url: reader.url, model: reader.model, concurrency: 0 }
-      : route.kind === 'endpoint' ? route.endpoint
-        : null;
-    /*
-     * ── ONE LEASE FOR THE WHOLE CONVERSION, AND ONLY ON A CRUCIBLE ───────────
-     *
-     * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
-     * them. Every time."* A page read holds nothing a Crucible can see — there is
-     * no `vlm-pages` job, every page crosses as an ordinary chat completion, and a
-     * chat takes no lane and holds no claim. So between page 40 and page 41 that
-     * server would see an idle card and unload `dots-ocr`, then reload it. The
-     * lease is this app saying the one fact only it has: it intends more requests
-     * on this model. See `electron/crucible/pages.ts`.
-     *
-     * A typed endpoint and the legacy WSL server lease nothing: neither is a
-     * Crucible, and the WSL reader's own `release()` below is what hands that card
-     * back.
-     */
-    return crucible === null
-      ? await convertWith(endpoint)
-      : await withCruciblePagesLease(crucible, () => convertWith(endpoint));
-  } finally {
-    // On success, on failure and on cancellation alike — this is what takes the
-    // server down and hands the 20 GB and the GPU arbiter to whatever the queue
-    // runs next. A release that did not happen pins the card indefinitely.
-    reader?.release();
-  }
+  // The ROUTE is the single authority on where the pages go: `route.endpoint` is a
+  // typed endpoint or the Crucible base the plan composed.
+  const endpoint = route.kind === 'endpoint' ? route.endpoint : null;
+  /*
+   * ── ONE LEASE FOR THE WHOLE CONVERSION, AND ONLY ON A CRUCIBLE ───────────
+   *
+   * Owen, 2026-09-14: *"Models should always be unloaded when we're done with
+   * them. Every time."* A page read holds nothing a Crucible can see — there is
+   * no `vlm-pages` job, every page crosses as an ordinary chat completion, and a
+   * chat takes no lane and holds no claim. So between page 40 and page 41 that
+   * server would see an idle card and unload `dots-ocr`, then reload it. The
+   * lease is this app saying the one fact only it has: it intends more requests
+   * on this model. See `electron/crucible/pages.ts`.
+   *
+   * A typed endpoint leases nothing: it is not a Crucible.
+   */
+  return crucible === null
+    ? await convertWith(endpoint)
+    : await withCruciblePagesLease(crucible, () => convertWith(endpoint));
 
   async function convertWith(endpoint: VlmEndpointConfig | null): Promise<VlmConvertResult> {
   const result = await withProjectStage(project.projectDir, VLM_CONVERT_STAGE, async (opts) => {
@@ -922,11 +897,9 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
       stage: 'vlm-convert',
       message: endpoint === null
         ? 'Loading the vision model on this machine…'
-        : reader !== null
-          ? `Reading the pages on this machine's GPU, through WSL (${reader.model})…`
-          : crucible !== null
-            ? `Reading the pages on crucible "${crucible.server}" (${crucible.model})…`
-            : `Reading the pages on ${endpoint.url}…`,
+        : crucible !== null
+          ? `Reading the pages on crucible "${crucible.server}" (${crucible.model})…`
+          : `Reading the pages on ${endpoint.url}…`,
       done: 0,
       total: 0,
     });
@@ -1000,14 +973,9 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
     if (run.code !== 0) {
       // foundry's own stderr is the message a user needs — it names the missing
       // Python, the model it could not load, the page it choked on. Never
-      // paraphrased, and never replaced with an exit code. The page-reader's
-      // recent lines ride along when the server is still holding any: a mid-run
-      // engine-core death prints its stack trace ONLY into the server's stream,
-      // while foundry sees 500s that say "see stack trace (above)".
-      const serverSaid = recentServerLog();
+      // paraphrased, and never replaced with an exit code.
       throw new Error(
-        `foundry vlm-convert failed (exit ${run.code}).\n${run.stderr.trim() || lastMessage}`
-        + (serverSaid ? `\n\n── the page-reader's last lines ──\n${serverSaid}` : '')
+        `foundry vlm-convert failed (exit ${run.code}).\n${run.stderr.trim() || lastMessage}`,
       );
     }
     if (!fs.existsSync(stagedEpub)) {
