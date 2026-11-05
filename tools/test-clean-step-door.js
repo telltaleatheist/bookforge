@@ -610,7 +610,13 @@ ${refused}`);
     const out = await dryRun([]);
     const engine = out.split('\n').find((line) => line.startsWith('[clean] engine  '));
     assert.ok(engine, `no engine line in:\n${out}`);
-    assert.ok(engine.includes(bundle), `expected the vendored bundle ${bundle}; got: ${engine}`);
+    // Compared as the files they resolve to, not as strings: in a worktree whose
+    // node_modules entries are junctions into another checkout, the engine
+    // resolves the package to that checkout's path, and it is the same file.
+    const named = engine.split(/\s+/).find((word) => word.endsWith(path.basename(bundle)));
+    assert.ok(named, `the engine line names no ${path.basename(bundle)}: ${engine}`);
+    assert.strictEqual(fs.realpathSync(named), fs.realpathSync(bundle),
+      `expected the vendored bundle ${bundle}; got: ${engine}`);
     assert.ok(/\[clean\] engine version\s+foundry \d+\.\d+\.\d+ \(src [0-9a-f]{12}\)/.test(out),
       `the engine version (with its source digest) was not named:\n${out}`);
   });
