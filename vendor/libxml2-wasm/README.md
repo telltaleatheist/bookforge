@@ -19,6 +19,10 @@ engine at the same version instead of a copy of its rules. See `docs/NARRATOR-TS
 
 The app and its install use only the committed binary. They never need Emscripten.
 
+`shim.c` also holds the parts of lxml's own behaviour that have to touch libxml2's nodes: the
+tail text after an element, `len(element)` and `find('body')`. The rest of lxml's and ebooklib's
+behaviour (the empty-body rule, the `<body>` strip, "Document is empty") belongs in TypeScript.
+
 ## Source
 
 libxml2 2.11.9, the version lxml 6.1.1's Windows wheel carries.
