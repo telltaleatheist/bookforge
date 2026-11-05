@@ -73,3 +73,6 @@ foundry-app/shared/model-lineup.json -text
 # against its sources). Generated, 4 MB, and hashed by nobody but git: never
 # convert its line endings, and no text diff.
 foundry-app/engine/** binary
+
+# Temporary, with tools/copy-foundry-window.mjs: a patch is bytes, and CRLF would break it.
+tools/foundry-window-edits.patch -text
