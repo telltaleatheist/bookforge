@@ -365,6 +365,17 @@ Anything the renderer (Listen) also needs (text core, acronyms) goes under `shar
 | 7 | prep (`lang`, `normalize`, `epub`, `chapters`, `paragraph_packer` packing, `prep`) — needs **B1** (budget from `/v1/voices`) | `prep` phase, tools env for narrator entirely | session-state/provenance/gaps.json equal for every Higgs book in the library (re-prep to scratch, never Z:); Owen narrates a book end to end |
 | 8 | remove `python/narrator` (after Crucible C1 owns engine/serve), `electron/scripts/*.py`, narrator-spawn phases, tools-env narrator bootstrap, Python test suites (their vectors now live in TS fixtures) | — | `grep -r narrator.compat` empty; app builds with no Python env |
 
+**Step 8's list so far, kept here so it starts complete (lead, 2026-11-05).** Re-read the `normalize_gaps` entry in docs/REORG-PLAN.md first: Owen can overrule it.
+1. `narratorReady` (`electron/reassembly-bridge.ts`, IPC in `main.ts`) must stop reporting on Python, or a machine with no Python env says Higgs assembly is unavailable.
+2. The route in `electron/narrator/assemble/assemble-door.ts` goes: an Orpheus session then refuses by name, as `planChapters` already does.
+3. **Everything still reading into `python/`:**
+   - `caps_acronyms.json` moves out, with its readers: `electron/narrator/text/caps.ts`, `electron/tts-spoken-forms.ts`, `tools/test-one-fact-one-owner.js`, `tools/test-listen-text.js`, `tools/test-foundry-clean-text-vendor.js`.
+   - Path into the package: `narratorPythonRoot` in `electron/narrator-spawn.ts`, `electron/scripts/align_audiobook.py` (CLI-owned).
+   - Keepers that read or run the Python and must move to captured fixtures: `tools/test-assembly-prepare-progress.js`, `test-coverage-policy-mirror.js`, `test-crucible-render-session.js`, `test-higgs-engine.js`, `test-higgs-prep-budget.js`, `test-sentence-abbreviations.js`, `test-wsl-path-converter.js`.
+   - Comments naming a Python source, to repoint: `electron/crucible/{align,reroll,stream,voice-band}.ts`, `electron/book-render-service.ts`, `electron/correct-sentences-bridge.ts`, `electron/coverage-align-job.ts`, `electron/higgs-models.ts`, `electron/streaming-engine.ts`, `electron/data/higgs-models.json`, `shared/audio/chapter-gap.ts`, `shared/listen-text/chunks.ts`, `shared/queue/{coverage-policy,narration-run}.ts`, `shared/text/sentence-abbreviations.ts`, `src/app/features/queue/models/queue.types.ts`.
+4. **The packaging list in `package.json`:** `build.files` lines `python/**/*` and its exclusions, and `asarUnpack` `python/**`, so the installed app carries the moved JSON. The list only, with no packaging run at that step.
+5. Rerun this before starting, because the list above was grepped at step 5: `grep -rlE "python/narrator|'python', *'narrator|path.join\(.*'python'" electron shared src tools cli packaging package.json`.
+
 Assembly works end-to-end after every step because each step swaps one door and the others still spawn the
 Python (they communicate only through files on disk, which is why §3's byte-level JSON matters during the
 transition: e.g. TS-written `coverage.json` (step 6) read by Python assembly would happen only if step 6 lands

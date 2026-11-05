@@ -156,6 +156,8 @@ import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './
  */
 import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { listResumableSessions as listSessionsUnder, resumeSession } from './narrator/session/session-store';
+import { assemblyRoute, startAssembly } from './narrator/assemble/assemble-door';
+import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, unloadOllamaModels } from './gpu-arbiter';
@@ -5738,6 +5740,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // line is the number the log names — the caller's, or BookForge's default when
   // it did not choose (which is not the same as 0).
   const chapterGap = resolveChapterGap(config.chapterGap);
+  // The session's own engine picks the assembler: Orpheus stays on the Python until step 8.
+  const assembler = await assemblyRoute(prepInfo.processDir);
 
   const args = [
     '--headless',
@@ -5823,20 +5827,30 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // the `gaps.json` those read and `session_v1` refuses a pads=false session
     // without it. So the door is engine-agnostic and the AUDIO is not, which is
     // the correct division: the profile travels in the session, not in the argv.
-    const asmPlan = buildNarratorSpawn({
-      phase: 'assembly',
-      args,
-      envExtras: {
-        // No ORPHEUS_* and no CUDA pins: nothing here loads vLLM or MLX.
-        VLLM_USE_V1: '0',
-      },
-    });
-    console.log('[PARALLEL-TTS] Assembly → narrator:', asmPlan.describe());
-
-    session.assemblyProcess = spawn(asmPlan.command, asmPlan.args, {
-      cwd: asmPlan.cwd,
-      env: asmPlan.env,
-      shell: false,
+    const spawnPython = (): ChildProcess => {
+      const asmPlan = buildNarratorSpawn({
+        phase: 'assembly',
+        args,
+        envExtras: {
+          // No ORPHEUS_* and no CUDA pins: nothing here loads vLLM or MLX.
+          VLLM_USE_V1: '0',
+        },
+      });
+      console.log('[PARALLEL-TTS] Assembly → narrator:', asmPlan.describe());
+      return spawn(asmPlan.command, asmPlan.args, {
+        cwd: asmPlan.cwd,
+        env: asmPlan.env,
+        shell: false,
+      });
+    };
+    session.assemblyProcess = assembler === 'python' ? spawnPython() : startAssembly({
+      processDir: prepInfo.processDir,
+      outputDir: asmOutputDir,
+      coverageReport: fsSync.existsSync(coverageReportPath(prepInfo.processDir)) ? coverageReportPath(prepInfo.processDir) : null,
+      chapterGap,
+      finalDenoise: process.env['FINAL_DENOISE'] === '1',
+      ffmpeg: getFfmpegPath(),
+      ffprobe: getFfprobePath(),
     });
 
     // Track assembly state for progress reporting

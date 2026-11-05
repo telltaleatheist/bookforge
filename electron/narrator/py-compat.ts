@@ -57,7 +57,7 @@ export const isPySpace = (ch: string): boolean => PY_SPACE_ONE.test(ch);
 export const pyStrip = (text: string): string => text.replace(PY_SPACE_EDGES, '');
 
 /** `re.sub(r'\s+', ' ', text)`. */
-export const pyCollapseSpace = (text: string): string => text.replace(PY_SPACE_RUN, ' ');
+export const pyCollapseSpace = (text: string, replacement = ' '): string => text.replace(PY_SPACE_RUN, replacement);
 
 const PY_REGEX_SPACE_RUN = new RegExp(`[${PY_REGEX_SPACE}]+`, 'g');
 

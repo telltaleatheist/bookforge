@@ -10,6 +10,8 @@ import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { narratorScratchRoot, wslToWindowsPath } from './narrator-paths';
 import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
+import { assemblyRoute, startAssembly } from './narrator/assemble/assemble-door';
+import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
 import { renameWithRetry, unlinkWithRetry, isTransientFsError, renameSyncWithRetry } from './fs-retry';
@@ -1629,6 +1631,8 @@ export async function startReassembly(
   // on the command line is the number the log names — a caller's explicit value,
   // or BookForge's default when it did not choose (which is not the same as 0).
   const chapterGap = resolveChapterGap(config.chapterGap);
+  // The session's own engine picks the assembler: Orpheus stays on the Python until step 8.
+  const assembler = await assemblyRoute(config.processDir);
   reassemblyLog.info('Chapter gap resolved', {
     jobId, stated: config.chapterGap, chapterGap,
   });
@@ -1743,17 +1747,28 @@ export async function startReassembly(
     // and never round-trips through a shell, so paths with apostrophes ('Aesop's
     // Fables') and a `--post_render_filter` chain full of `|` and `:` cross
     // untouched instead of correctly escaped.
-    const asmPlan = buildNarratorSpawn({
-      phase: 'assembly',
-      args: appArgs,
-      envExtras: {},
-    });
-    console.log('[REASSEMBLY] Assembly → narrator:', asmPlan.describe());
-
-    const proc: ChildProcess = spawn(asmPlan.command, asmPlan.args, {
-      cwd: asmPlan.cwd,
-      env: asmPlan.env,
-      shell: false,
+    const spawnPython = (): ChildProcess => {
+      const asmPlan = buildNarratorSpawn({
+        phase: 'assembly',
+        args: appArgs,
+        envExtras: {},
+      });
+      console.log('[REASSEMBLY] Assembly → narrator:', asmPlan.describe());
+      return spawn(asmPlan.command, asmPlan.args, {
+        cwd: asmPlan.cwd,
+        env: asmPlan.env,
+        shell: false,
+      });
+    };
+    const proc: ChildProcess = assembler === 'python' ? spawnPython() : startAssembly({
+      processDir: config.processDir,
+      outputDir: stagingDir,
+      sentencesDir: rvcSentencesDir ?? null,
+      coverageReport: fs.existsSync(coverageReportPath(config.processDir)) ? coverageReportPath(config.processDir) : null,
+      chapterGap,
+      finalDenoise: process.env['FINAL_DENOISE'] === '1',
+      ffmpeg: getFfmpegPath(),
+      ffprobe: getFfprobePath(),
     });
 
     activeReassemblies.set(jobId, proc);
