@@ -17,6 +17,30 @@ index 8d70d002..1af9e2de 100644
              "assets": [
                {
                  "glob": "pdf.worker.min.mjs",
+diff --git a/foundry-app/electron/preload.ts b/foundry-app/electron/preload.ts
+index f5f13654..b1d8d15b 100644
+--- a/foundry-app/electron/preload.ts
++++ b/foundry-app/electron/preload.ts
+@@ -437,3 +437,19 @@ const api: FoundryApi = {
+ };
+ 
+ contextBridge.exposeInMainWorld('foundry', api);
++
++/*
++ * BOOKFORGE'S OWN PUSHES INTO ITS BOOK WINDOW, under a key of their own so the
++ * library's `FoundryApi` stays exactly the library's. Read by
++ * src/app/core/bookforge-window.ts.
++ *
++ * `host-ops:notice`: one line for the window's notice tray, said by BookForge
++ * about work it did for this window (the Narrate overlay: "it is queued").
++ */
++contextBridge.exposeInMainWorld('bookforgeWindow', {
++  onHostNotice: (listener: (text: string) => void): (() => void) => {
++    const handler = (_event: Electron.IpcRendererEvent, text: string): void => listener(text);
++    ipcRenderer.on('host-ops:notice', handler);
++    return () => { ipcRenderer.removeListener('host-ops:notice', handler); };
++  },
++});
 diff --git a/foundry-app/electron/window.ts b/foundry-app/electron/window.ts
 index 181d6d79..fe0fc8f7 100644
 --- a/foundry-app/electron/window.ts
@@ -6692,6 +6716,28 @@ index 9707b2f5..d50d32ed 100644
 +    "typescript": "~5.9.2"
    }
  }
+diff --git a/foundry-app/src/app/app.ts b/foundry-app/src/app/app.ts
+index 16c5d408..2fa3a59e 100644
+--- a/foundry-app/src/app/app.ts
++++ b/foundry-app/src/app/app.ts
+@@ -31,6 +31,7 @@ import { OpenDocumentsService, pathIsProject } from './core/documents.service';
+ import { ConfirmService } from './core/confirm.service';
+ import { IntakeWorkspaceService, isWorkspaceImage } from './core/intake-workspace.service';
+ import { NoticeService } from './core/notice.service';
++import { onHostNotice } from './core/bookforge-window';
+ import { PdfPagesService } from './core/pdf-pages.service';
+ import { PositionSyncService } from './core/position-sync.service';
+ import { ProjectsService } from './core/projects.service';
+@@ -256,6 +257,9 @@ export class App {
+   }
+ 
+   constructor() {
++    // What BookForge says about work it did for this window, e.g. a narration queued.
++    onHostNotice((text) => this.notices.notice.set(text));
++
+     // The File menu's Settings item. Main cannot route; it can only say where.
+     api?.onNavigate((route) => { void this.router.navigateByUrl(route); });
+ 
 diff --git a/foundry-app/src/app/components/action-menu/action-menu.component.ts b/foundry-app/src/app/components/action-menu/action-menu.component.ts
 index 808bd047..2838c833 100644
 --- a/foundry-app/src/app/components/action-menu/action-menu.component.ts
@@ -6722,10 +6768,10 @@ index 808bd047..2838c833 100644
      if (tab === null) return null;
 diff --git a/foundry-app/src/app/core/bookforge-window.ts b/foundry-app/src/app/core/bookforge-window.ts
 new file mode 100644
-index 00000000..fb806361
+index 00000000..40cf415d
 --- /dev/null
 +++ b/foundry-app/src/app/core/bookforge-window.ts
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,26 @@
 +/**
 + * What BookForge's copy of the window leaves out (docs/REORG-PLAN.md, B3).
 + *
@@ -6737,6 +6783,21 @@ index 00000000..fb806361
 + * stay in the tree, unreached, so putting them back is this one line.
 + */
 +export const PAGE_TOOLS = false;
++
++/**
++ * A line BookForge says in this window's notice tray (preload's `bookforgeWindow`).
++ * The key is always there in BookForge; missing, this window was not opened by it,
++ * and that is said rather than quietly listening to nothing.
++ */
++export function onHostNotice(listener: (text: string) => void): () => void {
++  const bridge = (window as unknown as {
++    bookforgeWindow?: { onHostNotice(listener: (text: string) => void): () => void };
++  }).bookforgeWindow;
++  if (bridge === undefined) {
++    throw new Error('This window has no bookforgeWindow bridge, so it was not opened by BookForge.');
++  }
++  return bridge.onHostNotice(listener);
++}
 diff --git a/foundry-app/src/styles.scss b/foundry-app/src/styles.scss
 index a4c58ca5..798fe1dd 100644
 --- a/foundry-app/src/styles.scss
