@@ -1,10 +1,10 @@
-import { Component, OnInit, OnDestroy, inject, signal, computed, input } from '@angular/core';
+import { Component, OnInit, inject, signal, computed, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 
 import { DesktopButtonComponent } from '../../creamsicle-desktop';
-import { AiService, LocalModel, LocalSystemInfo, LocalModelProgress } from '../../core/services/ai.service';
+import { AiService } from '../../core/services/ai.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { ElectronService } from '../../core/services/electron.service';
 import {
@@ -577,15 +577,11 @@ import {
     .link-danger:hover { text-decoration: underline; }
   `]
 })
-export class AiSetupWizardComponent implements OnInit, OnDestroy {
+export class AiSetupWizardComponent implements OnInit {
   readonly ai = inject(AiService);
   private readonly settings = inject(SettingsService);
   private readonly router = inject(Router);
   private readonly electron = inject(ElectronService);
-
-  readonly models = signal<LocalModel[]>([]);
-  readonly localStatus = this.ai.localStatus;
-  private readonly _progress = signal<Record<string, LocalModelProgress>>({});
 
   /** Embedded mode (rendered inside Settings → AI): hide the page header/footer. */
   readonly embedded = input(false);
@@ -633,15 +629,8 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
    * `cleanTextModel` out of the same file.
    */
 
-  private unsub?: () => void;
-
-  readonly anyDownloading = computed(() =>
-    Object.values(this._progress()).some((p) => p.phase === 'download')
-  );
-
   readonly activeSummary = computed(() => {
     const parts: string[] = [];
-    if (this.ai.localUsable()) parts.push('local model');
     const cfg = this.settings.getAIConfig();
     // No cloud line and no Ollama line: this page holds no key and talks to no
     // daemon. Whether an upstream is configured is the engine's own answer,
@@ -650,18 +639,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     return parts.length ? `Detected: ${parts.join(', ')}.` : '';
   });
 
-  /*
-   * THE LOCAL-MODEL MEMBERS ARE GONE WITH THE CARD THEY SERVED (2026-09-17):
-   * `downloadedModels`, `confirmDeleteModels`, `deleteAllModels`, `download`,
-   * `cancel`, `remove` and `sysInfo`.
-   *
-   * Every one was reachable only from the "Bundled local AI" section of this
-   * component's own template, and that section is deleted. `AiService` still
-   * has `downloadModel`/`deleteModel` — the SERVICE layer dies with the rest of
-   * the legacy path, not here — so nothing below this line is a capability
-   * being removed, only a door to it that no longer has a room behind it.
-   */
-
   async ngOnInit(): Promise<void> {
     // `vlmReaderStatus()` IS NOT ASKED HERE ANY MORE (2026-09-17). It fed the
     // Reading pages card, and the card is gone; main still answers it and
@@ -669,59 +646,11 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     // it. Asking here as well would be a second reader of one fact whose only
     // consumer was a screen that no longer exists.
 
-    this.unsub = this.ai.onModelProgress((p) => {
-      this._progress.update((map) => {
-        const next = { ...map };
-        if (p.phase === 'download') {
-          next[p.modelId] = p;
-        } else {
-          delete next[p.modelId];
-        }
-        return next;
-      });
-      if (p.phase === 'done' || p.phase === 'error' || p.phase === 'cancelled') {
-        void this.reload();
-      }
-    });
-    await this.reload();
     await this.loadCrucibleServers();
     await this.loadCapability();
     // The engine's settings document, read on arrival and cached nowhere.
     await this.loadEngineSettings();
   }
-
-  ngOnDestroy(): void {
-    this.unsub?.();
-  }
-
-  private async reload(): Promise<void> {
-    this.models.set(await this.ai.listLocalModels());
-    await this.ai.refresh();
-  }
-
-  progressFor(id: string): LocalModelProgress | undefined {
-    return this._progress()[id];
-  }
-
-  modelName(id: string): string {
-    return this.models().find((m) => m.id === id)?.name ?? id;
-  }
-
-  /** Warn (but don't block) before committing to a model too big for this machine. */
-  private async confirmIfTooBig(id: string, verb: string): Promise<boolean> {
-    const m = this.models().find((x) => x.id === id);
-    if (!m || m.fits) return true;
-    const { confirmed } = await this.electron.showConfirmDialog({
-      type: 'warning',
-      title: `${m.name} is large for your hardware`,
-      message: `${m.name} needs about ${m.minRAM} GB but this machine has less to spare.`,
-      detail: 'It will still work, but it runs partly on the CPU and will be noticeably slower. The model marked "Recommended" fits your hardware and runs fast.',
-      confirmLabel: `${verb} anyway`,
-      cancelLabel: 'Cancel',
-    });
-    return confirmed;
-  }
-
 
   // ── Crucible: a server from the registry, and a model that is RESIDENT ────
   //
@@ -904,8 +833,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       return;
     }
     this.jobModelList.set(models.data);
-    if (this.wizard() && this.canClean()
-      && (this.usingCrucible() || !this.ai.localUsable())) {
+    if (this.wizard() && this.canClean()) {
       this.useCrucible();
     }
   }
@@ -1579,7 +1507,6 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     const server = this.crucibleServer();
     if (!server) return;
     this.settings.updateAIConfig({ provider: 'crucible', crucible: { server } });
-    void this.ai.refresh();
   }
 
   /*

@@ -217,7 +217,7 @@ export class SetupDownloadService {
    * added items join the live queue without restarting it.
    */
   /**
-   * Download priority: GPU acceleration packs (llama-cuda, cuda-rvc) are
+   * Download priority: GPU acceleration packs (cuda-rvc) are
    * prerequisites for fast AI/TTS, so they download BEFORE optional content (extra
    * voices, language packs). Lower sorts first. Keyed off the component's GPU
    * requirement so any future GPU pack is prioritized automatically.

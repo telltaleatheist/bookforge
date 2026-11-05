@@ -7,7 +7,6 @@ import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { DialogService } from '../../../creamsicle-desktop/services/dialog.service';
 import { ElectronService } from '../../../core/services/electron.service';
 import { SettingsService } from '../../../core/services/settings.service';
-import { AiService } from '../../../core/services/ai.service';
 import {
   CRUCIBLE_TEXT_ACT_NAMES,
   CRUCIBLE_UPSTREAM_NAMES,
@@ -581,7 +580,6 @@ export class AiPanelComponent implements OnInit {
   private readonly electron = inject(ElectronService);
   private readonly settings = inject(SettingsService);
   private readonly dialog = inject(DialogService);
-  private readonly ai = inject(AiService);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly UPSTREAMS = CRUCIBLE_UPSTREAM_NAMES;
@@ -886,7 +884,6 @@ export class AiPanelComponent implements OnInit {
      * it used to WIN over anything chosen on this page.
      */
     this.settings.updateAIConfig({ provider: 'crucible', crucible: { server: name } });
-    void this.ai.refresh();
     // Everything below belongs to the server that answered it. A 24 GB box and
     // a 12 GB box do not have the same choices, so nothing is carried over.
     this.engine.set(null);

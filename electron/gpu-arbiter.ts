@@ -53,7 +53,6 @@
 import { spawn } from 'child_process';
 
 // Stable owner labels (for logging / holder identification).
-export const GPU_OWNER_LLAMA = 'llama:cleanup';
 export function gpuOwnerForTts(jobId: string): string {
   return `tts:${jobId}`;
 }

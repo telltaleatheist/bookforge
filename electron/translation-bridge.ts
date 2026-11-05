@@ -239,32 +239,6 @@ function splitIntoChunks(text: string, chunkSize: number): string[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Translate a chunk using the bundled local llama.cpp model (active model).
- * Cogito is a reasoning model — strip any <think>…</think> block.
- */
-async function translateWithLocal(
-  text: string,
-  systemPrompt: string,
-  abortSignal?: AbortSignal
-): Promise<string> {
-  const { llamaBridge } = await import('./llama-bridge.js');
-  const out = await llamaBridge.generate({
-    system: systemPrompt,
-    prompt: text,
-    temperature: 0.3,
-    signal: abortSignal,
-  });
-  // Never `|| text` — that silently returns the original UNTRANSLATED text as
-  // if translation succeeded (and short-circuits the retry loop). Fail loudly
-  // on empty, the same way the Crucible arm below refuses an empty answer.
-  const cleaned = out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  if (!cleaned) {
-    throw new Error('Local model returned an empty translation (no text produced)');
-  }
-  return cleaned;
-}
-
-/**
  * The one sentence a provider that cannot translate here gets told.
  *
  * Two places ask and must not drift: the dispatch below, and the check
@@ -283,8 +257,7 @@ function translationProviderRefusal(provider: string): Error {
     `translation_provider_unsupported: "${provider}" cannot run a translation. Ollama, Claude `
     + 'and OpenAI were removed from BookForge in Crucible phase 15 — cloud keys now live inside '
     + 'the Crucible engine, which forwards to the upstream on the operator\'s account. Re-point '
-    + 'this row at a Crucible server (provider "crucible") or at the bundled local model '
-    + '(provider "local") and run it again.',
+    + 'this row at a Crucible server (provider "crucible") and run it again.',
   );
 }
 
@@ -300,7 +273,7 @@ function translationProviderRefusal(provider: string): Error {
  * threshold message instead of the reason.
  */
 function assertTranslationProviderSupported(config: AIProviderConfig): void {
-  if (config.provider !== 'crucible' && config.provider !== 'local') {
+  if (config.provider !== 'crucible') {
     throw translationProviderRefusal(config.provider);
   }
 }

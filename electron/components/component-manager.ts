@@ -19,7 +19,6 @@ import { getCatalog, getComponent } from './component-catalog';
 import { systemProbe } from './system-probe';
 import { downloadAndExtract, downloadFile } from './downloader';
 import { getExternalInstaller, installableExternalIds, ExternalInstaller } from './external-installers';
-import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { getPythonInvocation, buildToolsSpawnEnv } from '../narrator-paths';
@@ -732,13 +731,7 @@ async function install(
     // until 'done'. Re-stamp every download/verify/extract event with the
     // component id so the bar actually tracks the download.
     const dlProgress = (p: InstallProgress) => emit({ ...p, id });
-    // The CUDA pack fetches two release zips (build + cudart) with an upstream→
-    // mirror fallback and flattens them, rather than the single-archive path.
-    if (component.id === LLAMA_CUDA_ID) {
-      await downloadLlamaCudaInto(tempDir, dlProgress, controller.signal);
-    } else {
-      await downloadAndExtract(artifact, tempDir, dlProgress, controller.signal);
-    }
+    await downloadAndExtract(artifact, tempDir, dlProgress, controller.signal);
 
     if (controller.signal.aborted) {
       throw new Error('Install cancelled');

@@ -961,9 +961,8 @@ export class FirstRunSetupComponent {
         return;
       }
       // Best-effort, non-blocking: seed the finished sample project into the new (empty)
-      // library and refresh AI availability so the AI step reflects reality.
+      // library.
       void this.seedStarterLibrary();
-      await this.ai.refresh();
       this.currentStep.update((s) => s + 1);
     } catch (err) {
       this.libraryError.set((err as Error).message);

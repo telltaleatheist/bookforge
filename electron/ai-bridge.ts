@@ -30,8 +30,8 @@ import { promises as fsPromises } from 'fs';
 // The Crucible SDK's error vocabulary. Imported for VALUE (instanceof), not just
 // for types — translateCrucibleError is the one place those eight types are
 // turned into the Error surface the rest of this file already speaks. The
-// registry itself (./crucible/servers.js) is loaded lazily at call time, like
-// llama-bridge, so a job that never names a Crucible never reads the registry.
+// registry itself (./crucible/servers.js) is loaded lazily at call time, so a job
+// that never names a Crucible never reads the registry.
 import {
   CrucibleAuthError,
   CrucibleBusy,
@@ -236,8 +236,6 @@ export type AIProvider = 'crucible';
 
 export interface AIProviderConfig {
   provider: AIProvider;
-  /** Bundled llama.cpp (legacy). llama-bridge resolves the active model; `model` is informational. */
-  local?: { model?: string };
   /**
    * A Crucible inference server (crucible `docs/PHASE15-HOST.md` §5.3).
    *
@@ -2106,26 +2104,6 @@ async function checkCrucibleConnection(server?: string): Promise<ProviderConnect
   }
 }
 
-/**
- * Check the bundled local llama.cpp: usable when the binary is bundled and a
- * model is downloaded + selected. Does not start the server (that's lazy).
- */
-async function checkLocalConnection(): Promise<ProviderConnectionResult> {
-  try {
-    const { llamaBridge } = await import('./llama-bridge.js');
-    const s = await llamaBridge.status();
-    if (!s.binaryPresent) {
-      return { available: false, error: 'The local AI engine is not bundled in this build.' };
-    }
-    if (!s.activeModelDownloaded) {
-      return { available: false, error: 'No local model is downloaded. Download one in AI Setup.' };
-    }
-    return { available: true, models: s.activeModelId ? [s.activeModelId] : [] };
-  } catch (err) {
-    return { available: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Job Cancellation Support
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2380,7 +2358,7 @@ async function stampCrucibleModelForRun(
 /**
  * A client bound to a registered Crucible server.
  *
- * The registry module is imported lazily (the llama-bridge pattern) because it
+ * The registry module is imported lazily because it
  * resolves `<userData>` through Electron's `app`, and because a job using any
  * other provider has no business reading a file full of bearer tokens.
  */
@@ -2782,32 +2760,6 @@ async function cleanChunkWithCrucible(
 /**
  * Clean up a chunk of text using the configured provider with retry logic
  */
-/**
- * Clean a chunk using the bundled local llama.cpp model. The active model is
- * resolved inside llama-bridge (it lazily starts the server). Strips any
- * <think>…</think> reasoning the model may emit so the cleaned text is clean.
- */
-async function cleanChunkWithLocal(
-  text: string,
-  systemPrompt: string,
-  abortSignal?: AbortSignal
-): Promise<string> {
-  const { llamaBridge } = await import('./llama-bridge.js');
-  const raw = await llamaBridge.generate({
-    system: systemPrompt,
-    prompt: text,
-    temperature: 0.1,
-    signal: abortSignal,
-    // The shared output safeguards (applied in cleanChunkWithProvider) handle an
-    // empty/short result — retry, split, then fall back to the original chunk —
-    // so don't let generate() throw a fatal error on empty content.
-    allowEmpty: true,
-  });
-  // An unterminated <think> is a failed generation, not text to ship. See
-  // extractAnswer().
-  return extractAnswer(raw, 'local');
-}
-
 export async function cleanChunkWithProvider(
   text: string,
   systemPrompt: string,
@@ -4157,7 +4109,6 @@ async function cleanupEpubRun(
   if (options?.temperature !== undefined) console.log(`[AI-BRIDGE] temperature override: ${jobTemperature}`);
   console.log('[AI-BRIDGE] cleanupEpub called with:', {
     provider: providerConfig.provider,
-    localModel: providerConfig.local?.model,
     crucibleServer: providerConfig.crucible?.server,
     crucibleAct: providerConfig.crucible?.act,
     crucibleModel: providerConfig.crucible?.model,
@@ -4215,17 +4166,6 @@ async function cleanupEpubRun(
     }
     console.log(`[AI-BRIDGE] Crucible preflight passed — "${crucible.server}" serves the ${crucible.act} `
       + `class with ${crucible.model}, and it is resident`);
-  } else if (config.provider === 'local') {
-    const { llamaBridge } = await import('./llama-bridge.js');
-    const s = await llamaBridge.status();
-    if (!s.binaryPresent) {
-      stopAIPowerBlock();
-      return { success: false, error: 'The local AI engine is not bundled in this build.' };
-    }
-    if (!s.activeModelDownloaded) {
-      stopAIPowerBlock();
-      return { success: false, error: 'No local model is downloaded. Download one in AI Setup.' };
-    }
   } else {
     stopAIPowerBlock();
     return { success: false, error: `unknown_ai_provider: ${String(config.provider)}` };
@@ -5918,9 +5858,8 @@ async function cleanupEpubRun(
       : 0;
 
     // Determine model name for analytics. 'unknown' stands where nothing in this
-    // process can name the weights truthfully — the legacy local engine, whose
-    // active model llama-bridge resolves and whose `local.model` is
-    // informational — and it is left as that rather than filled with a guess.
+    // process can name the weights truthfully, and it is left as that rather than
+    // filled with a guess.
     let modelName = 'unknown';
     if (config.provider === 'crucible' && config.crucible?.model) {
       // The SERVER is part of the identity: the same model id on the Mac and in

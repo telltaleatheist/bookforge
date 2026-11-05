@@ -9,7 +9,7 @@
  * live features still read:
  *
  *   - `callAI` + `AiCallConfig` — the four-provider text-completion call
- *     (Ollama / Claude / OpenAI / bundled local), used by the ledger's translate
+ *     (a Crucible server), used by the ledger's translate
  *     pass (`mono-translation-job.ts`).
  *   - `splitIntoSentences` / `splitForTts` LEFT for shared/listen-text/ in
  *     Phase 16 (the browser extension segments its own text now) — see the
@@ -63,16 +63,6 @@ export const LANGUAGE_NAMES: Record<string, string> = {
  * than three hand-written HTTP doors with three vocabularies for "the model
  * returned nothing".
  */
-
-/**
- * Call the bundled local llama.cpp model (serves the active model). Cogito is a
- * reasoning model, so strip any <think>…</think> block from the output.
- */
-async function callLocal(prompt: string, systemPrompt?: string): Promise<string> {
-  const { llamaBridge } = await import('./llama-bridge.js');
-  const out = await llamaBridge.generate({ system: systemPrompt, prompt, temperature: 0.3 });
-  return out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-}
 
 /**
  * One completion against a Crucible server.

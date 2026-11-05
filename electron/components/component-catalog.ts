@@ -7,7 +7,6 @@
  */
 
 import { rvcVoiceComponents } from './rvc-voice-components';
-import { llamaCudaComponent } from './llama-cuda';
 import { cudaRvcComponent } from './cuda-rvc';
 import { rvcEnvComponent } from './rvc-env';
 import { whisperxEnvComponent } from './whisperx-env';
@@ -66,7 +65,6 @@ const calibre: OptionalComponent = {
 export function getCatalog(): OptionalComponent[] {
   return [
     calibre,
-    llamaCudaComponent(),
     cudaRvcComponent(),
     rvcEnvComponent(),
     whisperxEnvComponent(),

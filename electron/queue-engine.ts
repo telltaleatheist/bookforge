@@ -51,7 +51,7 @@
  *    model, a clipforge chain). Same treatment.
  *
  * It CHECKS the arbiter rather than acquiring it, because the bridges acquire it
- * themselves (parallel-tts-bridge and llama-bridge both call `acquireGpu`). An
+ * themselves (parallel-tts-bridge calls `acquireGpu`). An
  * engine that took the lock first would hand the bridge a
  * deadlock against its own scheduler.
  */

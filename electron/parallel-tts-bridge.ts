@@ -157,7 +157,7 @@ import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './
 import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 
-import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, unloadOllamaModels } from './gpu-arbiter';
+import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, unloadOllamaModels } from './gpu-arbiter';
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
@@ -7267,9 +7267,8 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
 
   const held = gpuHolder();
   if (held) {
-    const who = held === GPU_OWNER_LLAMA ? 'AI cleanup' : held;
-    console.log(`[PARALLEL-TTS] Job ${jobId} waiting for GPU (held by ${who})...`);
-    emitGpuWaitProgress(session, `Waiting for the GPU (in use by ${who})…`);
+    console.log(`[PARALLEL-TTS] Job ${jobId} waiting for GPU (held by ${held})...`);
+    emitGpuWaitProgress(session, `Waiting for the GPU (in use by ${held})…`);
   }
   // The verdict, recorded as given. `holdsGpu` drives releaseSessionGpu's log line
   // and nothing else now, so a timed-out job no longer claims a lock it never got.

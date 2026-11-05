@@ -47,7 +47,6 @@ function fail(msg) {
 // replacing the former --dir + Inno Setup steps.
 const steps = [
   'npm run download:mupdf',
-  'npm run download:llama',
   'npm run stage:packaging:seed',
   'npm run build:electron',
   'npm run build:prod',

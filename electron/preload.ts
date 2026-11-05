@@ -392,50 +392,6 @@ export interface EpubStructure {
 import type { AIProvider, AIProviderConfig } from './ai-bridge';
 export type { AIProvider, AIProviderConfig };
 
-// Bundled local AI (llama.cpp) — mirrors electron/llama-bridge.ts shapes.
-export interface LocalAiModel {
-  id: string;
-  name: string;
-  filename: string;
-  url: string;
-  sizeGB: number;
-  minRAM: number;
-  description: string;
-  downloaded: boolean;
-  isActive: boolean;
-  recommended: boolean;
-}
-
-export interface LocalAiSystemInfo {
-  platform: string;
-  totalRamGB: number;
-  cuda: boolean;
-  cudaName?: string;
-  vramGB?: number;
-  effectiveGB: number;
-  recommendedModelId: string;
-}
-
-export interface LocalAiStatus {
-  binaryPresent: boolean;
-  ready: boolean;
-  activeModelId: string | null;
-  activeModelDownloaded: boolean;
-  anyModelDownloaded: boolean;
-  modelsDir: string;
-}
-
-export interface LocalAiModelProgress {
-  modelId: string;
-  pct: number;
-  receivedBytes: number;
-  totalBytes: number;
-  speed?: string;
-  eta?: string;
-  phase: 'download' | 'done' | 'error' | 'cancelled';
-  message?: string;
-}
-
 /*
  * `AICleanupOptions`, `CleanupProgress` and `CleanupResult` ARE DELETED
  * (2026-09-14, crucible PHASE15 §5.3), along with `ai.cleanupChapter` and
@@ -1149,15 +1105,6 @@ export interface ElectronAPI {
     updateSkippedChunk: (jsonPath: string, index: number, newText: string) => Promise<{ success: boolean; error?: string }>;
     getPrompt: () => Promise<{ success: boolean; data?: { prompt: string; filePath: string }; error?: string }>;
     savePrompt: (prompt: string) => Promise<{ success: boolean; error?: string }>;
-    // Bundled local AI (llama.cpp) — AI Setup wizard
-    localStatus: () => Promise<{ success: boolean; data?: LocalAiStatus; error?: string }>;
-    localSystemInfo: () => Promise<{ success: boolean; data?: LocalAiSystemInfo; error?: string }>;
-    localListModels: () => Promise<{ success: boolean; data?: LocalAiModel[]; error?: string }>;
-    localDownloadModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-    localCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-    localDeleteModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-    localSetActive: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-    onLocalModelProgress: (callback: (p: LocalAiModelProgress) => void) => () => void;
   };
   shell: {
     openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -2858,25 +2805,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('ai:get-prompt'),
     savePrompt: (prompt: string) =>
       ipcRenderer.invoke('ai:save-prompt', prompt),
-    localStatus: () =>
-      ipcRenderer.invoke('ai:local-status'),
-    localSystemInfo: () =>
-      ipcRenderer.invoke('ai:local-system-info'),
-    localListModels: () =>
-      ipcRenderer.invoke('ai:local-list-models'),
-    localDownloadModel: (modelId: string) =>
-      ipcRenderer.invoke('ai:local-download-model', modelId),
-    localCancelDownload: (modelId: string) =>
-      ipcRenderer.invoke('ai:local-cancel-download', modelId),
-    localDeleteModel: (modelId: string) =>
-      ipcRenderer.invoke('ai:local-delete-model', modelId),
-    localSetActive: (modelId: string) =>
-      ipcRenderer.invoke('ai:local-set-active', modelId),
-    onLocalModelProgress: (callback: (p: LocalAiModelProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, p: LocalAiModelProgress) => callback(p);
-      ipcRenderer.on('ai:local-model-progress', listener);
-      return () => ipcRenderer.removeListener('ai:local-model-progress', listener);
-    },
+
   },
   shell: {
     openExternal: (url: string) =>

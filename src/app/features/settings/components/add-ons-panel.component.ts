@@ -86,9 +86,7 @@ import { ComponentStatus, OptionalComponent } from '../../../core/services/elect
               <div class="gpu-explainer">
                 <span class="gpu-spark">⚡</span>
                 We found your <strong>{{ gpu }}</strong> —
-                {{ status.component.id === 'cuda-rvc'
-                   ? 'add GPU acceleration to voice enhancement.'
-                   : 'add GPU acceleration to run on-device AI cleanup much faster.' }}
+                add GPU acceleration to voice enhancement.
               </div>
             }
 
@@ -655,11 +653,11 @@ export class AddOnsPanelComponent implements OnInit {
       .map(c => c.component.id)),
   );
 
-  /** The CUDA download-on-demand packs (llama LLM + RVC PyTorch). Treated
+  /** The CUDA download-on-demand pack (RVC PyTorch). Treated
    *  as one "GPU acceleration" group — co-selected at first run and grouped in
    *  the GPU-only view, so the user makes a single GPU choice for every phase. */
   isCudaPack(id: string): boolean {
-    return id === 'llama-cuda' || id === 'cuda-rvc';
+    return id === 'cuda-rvc';
   }
 
   /*

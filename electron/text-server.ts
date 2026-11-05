@@ -38,8 +38,8 @@
  * What is NOT taken from it: the reading server registers no `onYield` on
  * purpose (yielding mid-conversion fails a ninety-minute run). This one DOES.
  * A text pass is minutes, not hours, and the card's real work is the renders —
- * so the text server is the LOW-priority holder, exactly as `GPU_OWNER_LLAMA`
- * is in gpu-arbiter.ts: a TTS acquire calls our yield, we stop, the render runs.
+ * so the text server is the LOW-priority holder, as the bundled llama was: a TTS
+ * acquire calls our yield, we stop, the render runs.
  *
  * ── The measured numbers this exists to buy ─────────────────────────────────
  *
@@ -1026,7 +1026,7 @@ async function startServer(
 
   const { file, args, describe } = buildTextServerCommand(profile);
 
-  // THE LOW-PRIORITY HOLD. `GPU_OWNER_LLAMA`'s posture in gpu-arbiter.ts: the
+  // THE LOW-PRIORITY HOLD, the posture the bundled llama had in gpu-arbiter.ts: the
   // text server registers a yield and steps off the card when a render asks for
   // it. A text pass is minutes; a narration is hours and is what the card is for.
   //

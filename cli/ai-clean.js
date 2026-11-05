@@ -12,7 +12,7 @@
  *
  * Run via the electron shim:
  *   node --require ./cli/electron-stub.js cli/ai-clean.js \
- *        --input book.epub --provider local [--simplify --mode learner]
+ *        --input book.epub --provider crucible --server mac --model qwen3.5-9b [--simplify --mode learner]
  *   node --require ./cli/electron-stub.js cli/ai-clean.js \
  *        --input book.epub --provider crucible --server mac --model qwen3.5-9b --stages ocr
  *
@@ -68,8 +68,9 @@ function buildProviderConfig(provider, model, crucibleServer) {
       if (!model) throw new Error("provider 'crucible' needs --model <id> (e.g. qwen3.5-9b)");
       return { provider, crucible: { server: crucibleServer, model } };
     case 'local':
-      // Bundled llama.cpp; the active model is resolved inside llama-bridge (active-model.json).
-      return { provider, local: { model: model || undefined } };
+      throw new Error(
+        "provider 'local' is gone: BookForge runs no model of its own any more. Use "
+        + "--provider crucible --server <name> --model <id>; bookforge-tts --crucible-list names the servers.");
     // THE THREE DELETED PROVIDERS ARE REFUSED BY NAME rather than left out of
     // the switch. Somebody with a shell script from last month must be told
     // what happened to their flag and where the thing it named went, not
@@ -87,7 +88,7 @@ function buildProviderConfig(provider, model, crucibleServer) {
         + 'on the engine and routed to per class. Run --provider crucible --server <name> '
         + '--model <the routed id>.');
     default:
-      throw new Error(`unknown --provider '${provider}' (crucible|local)`);
+      throw new Error(`unknown --provider '${provider}' (crucible)`);
   }
 }
 
@@ -96,7 +97,7 @@ async function main() {
 
   if (!args.input) throw new Error('--input <file.epub> is required');
   if (!fs.existsSync(args.input)) throw new Error(`input epub not found: ${args.input}`);
-  if (!args.provider) throw new Error('--provider <crucible|local> is required');
+  if (!args.provider) throw new Error('--provider crucible is required');
   // --server belongs to ONE provider. Accepting it elsewhere and dropping it is
   // the failure mode the flags keeper exists to end: a run that silently went to
   // the local machine reads as a measurement of the remote one.
@@ -213,19 +214,8 @@ async function main() {
     stopping = true;
     console.log(`\n[ai] ${sig} — cancelling job ${jobId}...`);
     Promise.resolve(bridge.cancelCleanupJob ? bridge.cancelCleanupJob(jobId) : undefined)
-      .then(() => stopLocalLlama())
       .then(() => process.exit(130))  // abort-path: SIGINT/SIGTERM teardown
       .catch(() => process.exit(130));  // abort-path: SIGINT/SIGTERM teardown
-  };
-  const stopLocalLlama = async () => {
-    if (args.provider !== 'local') return;
-    try {
-      const { llamaBridge } = require('../dist/electron/llama-bridge.js');
-      await llamaBridge.stop();
-      console.log('[ai] local llama-server stopped (VRAM released)');
-    } catch (e) {
-      console.warn('[ai] llama-server stop failed:', e && e.message);
-    }
   };
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
@@ -240,10 +230,6 @@ async function main() {
   console.log(`[ai] ${task} via ${via} — driving aiBridge.cleanupEpub...`);
 
   const r = await api.cleanupEpub(args.input, jobId, null, undefined, config, options);
-  // The app is long-lived and lets the 5-min idle timer stop llama-server; the CLI
-  // exits immediately, which would ORPHAN the server holding VRAM. Stop it explicitly
-  // on every terminal path.
-  await stopLocalLlama();
   if (!r || !r.success) throw new Error(`cleanupEpub failed: ${r && r.error ? r.error : 'unknown error'}`);
 
   console.log(`[ai] done in ${((Date.now() - t0) / 1000).toFixed(0)}s -> ${r.outputPath}`);

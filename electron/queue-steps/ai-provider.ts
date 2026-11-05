@@ -76,9 +76,9 @@ export function machinesForAiStep(config: Record<string, unknown>): 'local' | 'a
 /**
  * What a queue row stores about which engine does its text work.
  *
- * No credential, by construction: see the header. `aiModel` survives for the
- * legacy bundled-llama arm only, and is informational even there — llama-bridge
- * resolves the active model itself.
+ * No credential, by construction: see the header. `aiModel` and the `local` value
+ * survive only because a persisted row can still say them; `providerConfigOf`
+ * refuses such a row by name (the bundled llama is deleted).
  */
 export interface AiJobConfig {
   aiProvider: 'local' | 'crucible';
