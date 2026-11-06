@@ -209,6 +209,19 @@ function buildZip(entries) {
       });
     }
 
+    await check('a cover is written past MAX_PATH, as Pillow wrote it', async () => {
+      // A long title under a deep session dir passes 260 characters; libvips alone cannot open that for writing.
+      const dir = path.join(scratch, 'd'.repeat(120), 'e'.repeat(120));
+      fs.mkdirSync(dir, { recursive: true });
+      const png = await require('sharp')({ create: { width: 4, height: 4, channels: 3, background: '#808080' } }).png().toBuffer();
+      const book = { itemsOfType: (type) => (type === 'cover' ? [{ content: async () => png }] : []) };
+      const lines = [];
+      const written = await writeCover(book, dir, 'f'.repeat(40), (line) => lines.push(line));
+      assert.deepStrictEqual(lines, []);
+      assert.ok(typeof written === 'string' && written.length > 260, `a path past MAX_PATH, not ${written}`);
+      assert.ok(fs.statSync(written).size > 0, 'cover written');
+    });
+
     await check('an Orpheus prep refuses by name', async () => {
       await assert.rejects(prepSession('x.epub', 'y', { ttsEngine: 'orpheus', maxChars: 1, floorChars: 1 }, new FromLxml({}), writeCover, () => {}),
         /narrator preps for \['higgs-v3'\], not 'orpheus'/);

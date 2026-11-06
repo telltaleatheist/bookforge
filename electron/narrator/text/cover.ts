@@ -7,6 +7,7 @@
  * Which covers get written and which refuse is what stays the same.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 import type { EpubBook } from './epub';
@@ -39,7 +40,9 @@ export async function writeCover(book: EpubBook, processDir: string, filenameNoE
     if (meta.space === 'b-w' && meta.channels === 2) throw new Error('cannot write mode LA as JPEG');
     if (meta.depth === 'ushort' && meta.space !== 'srgb' && meta.space !== 'rgb16') throw new Error('cannot write mode I;16 as JPEG');
     const file = path.join(processDir, `${filenameNoExt}.jpg`);
-    await image.removeAlpha().jpeg({ quality: 75, chromaSubsampling: '4:2:0' }).toFile(file);
+    // Written by Node, not by libvips: libvips cannot open a path past MAX_PATH, and a long title's
+    // session path passes it where Pillow's write did not fail.
+    await fs.promises.writeFile(file, await image.removeAlpha().jpeg({ quality: 75, chromaSubsampling: '4:2:0' }).toBuffer());
     return file;
   } catch (err) {
     log(`get_cover() error: ${(err as Error).message}`);
