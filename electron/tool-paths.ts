@@ -126,7 +126,6 @@ export interface ToolPathsConfig {
    * spending a branch on it. Orpheus is the one engine that ever needed the
    * guest, and `useWsl2ForOrpheus` is the toggle that says so.
    */
-  useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (the one engine that needs the guest)
   wslDistro?: string;              // WSL distro name (e.g., "Ubuntu")
   wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/anaconda3/bin/conda")
   /**
@@ -148,7 +147,6 @@ export interface ToolPathsConfig {
    * is not there. A machine that genuinely still holds those sessions moves
    * them into `getWslSessionsRoot()`, which is what the refusal said to do.
    */
-  wslOrpheusCondaEnv?: string;     // Conda env name for Orpheus in WSL (default: "orpheus_tts")
 
   // Higgs Audio v3, served from WSL. The same shape as the Orpheus pair above and
   // for a STRONGER reason than Orpheus's: Orpheus runs on native Windows and
@@ -358,7 +356,6 @@ export function saveConfig(config: ToolPathsConfig): void {
  * renderer's serialisation quirk into every call site forever.
  */
 const BOOLEAN_CONFIG_KEYS: ReadonlySet<string> = new Set([
-  'useWsl2ForOrpheus',
   'useWsl2ForHiggs',
 ]);
 
@@ -1733,32 +1730,10 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
   };
 }
 
-/**
- * WSL routing for TTS.
- *
- * ONE FUNCTION, since 2026-09-14. `shouldUseWsl2ForAllTts()` was deleted with
- * its key: it was a hard-wired `return false` that two call sites branched on,
- * which is a question nobody was answering dressed as a setting.
- *
- * `shouldUseWsl2ForOrpheus()` is the explicit, user-driven opt-in: when
- * `useWsl2ForOrpheus` is set, Orpheus jobs are routed through the WSL spawn
- * path (parallel-tts-bridge → spawnWithWslSupport → `-n <wslOrpheusCondaEnv>`).
- * Orpheus is the one engine that ever needed the guest — vLLM CUDA graphs do
- * not capture on native Windows. Windows-only; always false elsewhere.
- *
- * DELETE WITH THE SPAWN LAYER: every reader of this is the legacy local
- * narrator spawn. The SWITCH that gated it is already gone
- * (docs/LEGACY-REMOVAL.md) and Orpheus is retired from both pickers (Owen,
- * 2026-09-14; Higgs is the one narration engine), so nothing in the app reaches
- * this any more. It is held, not dead: `orpheus-worker-pool.ts` and the spawn
- * builders are the surviving record of tuning measured over months, and they go
- * once Crucible's own `environment()` has been audited against them.
+/*
+ * `shouldUseWsl2ForOrpheus()` and its `useWsl2ForOrpheus` key LEFT IN STEP 8 (2026-11-05) with the Orpheus
+ * spawn arm. Higgs keeps its own toggle, `shouldUseWsl2ForHiggs()`, below.
  */
-export function shouldUseWsl2ForOrpheus(): boolean {
-  if (os.platform() !== 'win32') return false;
-  loadConfig();
-  return state.config.useWsl2ForOrpheus === true;
-}
 
 /**
  * Which artifact form the resident streaming engine serves — see
@@ -1860,26 +1835,14 @@ export function getWslSessionsRoot(): string {
       + 'session, so there is no safe default: BookForge derives it from the guest home '
       + `in "WSL Conda Path" (<home>/${WSL_SESSIONS_DIRNAME}), and that setting is either `
       + "empty or not a /home/<user>/… path. Set \"WSL Sessions Root\" in Settings → "
-      + 'Add-ons, or turn off "WSL2 for Orpheus" to render natively.',
+      + 'Add-ons.',
   );
-}
-
-/**
- * Get WSL Orpheus conda environment name from config
- */
-export function getWslOrpheusCondaEnv(): string {
-  // CLI/dev seam: override the WSL Orpheus conda env for this process without editing
-  // tool-paths.json (mirrors BOOKFORGE_ORPHEUS_MODELS_DIR).
-  const envOverride = process.env.WSL_ORPHEUS_CONDA_ENV?.trim();
-  if (envOverride) return envOverride;
-  loadConfig();
-  return state.config.wslOrpheusCondaEnv || 'orpheus_tts';
 }
 
 /**
  * Should Higgs jobs run inside WSL?
  *
- * Windows-only and explicitly opted into, exactly like `shouldUseWsl2ForOrpheus`.
+ * Windows-only and explicitly opted into.
  * It is a SEPARATE toggle rather than a second reader of the Orpheus one for the
  * same reason each door's toggle is separate: a machine can perfectly well have a
  * WSL env for one of these and not the other, and folding them together would
@@ -1952,12 +1915,10 @@ export const toolPaths = {
   // WSL2 functions
   detectWslAvailability,
   checkWslHiggsSetup,
-  shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
   getWslSessionsRoot,
-  getWslOrpheusCondaEnv,
   getWslHiggsCondaEnv,
   wslPathToWindows,
 };

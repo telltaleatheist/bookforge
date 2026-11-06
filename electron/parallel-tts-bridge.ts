@@ -435,10 +435,6 @@ export function forceKillAllNarratorBatchProcesses(): void {
     // command-line match above is the thing that works.
   }
 
-  // Also clean up WSL processes if applicable
-  if (os.platform() === 'win32') {
-    cleanupWslOrphanedProcesses();
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2181,17 +2177,6 @@ function killWslWrapper(proc: ChildProcess, label: string): void {
 }
 
 /**
- * App-quit teardown for WSL-hosted e2a workers: cooperative SIGTERM, VERIFIED, then
- * VM terminate for any survivor (never SIGKILL). Called from main.ts before-quit so
- * closing BookForge can never strand a vLLM worker mid-CUDA-work inside the guest.
- * Shorter 10s grace — the user is quitting; a VM cold start next launch is fine.
- */
-export async function gracefulWslShutdown(): Promise<WslPkillOutcome> {
-  if (process.platform !== 'win32' || !shouldUseWsl2ForOrpheus()) return 'none';
-  return destroyWslGuestProcesses(NARRATOR_BATCH_RE, { graceMs: 10000, label: 'app-quit' });
-}
-
-/**
  * Safety-net reaper for orphaned BATCH audiobook workers (worker.py / app.py) of a
  * single job. Runs after the tracked-handle kills in stopParallelConversion /
  * killAllWorkers to catch workers whose ChildProcess handle was lost — a retry/resume
@@ -2253,64 +2238,6 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
   }
 }
 
-/**
- * Clean up orphaned vLLM/e2a processes in WSL (SIGTERM only — workers exit themselves
- * and release the GPU; anything that refuses SIGTERM is handled by the session
- * teardown ladder, never SIGKILL).
- *
- * SCOPING: pass the calling job's e2a session id whenever one exists. The old global
- * "ebook2audiobook.*\.py" + "vllm" patterns killed OTHER live sessions' workers too —
- * a retry of job A once SIGTERM'd job B's freshly spawned worker. The global sweep is
- * only allowed when no session is active (app-level cleanup / quit).
- */
-function cleanupWslOrphanedProcesses(sessionId?: string | null): void {
-  if (os.platform() !== 'win32') return;
-  if (!shouldUseWsl2ForOrpheus()) return;
-
-  const scoped = !!(sessionId && /^[\w-]+$/.test(sessionId));
-  if (!scoped && activeSessions.size > 0) {
-    console.warn(`[PARALLEL-TTS] Skipping GLOBAL WSL orphan cleanup — ${activeSessions.size} session(s) still active (a global pkill would hit their workers)`);
-    return;
-  }
-  if (!scoped) {
-    const extLock = externalGpuJobLock();
-    if (extLock) {
-      console.warn(`[PARALLEL-TTS] SKIPPING global WSL orphan cleanup — external GPU job lock present: ${extLock}`);
-      return;
-    }
-  }
-
-  // `|vllm` stays: a vLLM child that outlived its parent is exactly what this
-  // sweep is for, and it is named by its own process rather than by the module
-  // that started it.
-  //
-  // Which is also why `excludeRe` is not optional here. `narrator.serve` hosts the
-  // resident Listen server's vLLM, and that vLLM matches `|vllm` like any other. The
-  // pool owns the server's teardown; a batch job ending and taking the engine out from
-  // under a listener is a playback that stops for no reason anyone can see. The
-  // exclusion covers `narrator.serve` AND its descendants, because vLLM's engine-core
-  // children are separate processes that do not carry `narrator.serve` in their own
-  // command lines.
-  //
-  // THE TEXT SERVER IS THE SECOND THING `|vllm` WOULD CATCH (2026-09-08). It is
-  // `python -m vllm.entrypoints.openai.api_server` inside the same distro
-  // (electron/text-server.ts), it is cleaning or translating a book while a
-  // narration runs, and it has its OWN cooperative teardown — the arbiter stops
-  // it on drain, on a GPU yield and at quit. A batch job ending and SIGTERMing it
-  // is a book's cleanup dying halfway for a reason nobody can see, which is
-  // exactly what the Listen server's exclusion already exists to prevent.
-  const pattern = scoped ? wslSessionPattern(sessionId) : `${NARRATOR_BATCH_RE}|vllm`;
-  const spare = `${SERVE_PROCESS_RE}|${TEXT_SERVER_PROTECT_RE}`;
-  console.log(`[PARALLEL-TTS] Cleaning up orphaned WSL processes (${scoped ? `session ${sessionId}` : 'global'})...`);
-  // Fire-and-forget async SIGTERM: best-effort reap of zombies from a crashed worker.
-  // Verification that the guest/VRAM is actually clear happens in the spawn preflight.
-  void wslPkillGraceful(pattern, {
-    graceMs: 8000,
-    label: scoped ? `orphan-cleanup ${sessionId}` : 'orphan-cleanup global',
-    excludeRe: spare,
-  })
-    .catch((err) => console.warn('[PARALLEL-TTS] WSL orphan cleanup failed:', err));
-}
 
 // Power save blocker ID - prevents system sleep during TTS conversion
 let powerBlockerId: number | null = null;
@@ -2936,7 +2863,7 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { narratorScratchRoot, narratorScratchRootIfAvailable, shouldUseWsl2ForOrpheus, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslToWindowsPath, impliedExportDirOf, renderSessionDirOf } from './narrator-paths';
+import { narratorScratchRoot, narratorScratchRootIfAvailable, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslToWindowsPath, impliedExportDirOf, renderSessionDirOf } from './narrator-paths';
 
 export function isHiggsJob(settings: ParallelTtsSettings): boolean {
   return settings.ttsEngine === 'higgs';
@@ -3844,8 +3771,6 @@ export async function killAllWorkers(
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
-  // Also clean up orphaned processes in WSL if applicable (global — sessions are dead)
-  cleanupWslOrphanedProcesses();
 
   // Keep the session map when the caller wants to flush partial progress to the cache
   // AFTER the worker processes are dead (files stable) — clearing here would leave
@@ -8829,9 +8754,6 @@ export async function stopParallelConversion(
 
   // Clean up any orphaned vLLM processes that escaped the process tree
   cleanupOrphanedVllmProcesses();
-  // Also clean up orphaned WSL processes — scoped to THIS session so a concurrent
-  // job's worker can never be hit.
-  cleanupWslOrphanedProcesses(session.prepInfo?.sessionId);
 
   // Emit cancelled analytics before cleanup — worded by the reason, which is
   // the one thing about a stop that is not readable off the session.
@@ -9299,23 +9221,8 @@ function getSessionTmpDirs(): string[] {
   const nativeTmp = narratorScratchRoot();
   dirs.push(nativeTmp);
 
-  // On Windows, also include the guest sessions root if WSL TTS is enabled — but
-  // only when WSL is actually responding: async fs against \\wsl$ with a wedged VM
-  // never settles (strands the resume-check promises + libuv threadpool slots).
-  // When WSL is down, resume checks degrade to the durable Windows project cache,
-  // which is the primary resume source anyway.
-  if (os.platform() === 'win32' && shouldUseWsl2ForOrpheus()) {
-    if (isWslAliveCached()) {
-      // Convert WSL path to Windows UNC so Node.js can read it
-      const uncTmpDir = wslToWindowsPath(getWslSessionsRoot());
-      // Only add if it's a different path than the native one
-      if (uncTmpDir !== nativeTmp) {
-        dirs.push(uncTmpDir);
-      }
-    } else {
-      console.warn('[PARALLEL-TTS] Skipping the WSL sessions root in the session scan — WSL is not responding');
-    }
-  }
+  // The WSL guest sessions root was scanned here when the Orpheus WSL toggle was on. It left with
+  // Orpheus in step 8 (2026-11-05): no other engine writes a session into the guest.
 
   return dirs;
 }

@@ -263,25 +263,9 @@ async function main() {
     assert.ok(wedges.length > 0, 'the wedge was not recorded');
   });
 
-  console.log('the caller actually asks for the exclusion');
-
-  await check('cleanupWslOrphanedProcesses passes an exclusion built from BOTH servers', () => {
-    // A helper CAPABLE of excluding is worth nothing if the one caller that needs it
-    // does not ask. Read from the compiled bridge, so this matches what ships.
-    const call = bridgeJs.match(/wslPkillGraceful\)\(pattern, \{[\s\S]{0,400}?\}\)/);
-    assert.ok(call, 'the sweep no longer calls wslPkillGraceful(pattern, {...}) — did it move?');
-    const named = call[0].match(/excludeRe:\s*([A-Za-z_$][\w$]*)/);
-    assert.ok(named, `the global sweep passes no excludeRe at all:\n${call[0]}`);
-    // The exclusion is composed from the two protected servers, either inline or
-    // through a local. Whichever, BOTH constants must be in what the sweep builds.
-    const composed = named[1] === 'SERVE_PROCESS_RE'
-      ? 'SERVE_PROCESS_RE'
-      : (bridgeJs.match(new RegExp(`const ${named[1]} = [^;]+;`)) || [''])[0];
-    assert.match(composed, /(?:\w+\.)?SERVE_PROCESS_RE/,
-      `the global sweep does not exclude the Listen server:\n${composed}`);
-    assert.match(composed, /(?:\w+\.)?TEXT_SERVER_PROTECT_RE/,
-      `the global sweep does not exclude the text server:\n${composed}`);
-  });
+  // "cleanupWslOrphanedProcesses passes an exclusion built from BOTH servers" LEFT IN STEP 8 (2026-11-05):
+  // that sweep was gated on the Orpheus WSL toggle and went with it. The exclusion helper it called
+  // (wsl-lifecycle, above) is still the text server's and is still held to sparing both servers.
 
   console.log('the assertions are real');
 

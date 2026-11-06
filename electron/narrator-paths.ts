@@ -74,12 +74,10 @@ import {
   getConfiguredToolsEnvPath,
   getFfmpegPath,
   updateConfig as updateToolConfig,
-  shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
   getWslSessionsRoot,
-  getWslOrpheusCondaEnv,
   getWslHiggsCondaEnv,
   wslPathToWindows,
 } from './tool-paths';
@@ -306,14 +304,6 @@ function guestEnvMarker(name: string): string {
  *                    the engine-agnostic tools doors.
  */
 export function getEnvPathForEngine(ttsEngine?: string): string {
-  // Orpheus via WSL2: the spawn resolves `-n <wslOrpheusCondaEnv>` inside the
-  // guest, so this value is never used as a real Windows path. Returning here
-  // short-circuits the Windows 'orpheus' component lookup below, which would throw
-  // (that component isn't installed when Orpheus runs in WSL).
-  if (ttsEngine?.toLowerCase() === 'orpheus' && shouldUseWsl2ForOrpheus()) {
-    return guestEnvMarker('orpheus_wsl_env');
-  }
-
   // Higgs never resolves to a WINDOWS env, ever — not even the "point at your own
   // install" shape F5 and Voxtral had. Its serving stack is vLLM-Omni, which has
   // no Windows build at all, so the only correct answer on win32 is the WSL env
@@ -653,7 +643,7 @@ export function wslToWindowsPath(guestPath: string): string {
  * `wslToWindowsPath` above is built on, not a second converter to choose
  * between. Callers outside tool-paths ask `wslToWindowsPath`.
  */
-export { shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv };
+export { shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslHiggsCondaEnv };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Safe env builder for tools spawns
@@ -741,7 +731,6 @@ export const narratorPaths = {
   windowsToWslPath,
   wslToWindowsPath,
   // WSL config (re-exported from tool-paths)
-  shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,

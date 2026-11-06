@@ -86,11 +86,10 @@ fs.mkdirSync(path.dirname(fakePython), { recursive: true });
 fs.writeFileSync(fakePython, '');
 process.env.BOOKFORGE_TOOLS_ENV = FAKE_TOOLS_ENV;
 
-// Both toggles ON: the strongest form of the claim is that a Crucible-venue run
-// stays native on a machine where BOTH engines would otherwise go to the guest.
+// The Higgs toggle ON: the strongest form of the claim is that a Crucible-venue run
+// stays native on a machine where the engine would otherwise go to the guest.
 // `wslCondaPath` is what `getWslSessionsRoot` derives the guest root from.
 fs.writeFileSync(path.join(USER_DATA, 'tool-paths.json'), JSON.stringify({
-  useWsl2ForOrpheus: true,
   useWsl2ForHiggs: true,
   wslDistro: 'Ubuntu',
   wslCondaPath: '/home/keeper/anaconda3/bin/conda',
@@ -193,11 +192,9 @@ function lift(name) {
     assert.strictEqual(plan.env.X, '1');
     assert.ok(plan.env.PYTHONPATH && fs.existsSync(path.join(plan.env.PYTHONPATH, 'narrator', '__init__.py')),
       `PYTHONPATH does not reach narrator: ${plan.env.PYTHONPATH}`);
-    for (const engine of ['orpheus']) {
-      const p2 = narratorSpawn.buildNarratorSpawn({ engine, phase: 'prep', args: [], envExtras: {}, onHost: true });
-      assert.strictEqual(p2.viaWsl, false, `${engine}: crosses into WSL`);
-      assert.strictEqual(p2.command, fakePython);
-    }
+    // Orpheus is retired (step 8): its spawn arm is gone, and asking for one is refused by name.
+    assert.throws(() => narratorSpawn.buildNarratorSpawn({ engine: 'orpheus', phase: 'prep', args: [], envExtras: {}, onHost: true }),
+      /Orpheus is retired/);
   });
 
   if (ON_WINDOWS) {

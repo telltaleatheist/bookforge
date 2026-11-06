@@ -697,18 +697,10 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
   }
 });
 
-test('the global WSL orphan sweep spares the text server', () => {
-  /*
-   * `parallel-tts-bridge`'s unscoped sweep matches `narrator\.compat\.(worker|app)|vllm`
-   * — and the text server IS a vllm process in the same distro. Without the
-   * exclusion, a batch job ending would SIGTERM a cleanup halfway through a book,
-   * which is exactly what the Listen server's own exclusion exists to prevent.
-   */
-  const source = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
-  assert.ok(/TEXT_SERVER_PROTECT_RE/.test(source), 'the sweep must know the text server by name');
-  assert.ok(/excludeRe: spare/.test(source), 'and must pass it as the exclusion');
-  // The exclusion is read out of `ps`, which TRUNCATES; the port is at the end of
-  // the argv, so the protect pattern must not demand it.
+// "the global WSL orphan sweep spares the text server" LEFT IN STEP 8 (2026-11-05): the bridge's
+// global sweep was gated on the Orpheus WSL toggle and went with it, so there is no sweep to spare it
+// from. The protect pattern's own rule stays:
+test('the text server protect pattern does not depend on a field ps may truncate', () => {
   assert.strictEqual(server.TEXT_SERVER_PROTECT_RE.includes('--port'), false,
     'the ps-side exclusion must not depend on a field ps may truncate away');
 });

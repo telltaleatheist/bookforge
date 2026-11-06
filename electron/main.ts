@@ -14514,7 +14514,7 @@ app.on('before-quit', async (event) => {
   // process, so it is the last to be cut short and the loudest when it is.
   await quitStepWithDeadline('kill and flush TTS workers (incl. WSL)', 60_000, async () => {
     try {
-      const { killAllWorkers, forceKillAllNarratorBatchProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
+      const { killAllWorkers, forceKillAllNarratorBatchProcesses, flushActiveSessionsToCache } = await import('./parallel-tts-bridge.js');
       // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
       // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
       // so the flush found nothing and quitting mid-job lost the checkpoint.)
@@ -14530,14 +14530,8 @@ app.on('before-quit', async (event) => {
       await killAllWorkers(false, { reason: 'closed' });
       // Also run aggressive cleanup to catch any orphans
       forceKillAllNarratorBatchProcesses();
-      // Global sweep for anything the session-scoped teardowns missed. Quitting without
-      // this strands vLLM mid-CUDA-work inside the guest — the very thing that
-      // kernel-wedges the WSL VM until a reboot. An 'unresponsive' outcome is logged
-      // loudly; the quit still proceeds (holding the app open can't fix a wedged VM).
-      const wslOutcome = await gracefulWslShutdown();
-      if (wslOutcome === 'unresponsive') {
-        console.error('[MAIN] WSL did not respond during shutdown — VM may be wedged; next launch may need a reboot to use Orpheus.');
-      }
+      // The global WSL sweep that stood here was gated on the Orpheus WSL toggle, and left with
+      // Orpheus in step 8 (2026-11-05). The session-scoped teardowns above still run.
       // Now that the workers are dead (files stable) and the sessions are still present,
       // preserve any in-progress render to the durable project cache so quitting mid-job
       // doesn't lose the sentences rendered so far (bounded so a slow WSL copy can't hang).

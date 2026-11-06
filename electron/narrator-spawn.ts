@@ -98,11 +98,9 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
-  shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
-  getWslOrpheusCondaEnv,
   getWslHiggsCondaEnv,
 } from './tool-paths';
 import {
@@ -409,7 +407,7 @@ export function narratorRunsInWsl(engine: NarratorEngineId | undefined, phase: N
   // assembly on Windows reads a session that generation already normalised onto a
   // Windows path, and the \\wsl$ 9p mount is slow enough to dominate the job.
   if (!engine || PHASE_ENGINE[phase] === 'refused') return false;
-  return engine === 'higgs' ? shouldUseWsl2ForHiggs() : shouldUseWsl2ForOrpheus();
+  return engine === 'higgs' && shouldUseWsl2ForHiggs();
 }
 
 /**
@@ -510,6 +508,12 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
   const { engine, phase, args, envExtras } = req;
   const rule = PHASE_ENGINE[phase];
 
+  // Step 8 (2026-11-05): Orpheus is retired, and its spawn arm (guest env, WSL toggle) is gone.
+  if (engine === 'orpheus') {
+    throw new Error('buildNarratorSpawn: Orpheus is retired, and this build spawns nothing for it. '
+      + 'Its finished audiobooks are untouched.');
+  }
+
   if (rule === 'refused' && engine) {
     throw new Error(
       `buildNarratorSpawn: phase '${phase}' is engine-agnostic and runs in the tools ` +
@@ -521,7 +525,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     throw new Error(
       `buildNarratorSpawn: phase '${phase}' needs an engine — it decides which ` +
         'environment the spawn runs in and what NARRATOR_ENGINE says. Pass ' +
-        "'orpheus' or 'higgs'.",
+        "'higgs'.",
     );
   }
 
@@ -576,7 +580,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     // otherwise the engine decides, which is every render spawn.
     const envName = req.wslCondaEnv !== undefined
       ? req.wslCondaEnv
-      : (engine === 'higgs' ? getWslHiggsCondaEnv() : getWslOrpheusCondaEnv());
+      : getWslHiggsCondaEnv();
     const distro = getWslDistro();
 
     const guestArgs = args.map(windowsToWslPath);
@@ -651,7 +655,7 @@ export function narratorNativePython(engine: NarratorEngineId | undefined): Pyth
   // Higgs must NOT go to `getEnvPathForEngine('higgs')` here: that resolves the
   // `higgs-env` component, which is the SERVED stack's environment and has no
   // macOS build at all. It would refuse a Mac that is perfectly able to render.
-  if ((engine === 'orpheus' || engine === 'higgs') && process.platform === 'darwin') {
+  if (engine === 'higgs' && process.platform === 'darwin') {
     return {
       command: getCondaPath(),
       args: ['run', '--no-capture-output', '-p', getNarratorMlxEnv(), 'python'],
