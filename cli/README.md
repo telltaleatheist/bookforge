@@ -423,9 +423,9 @@ second assembly implementation, deliberately.
 # Assemble what is already rendered (the denoise answer is required):
 python cli/bookforge-tts.py --assemble --project "<dir>" --final-denoise
 
-# With the voice's de-ring filter and a 0.7s inter-sentence gap, no denoise:
-python cli/bookforge-tts.py --assemble --project "<dir>" \
-    --de-ring --assembly-gap 0.7 --no-final-denoise
+# No denoise. (`--de-ring` and `--assembly-gap` were Orpheus's: since step 8, 2026-11-05, the
+# assemble adapter refuses `--de-ring` and `--sentence-gap` by name, so either option stops the run.)
+python cli/bookforge-tts.py --assemble --project "<dir>" --no-final-denoise
 
 python cli/bookforge-tts.py --assemble --project "<dir>" --dry-run
 ```
@@ -551,7 +551,7 @@ the scratch root.
 | `--rvc-enhance` | `rvc-job.runRvcEnhancement` (`queue-steps/rvc-enhancement.ts`) | `chapters/sentences-rvc-<voice>/` — the session's sentences through an RVC voice |
 
 ```
-python cli/bookforge-tts.py --denoise --project "<dir>" [--sentence-gap 0.6]
+python cli/bookforge-tts.py --denoise --project "<dir>"
 python cli/bookforge-tts.py --rvc-enhance --project "<dir>" \
     --rvc-voice-id builtin:deathstalker-sigma --enhance-index-rate 0.3 \
     --enhance-protect-rate 0.1
@@ -728,7 +728,10 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
   (env `ORPHEUS_SENTENCE_GAP`; default 0.6). Forwarded into the WSL worker, so it is
   the gap **baked into each FLAC at render time**. `--denoise`/`--rvc-enhance` pass it
   to the job as `FinalDenoiseConfig.sentenceGap` / `RvcEnhancementConfig.sentenceGap`,
-  which is the same measurement re-laid on the raw cached sentences.
+  which is the same measurement re-laid on the raw cached sentences. **Since step 8
+  (2026-11-05) `cli/final-denoise.js`, `cli/rvc-enhance.js` and `cli/orpheus-audiobook-render.js`
+  refuse `--sentence-gap` by name** (the gap pass was Orpheus's, and Orpheus is retired), so on
+  `--denoise`, `--rvc-enhance` and `--assemble` this option stops the run.
   **Not `--assembly-gap`**, which is the gap the pass in front of `--assemble`/
   `--audiobook`'s reassembly re-lays. Two passes at two different times; one flag for
   both would mean a value whose meaning depended on which command read it.
