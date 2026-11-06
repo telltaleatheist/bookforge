@@ -144,29 +144,24 @@ function refuse(what, { phase, engine, args }) {
   };
 }
 
-// AN ENGINE THE SPAWN AND THE ARGV DISAGREE ABOUT. Passing `--tts_engine higgs`
-// on a plan built for orpheus is exactly what a stale session-state.json produces,
-// and narrator refuses it rather than picking one — which is the refusal a real
-// user hits, and it is NOT the one I expected when writing this (I predicted the
-// near-miss "'higgs' is not a registry id"; the disagreement check fires first).
-// Left as the real message, because a test that asserts the refusal I imagined is
-// the same mistake as a fixture.
+// AN ENGINE THE SPAWN AND THE ARGV DISAGREE ABOUT, on the one door left (step 8: the worker and
+// assembly phases are gone). `--tts_engine orpheus` on a plan built for Higgs is what a stale
+// session-state.json produces, and narrator refuses it rather than picking one.
 const nearMiss = refuse('an engine the argv and the spawn disagree about', {
-  engine: 'orpheus', phase: 'worker',
-  args: ['--session', 'x', '--session_dir', path.join(SCRATCH, 'nope'),
-         '--sentences_dir', path.join(SCRATCH, 'nope'),
-         '--tts_engine', 'higgs', '--sentence_start', '0', '--sentence_end', '1'],
+  engine: 'higgs', phase: 'prep',
+  args: ['--headless', '--ebook', path.join(SCRATCH, 'x.epub'), '--session', 'x',
+         '--session_dir', path.join(SCRATCH, 'nope'), '--prep_only', '--tts_engine', 'orpheus'],
 });
 
-// Assembly without the flag narrator will not guess.
-const noSessionDir = refuse('assembly with no --session_dir', {
-  phase: 'assembly',
-  args: ['--headless', '--session', 'x', '--output_dir', SCRATCH, '--assemble_only'],
+// Prep without the voice narrator will not guess: the chunk band is the voice's.
+const noSessionDir = refuse('prep with no --higgs_voice', {
+  engine: 'higgs', phase: 'prep',
+  args: ['--headless', '--ebook', path.join(SCRATCH, 'x.epub'), '--session', 'x', '--prep_only', '--tts_engine', 'higgs-v3'],
 });
 
 const CASES = [
-  { r: nearMiss, mustSay: /--tts_engine higgs disagrees with NARRATOR_ENGINE/i },
-  { r: noSessionDir, mustSay: /--session_dir/ },
+  { r: nearMiss, mustSay: /--tts_engine orpheus disagrees with NARRATOR_ENGINE/i },
+  { r: noSessionDir, mustSay: /needs --higgs_voice/ },
 ];
 
 console.log('narrator refuses on STDOUT, which is the whole point');
