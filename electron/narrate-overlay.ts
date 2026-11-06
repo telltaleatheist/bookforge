@@ -116,15 +116,13 @@ export function registerNarrateOverlayDoors(deps: NarrateOverlayDeps): void {
   // load, so it cannot arrive before Angular is listening.
   ipcMain.handle('narrate-overlay:target', (event) => overlayOf(event.sender).target);
 
-  // The dialog closed: cancelled, or queued `jobs` runs.
-  ipcMain.handle('narrate-overlay:done', (event, outcome: { queued: boolean; jobs: number }) => {
+  // The dialog closed: cancelled, or its one run queued. A press queues one run however many steps it has.
+  ipcMain.handle('narrate-overlay:done', (event, outcome: { queued: boolean }) => {
     const overlay = overlayOf(event.sender);
     const host = overlay.host;
     overlay.remove();
     if (outcome.queued && !host.isDestroyed()) {
-      deps.sayInWindow(host, outcome.jobs === 1
-        ? 'The narration is queued. It is on the queue shelf.'
-        : `${outcome.jobs} narration runs are queued. They are on the queue shelf.`);
+      deps.sayInWindow(host, 'The narration is queued. It is on the queue shelf.');
     }
   });
 }

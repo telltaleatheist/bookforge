@@ -927,7 +927,7 @@ export class NarrationModalComponent {
   readonly context = input.required<NarrationEntryContext>();
   readonly cancelled = output<void>();
   /** Rows are in the queue. The host closes and tells the user where to watch. */
-  readonly queued = output<{ jobs: number }>();
+  readonly queued = output<void>();
 
   readonly f0Methods = F0_METHODS;
   readonly rvcUnavailableNote =
@@ -2127,7 +2127,7 @@ export class NarrationModalComponent {
           }],
         }, jobs);
         if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
-        this.queued.emit({ jobs: jobs.length + 1 });
+        this.queued.emit();
         return;
       }
 
@@ -2156,7 +2156,7 @@ export class NarrationModalComponent {
         // Under the landing step of a pending export, when that is what was pressed.
         ...(book.landing === undefined ? {} : { chainAfter: book.landing }),
       }, jobs);
-      this.queued.emit({ jobs: jobs.length });
+      this.queued.emit();
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
     } finally {

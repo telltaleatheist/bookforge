@@ -1581,7 +1581,7 @@ export interface ElectronAPI {
      * Main answers only the overlay's own page.
      */
     narrateTarget: () => Promise<FoundryNarrateTarget>;
-    narrateDone: (outcome: { queued: boolean; jobs: number }) => Promise<void>;
+    narrateDone: (outcome: { queued: boolean }) => Promise<void>;
   };
   /**
    * The document pipeline: a book's working PDF and the book itself.
@@ -3084,7 +3084,7 @@ const electronAPI: ElectronAPI = {
     },
     // The Narrate overlay's doors; see the declaration above.
     narrateTarget: () => ipcRenderer.invoke('narrate-overlay:target'),
-    narrateDone: (outcome: { queued: boolean; jobs: number }) => ipcRenderer.invoke('narrate-overlay:done', outcome),
+    narrateDone: (outcome: { queued: boolean }) => ipcRenderer.invoke('narrate-overlay:done', outcome),
   },
   document: {
     cancelStage: (projectDir: string) => ipcRenderer.invoke('document:cancel-stage', projectDir),

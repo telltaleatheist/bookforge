@@ -18,6 +18,7 @@
  *   4. Same origin, so same localStorage: the overlay loads through the function
  *      the main window loads through, in the default session (no partition).
  *   5. The shell's guard returns before any of its startup work.
+ *   6. A press queues ONE run, and is told so: no count of its steps crosses the door.
  */
 'use strict';
 const assert = require('assert');
@@ -89,6 +90,25 @@ check('the overlay route is a standalone window, and the shell starts none of it
     'onFoundryOpenQueue(', 'watchForUpgrades()']) {
     const at = init.indexOf(work);
     assert.ok(at > returned, `${work} runs before the overlay branch returns`);
+  }
+});
+
+check('one press is one run, and no count of its steps reaches the sentence', () => {
+  // Owen, 2026-11-06: one narration on one book said "4 narration runs are queued".
+  // The 4 was the run's steps. Prepare, TTS, align, assembly and a video all say one sentence.
+  const queue = read('src/app/features/queue/services/queue.service.ts');
+  const body = queue.slice(queue.indexOf('async submitNarration('), queue.indexOf('/** The mirrored row for a step id'));
+  assert.strictEqual((body.match(/bridge\.enqueue\(/g) ?? []).length, 1, 'submitNarration no longer enqueues exactly one run');
+  assert.ok(!/for \([^)]*\)\s*\{[^}]*bridge\.enqueue\(/.test(body), 'submitNarration enqueues inside a loop');
+  const modal = read('src/app/features/studio/components/narration-modal/narration-modal.component.ts');
+  assert.ok(/readonly queued = output<void>\(\);/.test(modal), 'the dialog\'s queued event carries something again');
+  assert.ok(!/queued\.emit\(\{/.test(modal), 'the dialog emits a count again');
+  const door = /ipcMain\.handle\('narrate-overlay:done'[\s\S]*?\n  \}\);/.exec(overlay);
+  assert.ok(door !== null, 'the done door could not be found');
+  assert.ok(!/\bjobs\b|\bruns\b/.test(door[0]), 'the done door reads a count, or says "runs"');
+  assert.ok(door[0].includes('The narration is queued. It is on the queue shelf.'), 'the sentence changed');
+  for (const [name, text] of [['preload', read('electron/preload.ts')], ['electron.service', read('src/app/core/services/electron.service.ts')], ['shell', shell]]) {
+    assert.ok(!/(narrateDone|narrateOverlayDone)\(?[^\n]*\bjobs\b/.test(text), `${name} carries jobs to the done door`);
   }
 });
 

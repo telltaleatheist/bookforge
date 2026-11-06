@@ -166,7 +166,7 @@ import { NoticeService } from './core/services/notice.service';
         [isArticle]="r.target.isArticle"
         [pending]="r.target.pending"
         (cancelled)="onNarrationCancelled()"
-        (queued)="onNarrationQueued($event)"
+        (queued)="onNarrationQueued()"
       />
     }
 
@@ -554,12 +554,12 @@ export class App implements OnInit {
    * were added to a list the user is not looking at, and a dialog that simply
    * vanished would be indistinguishable from one that failed silently.
    */
-  onNarrationQueued(event: { jobs: number }): void {
+  onNarrationQueued(): void {
     this.narrationDialog.close();
     // Over the book window, main removes this page and the window says it is
     // queued, pointing at its queue shelf; nothing navigates the main window.
     if (this.isNarrateOverlay) {
-      void this.electron.narrateOverlayDone({ queued: true, jobs: event.jobs });
+      void this.electron.narrateOverlayDone({ queued: true });
       return;
     }
     void this.router.navigate(['/queue']);
@@ -568,7 +568,7 @@ export class App implements OnInit {
   /** The dialog was cancelled. Over the book window, main removes this page too. */
   onNarrationCancelled(): void {
     this.narrationDialog.close();
-    if (this.isNarrateOverlay) void this.electron.narrateOverlayDone({ queued: false, jobs: 0 });
+    if (this.isNarrateOverlay) void this.electron.narrateOverlayDone({ queued: false });
   }
 
   /**

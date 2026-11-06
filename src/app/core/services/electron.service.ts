@@ -1576,8 +1576,8 @@ export class ElectronService {
     return (window as any).electron.foundryHost.narrateTarget();
   }
 
-  /** The overlay's dialog closed: queued `jobs` runs, or was cancelled. Main removes the overlay. */
-  narrateOverlayDone(outcome: { queued: boolean; jobs: number }): Promise<void> {
+  /** The overlay's dialog closed: its one run was queued, or it was cancelled. Main removes the overlay. */
+  narrateOverlayDone(outcome: { queued: boolean }): Promise<void> {
     return (window as any).electron.foundryHost.narrateDone(outcome);
   }
 
