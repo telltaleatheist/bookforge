@@ -1248,6 +1248,18 @@ checkAsync('the adoption script reads the same release out of package.json as th
     'the adoption script and the vendored package disagree about what is pinned');
 });
 
+checkAsync('the book window pins the tarballs the app pins, and they exist', async () => {
+  // The adoption script moves package.json only. A window left on a deleted tarball still
+  // builds wherever its node_modules is already there, and refuses to package anywhere fresh.
+  const root = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).dependencies;
+  const windowPins = JSON.parse(fs.readFileSync(path.join(REPO, 'foundry-app', 'package.json'), 'utf8')).dependencies;
+  for (const name of ['@crucible/client', '@crucible/bootstrap']) {
+    const tarball = path.basename(root[name]);
+    assert.strictEqual(windowPins[name], `file:../vendor/${tarball}`, `foundry-app's ${name}`);
+    assert.ok(fs.existsSync(path.join(REPO, 'vendor', tarball)), `vendor/${tarball} is missing`);
+  }
+});
+
 checkAsync('the adoption script refuses two packages pinned to different releases', async () => {
   const adopt = await import_adopt();
   const split = {
