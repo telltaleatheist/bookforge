@@ -1,7 +1,7 @@
 /**
  * libxml2 2.11.9 as WebAssembly, behind the {@link Libxml2} surface. See `vendor/libxml2-wasm/README.md`.
  *
- * Runs the committed binary. Not yet held to Python byte for byte: gate 1, the corpus comparison, is its test.
+ * Runs the committed binary, which is held to Python byte for byte on the library (see that README).
  * Sync and heavy, so it belongs off the main thread (`prep-worker.ts`).
  */
 

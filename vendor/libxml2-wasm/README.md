@@ -1,9 +1,11 @@
 # libxml2 as WebAssembly
 
-**Status: built once, not yet held to Python.** `libxml2.wasm` is 350,777 bytes, sha256
-`f8a5bf7d88e41fc8fad5e2b16256c4b026de4f405278aafc2e7bb1458c47c5d6`, from Emscripten 6.0.13 with the
-source below. Its only warnings were two deprecated line-number calls in `shim.c`. The byte comparison
-against Python on the library has not run yet.
+**Status: held to Python.** `libxml2.wasm` is 350,826 bytes, sha256
+`4821cda5d1c20d5da3ea1014cd086b613f4f9a98aa64399c60ecf398f9fa216a`, from Emscripten 6.0.13 with the
+source below. Its only warnings are two deprecated line-number calls in `shim.c`. On the library,
+`get_body_content` is byte-identical to Python on all 13,473 documents (13,459 plus 14 planted
+faults), and a whole prep through this binary matches on all 409 EPUBs: 389 byte-identical,
+20 refused with string-equal messages.
 
 Narrator's prep reads every EPUB's package files through libxml2's XML parser, and its nav and
 every document through its HTML parser and serializer before BeautifulSoup sees them, and real books depend on that parser's recovery rules: 247 documents in
@@ -17,7 +19,7 @@ engine at the same version instead of a copy of its rules. See `docs/NARRATOR-TS
 | `shim.c` | The calls lxml 6.1.1 makes, and nothing more |
 | `build.js` | Checks the source hash, configures, compiles |
 | `LICENSE.libxml2` | libxml2's licence, which ships with the binary |
-| `libxml2.wasm` | The built binary (sha256 `f8a5bf7d…c47c5d6`) |
+| `libxml2.wasm` | The built binary (sha256 `4821cda5…8f9fa216a`) |
 
 The app and its install use only the committed binary. They never need Emscripten.
 

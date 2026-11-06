@@ -43,6 +43,18 @@ static int ready(void) {
     xmlSetGenericErrorFunc(NULL, quiet);
     xmlSetStructuredErrorFunc(NULL, (xmlStructuredErrorFunc)quiet_structured);
     parser = htmlCreateMemoryParserCtxt("dummy", 5);
+    if (parser != NULL && parser->sax != NULL) {
+      /* parser.pxi `_registerHtmlErrorHandler`: the context's own handler, made SAX2 for error reports. */
+      xmlSAXHandlerPtr sax = parser->sax;
+      sax->initialized = XML_SAX2_MAGIC;
+      sax->serror = (xmlStructuredErrorFunc)quiet_structured;
+      sax->startElementNs = NULL;
+      sax->endElementNs = NULL;
+      sax->_private = NULL;
+      /* `_configureSaxContext` with HTMLParser's default strip_cdata=True: script and style content
+       * arrives as text nodes, not CDATA, so the XML serializer escapes it. */
+      sax->cdataBlock = NULL;
+    }
   }
   return parser != NULL;
 }
