@@ -144,13 +144,15 @@ check('HIGGS_PREP_PLACEHOLDER_CHARS equals narrator v3_served.MAX_CHARS', () => 
 
 console.log('3. prepareSession hands prep the budget');
 
-check('the prep argv carries higgsPrepBudgetArgs of the VENUE\'s band', () => {
+check('the prep door packs to higgsPrepBudget of the VENUE\'s band, and states the voice\'s join gap', () => {
   const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
   const at = src.indexOf('export async function prepareSession(');
-  const body = src.slice(at, src.indexOf('console.log(\'[PARALLEL-TTS] Running prep with:\'', at));
+  const body = src.slice(at, src.indexOf('const prepInfo: PrepInfo', at));
   assert.ok(at >= 0 && body.length > 0, 'prepareSession not found');
-  assert.ok(/args\.push\(\.\.\.higgsPrepBudgetArgs\(higgsModel, packed\.band\)\)/.test(body),
-    'prepareSession no longer puts the venue band on the prep argv');
+  assert.ok(/const budget = higgsPrepBudget\(higgsModel, packed\.band\)/.test(body), 'prepareSession no longer reads the venue band');
+  assert.ok(/maxChars: budget\.capChars/.test(body) && /floorChars: budget\.floorChars/.test(body), 'the band does not reach the door');
+  // The Python read this from NARRATOR_SENTENCE_GAP on its own spawn. A worker thread has no spawn, so the door must state it.
+  assert.ok(/sentenceGap: higgsModel\.chunkGap\.injectS/.test(body), 'the voice\'s join gap does not reach the door, so gaps.json would take the default');
 });
 
 console.log('4. prep imports no model code');

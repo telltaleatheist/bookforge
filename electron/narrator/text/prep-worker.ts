@@ -16,6 +16,11 @@ const port = parentPort!;
 const request = workerData as PrepRequest;
 const log = (line: string): void => port.postMessage({ stream: 'stdout', text: `${line}\n` });
 
+// A stop leaves at the next await. Prep spawns nothing, so there is nothing else to wait for.
+port.on('message', (message) => {
+  if (message === 'cancel') port.postMessage({ exit: 1 });
+});
+
 (async () => {
   try {
     await prepSession(path.resolve(request.ebook), path.resolve(request.sessionDir), request.options, new Libxml2Wasm(), writeCover, log);
@@ -27,7 +32,7 @@ const log = (line: string): void => port.postMessage({ stream: 'stdout', text: `
     } else {
       log(`prep_ebook_info() Exception: ${message}`);
       port.postMessage({ stream: 'stderr', text: `${err instanceof Error ? err.stack : message}\n` });
-      log(JSON.stringify({ success: false, error: 'prep_ebook_info failed' }));
+      log('{"success": false, "error": "prep_ebook_info failed"}');
     }
     port.postMessage({ exit: 1 });
   }

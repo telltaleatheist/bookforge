@@ -365,10 +365,11 @@ Anything the renderer (Listen) also needs (text core, acronyms) goes under `shar
 | 7 | prep (`lang`, `normalize`, `epub`, `chapters`, `paragraph_packer` packing, `prep`) — needs **B1** (budget from `/v1/voices`) | `prep` phase, tools env for narrator entirely | session-state/provenance/gaps.json equal for every Higgs book in the library (re-prep to scratch, never Z:); Owen narrates a book end to end |
 | 8 | remove `python/narrator` (after Crucible C1 owns engine/serve), `electron/scripts/*.py`, narrator-spawn phases, tools-env narrator bootstrap, Python test suites (their vectors now live in TS fixtures) | — | `grep -r narrator.compat` empty; app builds with no Python env |
 
-**Prep in TypeScript (step 7, on `feat/narrator-prep`). Not called by anything yet.**
+**Prep in TypeScript (step 7). The bridge prepares every book through it.**
 
-- `electron/narrator/text/prep.ts` is the whole of `prep_session` for Higgs; `prep-door.ts` and `prep-worker.ts` run it off the main thread. The bridge still spawns the Python.
-- Every libxml2 call goes through the `Libxml2` interface in `text/html/lxml.ts`. `libxml2-wasm.ts` implements it and has never run, because the binary waits on Emscripten. So `tools/test-narrator-prep.js` feeds prep what lxml gave the Python.
+- `electron/narrator/text/prep.ts` is the whole of `prep_session` for Higgs; `prep-door.ts` and `prep-worker.ts` run it off the main thread, and `parallel-tts-bridge.ts` `prepareSession` calls `startPrep`.
+- Every libxml2 call goes through the `Libxml2` interface in `text/html/lxml.ts`, and `libxml2-wasm.ts` implements it on the committed binary. `tools/test-narrator-prep.js` feeds prep what lxml gave the Python, and runs one book through the real door and binary.
+- The voice's join gap is an option now (`sentenceGap`). The Python read `NARRATOR_SENTENCE_GAP` from its own spawn, and a worker thread has no spawn.
 - Known differences from the Python: a cover JPEG is sharp's rather than Pillow's (a CMYK cover comes out sRGB), a Chinese word in a TOC title gets Unidecode's `Bei Jing` rather than pypinyin's `beijing`, and Orpheus is refused by name.
 
 **For the flip: how a voice's edges reach assembly (lead's ruling, 2026-11-05). Not built yet.**

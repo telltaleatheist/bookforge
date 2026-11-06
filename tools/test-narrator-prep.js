@@ -209,6 +209,46 @@ function buildZip(entries) {
       });
     }
 
+    await check('the door: startPrep, through the committed binary, writes what the Python wrote', async () => {
+      const { startPrep } = require(path.join(TEXT, 'prep-door.js'));
+      const fx = cases.books.find((b) => !b.expect.refused && b.rows !== true && b.skip !== true && !/malformed|broken|bad/.test(b.name));
+      const root = path.join(scratch, 'door');
+      fs.mkdirSync(root, { recursive: true });
+      const epub = path.join(root, `${fx.name}.epub`);
+      fs.writeFileSync(epub, Buffer.from(fx.epub, 'base64'));
+      const run = (dir, extra) => new Promise((resolve) => {
+        const child = startPrep({ ebook: epub, sessionDir: dir, options: { session: 'fixed-session', ttsEngine: 'higgs-v3', higgsVoice: 'voice-x', language: 'eng', maxChars: fx.cap, floorChars: fx.floor, ...extra } });
+        let said = '';
+        child.stdout.on('data', (d) => { said += d; });
+        child.stderr.on('data', (d) => { said += d; });
+        child.on('close', (code) => resolve({ code, said }));
+      });
+      const gapsOf = (dir) => {
+        const pd = path.join(dir, fs.readdirSync(dir, { withFileTypes: true }).find((e) => e.isDirectory()).name);
+        return JSON.parse(fs.readFileSync(path.join(pd, 'chapters', 'sentences', 'gaps.json'), 'utf8')).gaps;
+      };
+      const plain = path.join(root, 'session');
+      const first = await run(plain, {});
+      assert.strictEqual(first.code, 0, first.said.slice(-400));
+      const pd = path.join(plain, fs.readdirSync(plain, { withFileTypes: true }).find((e) => e.isDirectory()).name);
+      assert.strictEqual(comparable(fs.readFileSync(path.join(pd, 'session-state.json'), 'utf8'), root),
+        comparable(fx.expect.files['session-state.json'], fx.expect.root).split('<ROOT>/' + fx.name + '/').join('<ROOT>/'), 'session-state');
+      // THE VOICE'S JOIN GAP. The Python read it from NARRATOR_SENTENCE_GAP on its own spawn; a worker has none.
+      const voiced = path.join(root, 'voiced');
+      assert.strictEqual((await run(voiced, { sentenceGap: 0.27 })).code, 0);
+      const after = Object.values(gapsOf(voiced)).map((g) => g.after);
+      assert.ok(after.length > 0 && after.every((g) => g === 0.27), `gaps.json did not take the stated gap: ${after.slice(0, 5)}`);
+      assert.ok(Object.values(gapsOf(plain)).every((g) => g.after === 0.6), 'absent, it is the default');
+    });
+
+    await check('the committed binary is the one its README names, and it ships', () => {
+      const binary = fs.readFileSync(path.join(REPO, 'vendor', 'libxml2-wasm', 'libxml2.wasm'));
+      const sha = require('crypto').createHash('sha256').update(binary).digest('hex');
+      assert.ok(fs.readFileSync(path.join(REPO, 'vendor', 'libxml2-wasm', 'README.md'), 'utf8').includes(sha), `the README does not name ${sha}`);
+      const files = require(path.join(REPO, 'package.json')).build.files;
+      assert.ok(files.includes('vendor/libxml2-wasm/libxml2.wasm') && files.includes('vendor/libxml2-wasm/LICENSE.libxml2'), 'the packaging list leaves out the binary or its licence');
+    });
+
     await check('a cover is written past MAX_PATH, as Pillow wrote it', async () => {
       // A long title under a deep session dir passes 260 characters; libvips alone cannot open that for writing.
       const dir = path.join(scratch, 'd'.repeat(120), 'e'.repeat(120));

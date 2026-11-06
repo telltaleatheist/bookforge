@@ -14,7 +14,7 @@
 
 import { onBridgeEvent, publishBridgeEvent } from './bridge-events';
 import { spawn, ChildProcess, execSync, exec } from 'child_process';
-import { app, BrowserWindow, powerSaveBlocker } from 'electron';
+import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -157,6 +157,7 @@ import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './
 import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { listResumableSessions as listSessionsUnder, resumeSession } from './narrator/session/session-store';
 import { assemblyRoute, startAssembly } from './narrator/assemble/assemble-door';
+import { startPrep } from './narrator/text/prep-door';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 
@@ -171,8 +172,8 @@ import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
 import { TEXT_SERVER_PROTECT_RE } from './text-server';
 import { ownBatchPids, parseWmicProcessCsv } from '../shared/gpu/own-batch-processes';
 import {
-  HIGGS_VOICE_FLAG, higgsCheckpointArm, higgsModelForJob, higgsPrepBudgetArgs, higgsSpawnEnv,
-  higgsVoiceCapsForModel, writeHiggsVoicesDocument,
+  higgsCheckpointArm, higgsModelForJob, higgsPrepBudget,
+  higgsVoiceCapsForModel,
 } from './higgs-models';
 import type { CrucibleStatedBand, HiggsModel, HiggsRenderOverride } from './higgs-models';
 import {
@@ -181,12 +182,9 @@ import {
   NARRATOR_WORKER_RE,
   SERVE_PROCESS_RE,
   buildNarratorSpawn,
-  hostPrepRefusal,
   narratorEngineId,
   narratorRunsInWsl,
   type NarratorEngineId,
-  type NarratorPhase,
-  type NarratorSpawnPlan,
 } from './narrator-spawn';
 
 /*
@@ -2983,120 +2981,6 @@ function narratorEngineFor(settings: ParallelTtsSettings): NarratorEngineId {
 }
 
 /**
- * THE spawn door for every batch phase that still runs on this machine.
- *
- * ── What is left, and what went ────────────────────────────────────────────
- *
- * PREP AND ASSEMBLY. Generation left: it is a Crucible job now, and the local
- * worker spawn, the retake spawn and `higgs-spawn.ts` went with the rest of the
- * layer (docs/LEGACY-REMOVAL.md). What still spawns here is the text prep that
- * packs a book before it is sent, and the assembly that stitches what comes back.
- *
- * ── The Higgs branch is not a second command line ──────────────────────────
- *
- * It is the same argv with the VOICE DOCUMENT written for it. That document is
- * the only channel narrator has for a voice's caps, band and pace, and for a
- * Crucible render it carries the VENUE's numbers rather than this machine's
- * catalog block — which is what stops a book bound for the Mac being packed to
- * the PC's. `venueBandForPrep` reads them; this writes them down.
- *
- * It used to be composed by `higgs-spawn.ts`'s `higgsEnvExtras`, which also
- * resolved a launch script, a conda prefix and a guest path for the SERVE door.
- * None of that exists any more, so what is left is composed here out of the
- * catalog's own surviving functions — and it is host-native by construction,
- * because there is no longer any door through which a spawn from this file can
- * enter WSL.
- */
-function buildJobSpawn(opts: {
-  settings: ParallelTtsSettings;
-  phase: NarratorPhase;
-  args: string[];
-  envExtras: Record<string, string>;
-  /** Names the Higgs voice document written for this run; ignored for Orpheus. */
-  jobId: string;
-  cwdHint?: string;
-  /**
-   * The render is on a Crucible server, so this (prep-only) phase runs on the
-   * host in the tools env and never enters WSL — `NarratorSpawnRequest.onHost`.
-   */
-  onHost?: boolean;
-  /**
-   * THE NUMBERS THE RENDERING MACHINE STATES for this voice, when the render is
-   * on a Crucible server (`electron/crucible/voice-band.ts`). Prep-only in
-   * practice, because prep is what packs: with it the voice document carries the
-   * VENUE's cap, band and pace instead of this machine's catalog block, so a book
-   * bound for the Mac is no longer packed to the PC's `served` numbers.
-   */
-  venueBand?: CrucibleStatedBand;
-}): NarratorSpawnPlan {
-  const engine = narratorEngineFor(opts.settings);
-  const onHost = opts.onHost === true;
-  return buildNarratorSpawn({
-    engine,
-    phase: opts.phase,
-    args: opts.args,
-    envExtras: engine === 'higgs'
-      // MERGED UNDER the caller's env, never over it: the document written just
-      // now is the only one that describes this run's voice, so a door may not
-      // override NARRATOR_HIGGS_VOICES by accident.
-      ? { ...opts.envExtras, ...higgsPrepEnv(opts) }
-      : opts.envExtras,
-    cwdHint: opts.cwdHint,
-    ...(onHost ? { onHost } : {}),
-  });
-}
-
-/**
- * The Higgs voice document for a phase that runs HERE, and the two variables
- * that name it.
- *
- * Writing the document is a SIDE EFFECT of calling this. It lands on this
- * machine's filesystem with its paths untranslated, which is correct by
- * construction now: nothing in this file spawns into WSL any more, so there is no
- * guest for a path to be native to.
- *
- * `NARRATOR_SENTENCE_GAP` is PREP-ONLY and that is not an optimisation.
- * `text/prep.py` writes `gaps.json` once, at prep, from `text.gaps.classify_gap`,
- * whose hardcoded 0.6 s floor this overrides; a later door would be setting a
- * variable nothing reads. Higgs is `pads = false`, so every chunk join IS this
- * number plus whatever tail the model emits — and the catalog's `injectS` is
- * already net of that tail. A voice with no `chunkGap` sets nothing and keeps the
- * historical 0.6 s, so this is additive: an unmeasured voice behaves exactly as
- * it did before.
- */
-function higgsPrepEnv(opts: {
-  settings: ParallelTtsSettings;
-  phase: NarratorPhase;
-  jobId: string;
-  venueBand?: CrucibleStatedBand;
-}): Record<string, string> {
-  const model = higgsModelForJob(opts.settings);
-  // WHICH FILESYSTEM THIS VOICE'S WEIGHTS COME OFF. Windows is the `wsl` arm even
-  // with no guest in this spawn: there is no native Windows Higgs arm to be, so
-  // the guest is the only filesystem a Windows checkpoint could ever live on.
-  // Linux and everything else is refused BY PLATFORM NAME — no arm exists, so
-  // there is no directory to name and nothing to be vague about.
-  const arm = higgsCheckpointArm();
-  if (arm === null) {
-    throw new Error(
-      `Higgs has no backend on ${process.platform}: a vLLM-Omni server reached through WSL on `
-      + 'Windows, and an in-process mlx-audio backend on macOS, are the two BookForge builds.',
-    );
-  }
-  const voicesPath = writeHiggsVoicesDocument(model, opts.jobId, {
-    arm,
-    userDataDir: app.getPath('userData'),
-    translatePath: (p: string) => p,
-    ...(opts.venueBand === undefined ? {} : { venueBand: opts.venueBand }),
-  });
-  const gap = opts.phase === 'prep' ? model.chunkGap : undefined;
-  return {
-    ...higgsSpawnEnv(model, { voicesPath }),
-    ...(gap ? { NARRATOR_SENTENCE_GAP: String(gap.injectS) } : {}),
-  };
-}
-
-/**
  * A session path as Node here can open it — THE converter, asked unconditionally.
  *
  * It used to re-compose the `/mnt/` test itself (`p.startsWith('/') &&
@@ -4276,17 +4160,7 @@ export async function prepareSession(
   const sessionId = crypto.randomUUID();
   const engine = narratorEngineFor(settings);
 
-  if (venue.where === 'crucible') {
-    // THE ENGINE IS NOT ON THIS MACHINE. The render goes to a Crucible server, so
-    // the Higgs doctor below — a WSL round trip that asks whether the GUEST's
-    // serving env is ready — is a question about a process this run never
-    // starts. What this run does start here is the prep, natively, in the tools
-    // env; and THAT is measured, once, before anything spawns: can the tools
-    // env import narrator's prep? Refused by name (interpreter, module, fix) if
-    // not, rather than falling back into the guest.
-    const refusal = await hostPrepRefusal();
-    if (refusal) throw new Error(refusal);
-  }
+  // THE ENGINE IS NOT ON THIS MACHINE, and prep is TypeScript: nothing here asks for a Python.
   // There WAS an `else if (isHiggsJob(settings))` here that ran the Higgs doctor —
   // a WSL round trip asking whether THIS machine's serving env was ready. It went
   // with the local spawn layer (docs/LEGACY-REMOVAL.md): the engine is on a
@@ -4302,8 +4176,6 @@ export async function prepareSession(
   // caller was also the gate in front of `spawnWithWslSupport`, and a Higgs command
   // through that function came out an Orpheus command. See jobRunsInWsl's header.
   const home = sessionHomeFor(venue, settings.ttsEngine, sessionId);
-  const useWsl = home.inGuest;
-  const sessionDir = home.sessionDir;
   const sessionDirForReading = home.sessionDirForReading;
   /*
    * THE DIRECTORY A STOP HAS TO TAKE WITH IT, noted before anything can write
@@ -4315,58 +4187,6 @@ export async function prepareSession(
    */
   handle.noteSession(sessionDirForReading);
   handle.throwIfCancelled('before the session was created');
-  // The --ebook path as the spawned e2a will see it. For a WSL prep the file is
-  // STAGED into WSL's own filesystem first: buildWslBashCommand maps drive
-  // letters to /mnt/<letter>, but WSL auto-mounts only fixed drives — a library
-  // on a mapped network drive (Z: → the NAS since 2026-08-17) has no /mnt/z, and
-  // prep died in prepare_dirs' shutil.copy on exactly that. Staging through the
-  // \\wsl$ UNC works for EVERY source the host can read — local, mapped, or UNC
-  // — so it is done unconditionally for WSL preps rather than by probing mounts.
-  let ebookArgPath = epubPath;
-  let stagedEbookUnc: string | null = null;
-
-  if (home.inGuest) {
-    console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
-
-    // Stage the ebook where WSL can read it. Prep copies it into the session
-    // dir immediately (prepare_dirs), so the staged file is deleted again the
-    // moment prep settles — see the finally below.
-    const stagedWsl = `${home.guestRoot}/staged-${sessionId}${path.extname(epubPath)}`;
-    stagedEbookUnc = wslToWindowsPath(stagedWsl);
-    await fs.mkdir(path.dirname(stagedEbookUnc), { recursive: true });
-    await fs.copyFile(epubPath, stagedEbookUnc);
-    ebookArgPath = stagedWsl;
-    console.log(`[PARALLEL-TTS] Staged ebook for WSL: ${epubPath} -> ${stagedWsl}`);
-  } else if (venue.where === 'crucible') {
-    console.log(
-      `[PARALLEL-TTS] Session is host-native (${sessionDir}): the render runs on crucible ` +
-      `"${venue.server}" and its artifacts are downloaded here; prep runs in the tools env; ` +
-      'nothing in this run enters WSL',
-    );
-  }
-
-  // narrator's prep flags. One array for every engine — the Higgs branch below
-  // only substitutes the voice flag, because `--fine_tuned` carries an Orpheus
-  // prompt TOKEN and `--higgs_voice` a CATALOG ID and neither stands in for the
-  // other.
-  //
-  // `--session_dir` IS MANDATORY, and it is the one flag that was NOT here
-  // before. e2a survived without it because `lib/conf.py` fell back to
-  // `<e2a_root>/tmp`, which happened to be the directory this function had
-  // already computed. narrator has no default sessions root:
-  // `session_store.sessions_root()` reads `$NARRATOR_SESSIONS_ROOT` and otherwise
-  // refuses to guess. Forwarding that variable is NOT an alternative — it holds a
-  // HOST path while a WSL prep derives its session dir from the guest's
-  // filesystem, so the two would disagree exactly where it matters.
-  const args = [
-    '--headless',
-    '--ebook', ebookArgPath,
-    '--session', sessionId,
-    '--session_dir', sessionDir,
-    '--language', settings.language,
-    '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
-    '--prep_only'
-  ];
 
   // A PER-RUN OVERRIDE IS ANNOUNCED HERE, ONCE. Prep is the first spawn of a job
   // and the only one that happens exactly once (there is a worker argv per worker
@@ -4380,52 +4200,10 @@ export async function prepareSession(
   // before this line. A branch here would be a branch nothing can reach.
   const higgsModel = higgsModelForJob(settings);
   logHiggsOverride(settings, higgsModel);
-  args.push(HIGGS_VOICE_FLAG, higgsModel.id);
-  // THE BAND, AS NUMBERS. The venue's `GET /v1/voices` band (`packed`, read by
-  // the caller) becomes a floor and a cap HERE, by `higgsPrepBudget`, and prep
-  // packs to what it is handed. Until 2026-11-04 prep re-derived the same two
-  // numbers from the voice document inside narrator's model code; it imports
-  // none now (docs/REORG-PLAN.md, B1).
-  args.push(...higgsPrepBudgetArgs(higgsModel, packed.band));
-
-  // The XTTS sampling block that stood here (--temperature / --top_p / --top_k /
-  // --repetition_penalty / --speed / --enable_text_splitting) is GONE. narrator
-  // parses all six and honours none of them: compat/FLAGS.md files them under
-  // IGNORE, "XTTS only", and Orpheus's equivalents arrive as ORPHEUS_TEMPERATURE
-  // / ORPHEUS_TOP_P / ORPHEUS_REP_PENALTY env vars or as registered per-voice
-  // caps. Sending them anyway would suggest a book's sampling had been honoured
-  // when nothing read it.
-
-  // ONE CHUNK PER SOURCE ROW: the language-learning pipeline (the two languages
-  // are aligned row by row) and the CLI's `--as-chunks` test harness (40 typed
-  // rows must arrive as 40 chunks). Engine-agnostic here, and it had to become
-  // engine-agnostic in narrator too: prep carried the flag to a Higgs job and
-  // only the Orpheus parity path read it, so a two-paragraph book came back as
-  // one chunk (fixed 2026-09-12 in text/paragraph_packer.py).
-  if (settings.sentencePerParagraph) {
-    args.push('--sentence_per_paragraph');
-  }
-
-  // Skip heading text in TTS (headings parsed for chapter detection but not spoken)
-  if (settings.skipHeadings) {
-    args.push('--skip_headings');
-  }
-
-  console.log('[PARALLEL-TTS] Running prep with:', args.join(' '));
-
-  // The staged copy's whole job is done once prep settles: prepare_dirs copies
-  // the ebook into the session dir in its first act, and nothing after prep
-  // reads --ebook through WSL again (assembly runs natively on the original).
-  const removeStagedEbook = async (): Promise<void> => {
-    if (stagedEbookUnc === null) return;
-    const staged = stagedEbookUnc;
-    stagedEbookUnc = null;
-    try {
-      await fs.unlink(staged);
-    } catch (err) {
-      console.error(`[PARALLEL-TTS] Staged ebook could not be removed (${staged}): ${(err as Error).message}`);
-    }
-  };
+  // THE BAND, AS NUMBERS. The venue's `GET /v1/voices` band (`packed`, read by the caller) becomes a
+  // floor and a cap HERE, and prep packs to what it is handed.
+  const budget = higgsPrepBudget(higgsModel, packed.band);
+  console.log(`[PARALLEL-TTS] Prep packs ${higgsModel.id} between ${budget.floorChars} and ${budget.capChars} chars for ${venue.server}`);
 
   // Hoisted OUTSIDE the promise so the tails remain visible after it settles —
   // needed for the exit-0 validation below and the stall-timeout reject message.
@@ -4439,90 +4217,38 @@ export async function prepareSession(
     let stallTimer: NodeJS.Timeout | null = null;
     const clearStallTimer = () => { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } };
 
-    // Per-voice caps for the selected fine-tune. The ORPHEUS catalog that used to
-    // answer this is deleted; a Higgs render packs to the VENUE's stated band
-    // (`venueBandForPrep` above), which is passed separately and is the only
-    // length authority a remote render has.
-    const voiceCaps: { maxChars?: number } = {};
-    // ── ONE PREP ROUTE, for every engine ────────────────────────────────────
-    //
-    // narrator, not ebook2audiobook. For Higgs that was already true and the
-    // reason was specific: `text/paragraph_packer.py` IS the Higgs chunking rule,
-    // `compat/app.py` forces `chunking = 'paragraph'` for `higgs-v3`, and the
-    // session it writes records the engine and the voice where the render route
-    // will look for them. For Orpheus it is now true for the plainer reason —
-    // there is nothing else left to prep with.
-    //
-    // The Higgs-only branch that stood here is gone with it. It existed because
-    // the e2a route could not be made to write a correct Higgs session; a second
-    // spawn shape is not something to keep once the first one is right.
-    const prepPlan = buildJobSpawn({
-      settings,
-      phase: 'prep',
-      args,
-      jobId: prepJobId || sessionId,
-      // A Crucible-venue prep runs here, in the tools env, whatever the engine's
-      // WSL toggle says — the render is on another machine. See prepRunsInWsl.
-      onHost: venue.where === 'crucible',
-      // AND IT PACKS TO THAT MACHINE'S NUMBERS, not to this arm's catalog block.
-      venueBand: packed.band,
-      // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences), not in the
-      // worker. Precedence: an explicit user env override wins, else the selected
-      // voice's declared packing cap, else nothing — NO invented default.
-      envExtras: {
-        ...(settings.ttsEngine === 'orpheus'
-          && (process.env.ORPHEUS_MAX_CHARS?.trim() || voiceCaps.maxChars !== undefined)
-          ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS?.trim() || String(voiceCaps.maxChars) }
-          : {}),
-        // Native-arm only: these are Windows belt-and-braces guards against vLLM
-        // touching CUDA graphs in an env that cannot capture them. Sending them
-        // into WSL would fight ORPHEUS_DISABLE_EAGER, which is the whole reason
-        // Orpheus runs there — and under buildNarratorSpawn every value in
-        // envExtras DOES cross, where the old forwardKeys allowlist silently
-        // dropped them.
-        ...(useWsl
-          ? { ORPHEUS_DISABLE_EAGER: '1' }
-          : { VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1' }),
-        VLLM_USE_V1: '0',
+    // ONE PREP ROUTE: TypeScript, off the main thread, held byte for byte to the Python it replaced
+    // (vendor/libxml2-wasm/README.md). The session is host-native: the render is on a Crucible server.
+    const prepProcess = startPrep({
+      ebook: epubPath,
+      sessionDir: sessionDirForReading,
+      options: {
+        session: sessionId,
+        language: settings.language,
+        ttsEngine: narratorEngineId(narratorEngineFor(settings)),
+        higgsVoice: higgsModel.id,
+        maxChars: budget.capChars,
+        floorChars: budget.floorChars,
+        ...(higgsModel.chunkGap ? { sentenceGap: higgsModel.chunkGap.injectS } : {}),
+        // ONE CHUNK PER SOURCE ROW: the language-learning pipeline and the CLI's `--as-chunks` harness.
+        ...(settings.sentencePerParagraph ? { sentencePerParagraph: true } : {}),
+        // Headings parsed for chapter detection but not spoken.
+        ...(settings.skipHeadings ? { skipHeadings: true } : {}),
       },
-    });
-    console.log('[PARALLEL-TTS] Prep → narrator:', prepPlan.describe());
-
-    const prepProcess = spawn(prepPlan.command, prepPlan.args, {
-      cwd: prepPlan.cwd,
-      env: prepPlan.env,
-      shell: false,
     });
 
     /*
      * THE ONE MOMENT A STOP HAS SOMETHING TO KILL (2026-09-19).
      *
-     * Registered here rather than by the caller, because the caller does not
-     * know which of the two teardowns this spawn needs: a native prep is a
-     * process tree, and a WSL prep is a wsl.exe wrapper in front of a guest
-     * process that `taskkill` cannot see — the same asymmetry the stall
-     * watchdog below already handles, and the same session-scoped pattern
-     * (`--session <id>` is in the guest argv; `app\.py` matches nothing in
-     * `python -u -m narrator.compat.app`, which is why the pattern is
-     * narrator's module name).
-     *
      * `gone` is the other half of the contract: `cancelPrepare` waits for it
      * before it removes the session directory, so the files are never deleted
-     * out from under a process that is still writing them.
+     * out from under a worker that is still writing them.
      */
     const gone = new Promise<void>((settled) => {
       prepProcess.once('close', () => settled());
       prepProcess.once('error', () => settled());
     });
-    handle.noteSpawn(async () => {
-      if (prepPlan.viaWsl) {
-        await destroyWslGuestProcesses(`${NARRATOR_APP_RE}.*${sessionId}`,
-          { graceMs: 10000, label: 'prep-cancel' });
-        killWslWrapper(prepProcess, 'prep');
-        return;
-      }
-      killProcessTree(prepProcess, 'prep');
-    }, gone);
+    handle.noteSpawn(async () => { prepProcess.kill(); }, gone);
 
     // Log stdout for visibility (but don't parse it)
     prepProcess.stdout?.on('data', (data: Buffer) => {
@@ -4573,20 +4299,7 @@ export async function prepareSession(
       if (Date.now() - lastOutputAt > PREP_STALL_TIMEOUT_MS) {
         clearStallTimer();
         console.error('[PARALLEL-TTS] Prep stalled — no output for 10 minutes, killing prep process');
-        if (prepPlan.viaWsl) {
-          // Session-scoped graceful teardown (prep argv carries --session <id>); prep
-          // is CPU text work / a hung download, so a short grace suffices. Wrapper is
-          // closed only after the guest process is gone.
-          //
-          // THE PATTERN IS NARRATOR'S MODULE NAME. `app\.py` matches nothing in
-          // `python -u -m narrator.compat.app`, so a stalled prep would have been
-          // reported as killed and left running in the guest, holding the session.
-          void destroyWslGuestProcesses(`${NARRATOR_APP_RE}.*${sessionId}`, { graceMs: 10000, label: 'prep-stall' })
-            .then(() => killWslWrapper(prepProcess, 'prep'))
-            .catch((err) => console.error('[PARALLEL-TTS] prep-stall teardown failed:', err));
-        } else {
-          killProcessTree(prepProcess, 'prep');
-        }
+        prepProcess.kill();
         const tail = stderr.trim().slice(-500);
         reject(new Error(
           `Prep stalled — no output for 10 minutes (possibly a hung model download). Last stderr: ${tail}`
@@ -4621,7 +4334,7 @@ export async function prepareSession(
       handle.noteSpawnGone();
       reject(err);
     });
-  }).finally(removeStagedEbook);
+  });
 
   // Prep exited 0 — validate it actually produced a usable session. Calibre can die
   // silently on some filesystems (e.g. ExFAT) yet leave exit code 0, producing no

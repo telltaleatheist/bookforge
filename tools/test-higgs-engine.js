@@ -2424,8 +2424,9 @@ check('the render doors resolve the voice through ONE function', () => {
   // own speaker. A band fetched for a voice the render does not use would pack
   // the book to the wrong certificate, which is the same failure one layer up.
   const sites = bridgeSrc.match(/higgsModelForJob\(/g) || [];
-  assert.strictEqual(sites.length, 6,
-    `expected 6 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
+  // Five since the flip (step 7): buildJobSpawn's left with the Python prep spawn.
+  assert.strictEqual(sites.length, 5,
+    `expected 5 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
   /*
    * LISTEN STAYS CATALOG-ONLY, and the check moved with the code.
    *

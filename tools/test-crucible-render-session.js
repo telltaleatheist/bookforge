@@ -283,19 +283,19 @@ function lift(name) {
     console.log(`  --    this machine has no tools env at ${realToolsEnv}; the real probe is not measured here`);
   }
 
-  await check('prepareSession measures the tools env, and the local doctor is not back', () => {
+  await check('prepareSession asks no Python, and the local doctor is not back', () => {
     /*
      * It used to assert a two-armed branch: `hostPrepRefusal` on the Crucible
      * side and the Higgs DOCTOR on the legacy one. The doctor is deleted with the
      * local environment it examined — the engine runs on a Crucible server, which
-     * answers for its own environment — so the surviving half is asserted
-     * directly, and the doctor's absence with it.
+     * answers for its own environment. `hostPrepRefusal` went at the flip (step 7):
+     * prep is TypeScript, so a machine with no tools env prepares a book as well as any.
      */
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
     const at = src.indexOf('export async function prepareSession(');
     const body = src.slice(at, src.indexOf('const home = sessionHomeFor(', at));
-    assert.ok(/await hostPrepRefusal\(\)/.test(body),
-      'prepareSession no longer measures the tools env before it spawns');
+    assert.ok(!/hostPrepRefusal/.test(body),
+      'prepareSession asks about a Python again, and prep needs none');
     assert.ok(!/higgsEnvironmentRefusal/.test(body),
       'the local Higgs doctor is back in prepareSession — that question belongs to the '
       + 'server that will run the engine, not to this machine');

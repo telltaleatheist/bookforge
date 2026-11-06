@@ -84,7 +84,7 @@ const SUITES = [
   // looks like coverage in a directory listing. Superseded by
   // test-narrator-argv-snapshot. Its BASELINE is kept, as data:
   // tools/snapshots/orpheus-argv-base.json, described in that directory's README.
-  'test-narrator-argv-snapshot',
+  // 'test-narrator-argv-snapshot' left at the flip (step 7): prep, the last door it pinned, has no command line.
   /*
    * THREE SUITES WERE RETIRED HERE ON 2026-09-15, with the local narrator spawn
    * (docs/LEGACY-REMOVAL.md). Named rather than silently dropped, for the same

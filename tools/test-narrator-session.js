@@ -111,6 +111,11 @@ function refusalWords(text) {
     const held = floatsInReprs.has(jsonText) ? py.pyFloat(value) : value;
     await check(`repr ${jsonText}`, () => assert.strictEqual(py.pyRepr(held), text));
   }
+  await check('repr escapes what Python calls non-printable, in Python\'s own forms', () => {
+    // Captured from CPython 3.11's repr(). Prep's log and refusals quote book text through this.
+    const vectors = [["a­b", "'a\\xadb'"], ["x y", "'x\\xa0y'"], ["z​w", "'z\\u200bw'"], ["󠀁t", "'\\U000e0001t'"], ["é😀", "'é😀'"], ["\u0000\u007f\u0085", "'\\x00\\x7f\\x85'"], ["  ", "'\\u2028\\u2029'"], ["　 ", "'\\u3000 '"], ["퟿", "'\\ud7ff'"], ["", "'\\ue000'"], ["􏿿", "'\\U0010ffff'"], ["it's", "\"it's\""], ["say \"hi\"", "'say \"hi\"'"], ["both ' \"", "'both \\' \"'"], ["tab\t\n\r\\", "'tab\\t\\n\\r\\\\'"], ["͸", "'\\u0378'"], ["﻿", "'\\ufeff'"]];
+    for (const [value, want] of vectors) assert.strictEqual(py.pyRepr(value), want);
+  });
   await check('json.dumps', () => {
     const f = py.pyFloat;
     assert.strictEqual(

@@ -57,6 +57,11 @@ export interface PrepOptions {
   /** The voice's band, as the rendering Crucible states it. */
   readonly maxChars: number;
   readonly floorChars: number;
+  /**
+   * The voice's join silence, in seconds, for `gaps.json`. The Python read it from NARRATOR_SENTENCE_GAP on
+   * its own spawn; a worker thread has no spawn of its own, so the door states it. Absent reads the environment.
+   */
+  readonly sentenceGap?: number;
   readonly sourceKind?: SourceKind | null;
 }
 
@@ -105,8 +110,8 @@ function sentenceGapFromEnv(): number {
   return DEFAULT_SENTENCE_GAP;
 }
 
-async function writeGapsFile(sentencesDir: string, chapters: readonly string[][], log: (line: string) => void): Promise<void> {
-  const floor = sentenceGapFromEnv();
+async function writeGapsFile(sentencesDir: string, chapters: readonly string[][], stated: number | undefined, log: (line: string) => void): Promise<void> {
+  const floor = stated ?? sentenceGapFromEnv();
   const gaps: Record<string, unknown> = {};
   let index = 0;
   for (const chapter of chapters) {
@@ -395,7 +400,7 @@ export async function prepSession(
     };
 
     // Before the state, so a session is never left promising an engine whose gap file failed to appear.
-    await writeGapsFile(sentencesDir, chapters, log);
+    await writeGapsFile(sentencesDir, chapters, options.sentenceGap, log);
     const statePath = await saveSessionState(processDir, state);
     log(`Session state saved to ${statePath}`);
     return { state, statePath, processDir, sessionDir };

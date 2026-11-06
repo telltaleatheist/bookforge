@@ -1,8 +1,6 @@
 /**
- * The door a Higgs prep will go through at the flip: a worker thread, because every document of a book
- * is parsed and packed. It writes `session-state.json` and the bridge reads that, as it does today.
- *
- * NOTHING CALLS THIS YET. It needs the libxml2 binary, which waits on Emscripten.
+ * The door every prep goes through: a worker thread, because every document of a book is parsed and packed.
+ * It writes `session-state.json` and the bridge reads that.
  */
 
 import type { ChildProcess } from 'child_process';

@@ -191,6 +191,8 @@
     },
     "files": [
       "dist/**/*",
+      "vendor/libxml2-wasm/libxml2.wasm",
+      "vendor/libxml2-wasm/LICENSE.libxml2",
       "python/**/*",
       "!python/**/__pycache__/**",
       "!python/**/*.pyc",

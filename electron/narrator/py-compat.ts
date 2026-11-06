@@ -132,7 +132,15 @@ export function pyRepr(value: unknown): string {
   if (typeof value === 'number') return Number.isInteger(value) ? String(value) : pyFloatRepr(value);
   if (typeof value === 'string') {
     const quote = value.includes("'") && !value.includes('"') ? '"' : "'";
-    const body = value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+    const body = value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
+      // What `str.isprintable` calls non-printable, by general category: everything a repr escapes but the space.
+      .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/gu, (c) => {
+        if (c === ' ') return c;
+        const point = c.codePointAt(0) as number;
+        if (point < 0x100) return `\\x${point.toString(16).padStart(2, '0')}`;
+        if (point < 0x10000) return `\\u${point.toString(16).padStart(4, '0')}`;
+        return `\\U${point.toString(16).padStart(8, '0')}`;
+      });
     return quote + (quote === "'" ? body.replace(/'/g, "\\'") : body) + quote;
   }
   if (Array.isArray(value)) return `[${value.map(pyRepr).join(', ')}]`;
