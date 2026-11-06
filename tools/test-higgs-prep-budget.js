@@ -134,13 +134,8 @@ check('a stated floor at or above the ceiling is refused as not a band', () => {
 
 console.log('2. the placeholder has one value');
 
-check('HIGGS_PREP_PLACEHOLDER_CHARS equals narrator v3_served.MAX_CHARS', () => {
-  const served = path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'v3_served.py');
-  if (!fs.existsSync(served)) return; // the engine half has left: this TS constant is the only copy
-  const m = /^MAX_CHARS = (\d+)\s*$/m.exec(fs.readFileSync(served, 'utf8'));
-  assert.ok(m, 'v3_served.py states no MAX_CHARS line');
-  assert.strictEqual(higgs.HIGGS_PREP_PLACEHOLDER_CHARS, Number(m[1]));
-});
+// "HIGGS_PREP_PLACEHOLDER_CHARS equals narrator v3_served.MAX_CHARS" LEFT IN STEP 8 (2026-11-05) with
+// `python/narrator/engine`: the TypeScript constant is the only copy now.
 
 console.log('3. prepareSession hands prep the budget');
 

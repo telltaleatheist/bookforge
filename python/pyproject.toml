@@ -275,33 +275,5 @@ narrator = ["**/*.md"]
 # Every earlier chunk had proved nothing. `**/*.md` above shipped the prose
 # beside it and this file was the one thing in `text/` that the render needs.
 "narrator.text" = ["*.json"]
-# NARRATOR'S OWN HIGGS v3 LAUNCHER, shipped as package data so a `pip install`
-# from git carries it. `engine/higgs/v3_served.py` resolves the pair through
-# `importlib.resources` when the caller names neither NARRATOR_HIGGS3_URL nor
-# NARRATOR_HIGGS3_SERVE_SCRIPT, and runs `bash <script>`.
-#
-# THE vllm-omni PAIR TRAVELS TOGETHER AND MUST LAND IN ONE DIRECTORY: the
-# script's HIGGS_DEPLOY_CONFIG defaults to
-# `$(dirname "$0")/higgs_default_frames7500.yaml`, the certified frames-7500
-# profile, and without it vllm-omni auto-discovers its own profile whose stage-0
-# max_tokens is 2048 frames (81.92 s) and truncates every long chunk. `launch/`
-# is deliberately NOT a package - there is no python in it - so the data belongs
-# to `narrator.engine.higgs`.
-#
-# SINCE 2026-09-15 THE DIRECTORY ALSO HOLDS `serve_higgs_sgl.sh`, the SGLang-Omni
-# launcher, resolved by `engine/higgs/sgl_served.py:packaged_serve_script`. The
-# `launch/*.sh` glob already carried it, so this is a note rather than an edit -
-# but it is the file Owen's own renders go through ("we dont use vllm-omni. we
-# use sglang"), and until that day its only copy lived in electron/scripts/higgs/
-# where no other client of narrator could reach it.
-#
-# IT SHIPS ALONE, with no sibling, and that is a fact about the stack:
-# SGLang-Omni has no deploy profile at all - which is why sampling must ride on
-# every request there - so nothing reads its `$(dirname "$0")` and no second
-# file is invented to sit beside it.
-# `launch/*.py` is narrator's SGLang entry module (`sgl_omni_entry.py`),
-# which the shell launcher execs INSTEAD of `bin/sgl-omni` so that
-# `HiggsTtsEngineBuilder.context_length` - a class attribute upstream gives
-# no flag for - is assigned before the engine is built. It ships beside the
-# script because the script finds it at `$(dirname "$0")`.
-"narrator.engine.higgs" = ["launch/*.sh", "launch/*.yaml", "launch/*.py"]
+# The Higgs launchers shipped here as `narrator.engine.higgs` data until step 8 (2026-11-05), when
+# `narrator/engine` left this package: Crucible owns Higgs serve.

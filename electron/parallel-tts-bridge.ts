@@ -1979,9 +1979,8 @@ export async function cleanupStaleTempFolders(maxAgeHours: number = 24): Promise
 function jobRunsInWsl(ttsEngine?: string): boolean {
   const id = ttsEngine?.toLowerCase();
   if (id !== 'orpheus' && id !== 'higgs') return false;
-  // 'worker' stands for every GPU phase: prep, worker and retake all take the
-  // same arm, and the tools phases (assembly/resume/list) never ask this.
-  return narratorRunsInWsl(id, 'worker');
+  // Prep is the one phase left, and it takes the engine's arm (the worker and retake phases did too).
+  return narratorRunsInWsl(id, 'prep');
 }
 
 /**

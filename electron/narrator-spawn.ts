@@ -121,13 +121,11 @@ export type NarratorEngineId = 'orpheus' | 'higgs';
 /**
  * Which door of narrator this spawn opens.
  *
- * `serve` is the resident streaming server (Listen, the TTS API, the browser
- * extension). `prep`, `worker` and the three tools phases are the audiobook
- * pipeline; Phase 3 of the e2a removal re-points them, and they are declared here
- * so the module selection lives in ONE table rather than being invented twice.
+ * `prep` is the only door left. `serve` and `worker` left in step 8 with `python/narrator/engine`
+ * (Crucible owns Higgs serve), and `assembly` with the TypeScript assembler. The prep door goes
+ * at the flip, when prep runs in TypeScript.
  */
-export type NarratorPhase =
-  'serve' | 'prep' | 'worker' | 'assembly';
+export type NarratorPhase = 'prep';
 
 export interface NarratorSpawnRequest {
   /**
@@ -310,10 +308,7 @@ export function bookforgeEngineForNarrator(narratorEngine: string): NarratorEngi
  * implied. See narrator's compat/FLAGS.md, "The two doors".
  */
 const PHASE_MODULE: Record<NarratorPhase, string> = {
-  serve: 'narrator.serve',
-  worker: 'narrator.compat.worker',
   prep: 'narrator.compat.app',
-  assembly: 'narrator.compat.app',
 };
 
 /**
@@ -334,10 +329,7 @@ const PHASE_MODULE: Record<NarratorPhase, string> = {
  * makes the Phase 3 edit one call site rather than a rule change.
  */
 const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> = {
-  serve: 'required',
   prep: 'required',
-  worker: 'required',
-  assembly: 'optional',
 };
 
 /**
@@ -408,44 +400,6 @@ export function narratorPythonRoot(): string {
       'or copied here. Looked for narrator/__init__.py under: ' + candidates.join(', ') +
       '. Merge feat/narrator.',
   );
-}
-
-/**
- * HAS narrator's MLX HIGGS BACKEND LANDED IN THIS CHECKOUT?
- *
- * Higgs v3 ships ONE backend today: `engine/higgs/v3_served.py`, a vLLM-Omni
- * server. vLLM-Omni has no macOS build, so on a Mac `NARRATOR_ENGINE=higgs-v3`
- * resolves to an engine that cannot start — which is why the Listen picker must
- * not offer Higgs there, however present the `narrator-mlx` environment is.
- *
- * An in-process MLX backend for darwin is being written on
- * `feat/narrator-higgs-mlx`. This detects it by CONTENT rather than by filename,
- * because the filename is the other builder's to choose: any module under
- * `engine/higgs/` that mentions mlx means the backend is here.
- *
- * IT IS A LANDING DETECTOR, NOT A CAPABILITY QUERY, and the difference matters
- * enough to say: it answers "is the code present", not "will it load on this
- * machine". When the branch lands, the honest replacement is to ask narrator
- * itself — a `--probe` on the registry, or an engine attribute the serve worker
- * reports — and this function goes. Until then it is what keeps the picker from
- * promising a Mac feature that does not exist yet, without hard-coding `false`
- * that somebody then has to remember to flip.
- */
-let higgsMlxBackendCache: boolean | null = null;
-
-export function higgsMlxBackendPresent(): boolean {
-  if (higgsMlxBackendCache !== null) return higgsMlxBackendCache;
-  try {
-    const dir = path.join(narratorPythonRoot(), 'narrator', 'engine', 'higgs');
-    higgsMlxBackendCache = fs.readdirSync(dir)
-      .filter((f) => f.endsWith('.py'))
-      .some((f) => /\bmlx\b/i.test(fs.readFileSync(path.join(dir, f), 'utf-8')));
-  } catch {
-    // No narrator package, or no higgs engine directory. Either way the backend
-    // is not here, which is the same answer.
-    higgsMlxBackendCache = false;
-  }
-  return higgsMlxBackendCache;
 }
 
 /** Does a spawn for this engine cross into WSL on this machine? */
