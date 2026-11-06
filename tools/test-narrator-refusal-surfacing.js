@@ -40,59 +40,6 @@ const { spawnSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 
-// `cli/electron-stub.js` IS the headless Electron shim, and requiring it installs
-// the `require('electron')` interception. It is borrowed rather than re-rolled
-// because the hand-rolled stub that used to sit here answered `os.tmpdir()` for
-// EVERY getPath, so `userData` came out as %TEMP% and `resolveToolsEnv()` looked
-// for the tools env at %TEMP%\runtime\tools-env — a directory that does not
-// exist. This file then threw on import and ran zero checks, silently, since
-// 2026-08-12. The shared stub answers the real per-platform userData and throws
-// by name for any getPath nobody has thought about, which is the opposite
-// failure mode and the right one.
-require(path.join(REPO, 'cli', 'electron-stub.js'));
-const paths = require(path.join(DIST, 'narrator-paths.js'));
-const toolPaths = require(path.join(DIST, 'tool-paths.js'));
-const { skipLine } = require('./keeper-skip.js');
-
-/**
- * THE WORKER DOOR RUNS IN THE TOOLS ENV HERE, and only here.
- *
- * A refusal is decided by narrator's flag parser before any engine is
- * constructed, so it needs no torch and no vLLM — but the real worker door
- * resolves the Orpheus environment, which on a Windows machine rendering through
- * WSL does not exist natively at all (it refuses by name, correctly). Pointing it
- * at the tools env keeps the ARGV and the ERROR PATH real, which is what is under
- * test, without demanding a 6 GB environment to prove a string reaches a log.
- */
-function stub(mod, name, fn) {
-  const d = Object.getOwnPropertyDescriptor(mod, name);
-  if (d && d.get) Object.defineProperty(mod, name, { value: fn, configurable: true, enumerable: true });
-  else mod[name] = fn;
-}
-stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => false);
-
-/**
- * NO TOOLS ENV, NO RUN — AND THAT IS A SKIP, NOT A FAILURE.
- *
- * This drives a REAL python, so a checkout on which BookForge has never run
- * first-run setup genuinely cannot execute it. That used to be the stated reason
- * this file was kept out of run-keepers, and being kept out is precisely how it
- * spent a month crashing on import without anyone hearing about it
- * (crucible/docs/ARCHITECTURE.md R2). It is a keeper now, and it SKIPS BY NAME
- * and exits 0 where the env is absent.
- */
-let toolsPython;
-try {
-  toolsPython = paths.getPythonInvocation();
-} catch (err) {
-  console.log(skipLine(`the tools python environment is not installed on this machine, and this `
-    + `suite drives a real narrator through it — ${err && err.message ? err.message.split('\n')[0] : err}`));
-  process.exitCode = 0;
-  return;
-}
-stub(paths, 'getPythonInvocation', () => toolsPython);
-
-const spawnMod = require(path.join(DIST, 'narrator-spawn.js'));
 
 let failures = 0;
 function check(name, fn) {
@@ -127,41 +74,29 @@ const spawnFailureDetail = eval(`${helperSrc[0]}; spawnFailureDetail`);
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-refusal-'));
 
-/** Run a narrator door through the app's own plan builder and capture both streams. */
-function refuse(what, { phase, engine, args }) {
-  const plan = spawnMod.buildNarratorSpawn({
-    engine, phase, args, envExtras: { NARRATOR_SESSIONS_ROOT: SCRATCH }, cwdHint: REPO,
-  });
-  const r = spawnSync(plan.command, plan.args, {
-    cwd: plan.cwd, env: plan.env, encoding: 'utf-8', timeout: 180000,
-  });
-  return {
-    what,
-    status: r.status,
-    stdout: (r.stdout || ''),
-    stderr: (r.stderr || ''),
-    plan,
-  };
+/*
+ * A real refusal through the real door, in a process of its own so this file stays synchronous. Since step 8
+ * the door is `startPrep`, in TypeScript: the Python doors this file used to drive are deleted.
+ */
+function refuse(what, ebook, ttsEngine) {
+  const request = { ebook, sessionDir: path.join(SCRATCH, 'session'), options: { session: 'x', language: 'en', ttsEngine, higgsVoice: 'v', maxChars: 800, floorChars: 500 } };
+  const script = `const { startPrep } = require(${JSON.stringify(path.join(DIST, 'narrator', 'text', 'prep-door.js'))});
+    const child = startPrep(${JSON.stringify(request)});
+    child.stdout.on('data', (d) => process.stdout.write(d));
+    child.stderr.on('data', (d) => process.stderr.write(d));
+    child.on('close', (code) => { process.exitCode = code; });`;
+  const r = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8', timeout: 60000 });
+  return { what, status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
-// AN ENGINE THE SPAWN AND THE ARGV DISAGREE ABOUT, on the one door left (step 8: the worker and
-// assembly phases are gone). `--tts_engine orpheus` on a plan built for Higgs is what a stale
-// session-state.json produces, and narrator refuses it rather than picking one.
-const nearMiss = refuse('an engine the argv and the spawn disagree about', {
-  engine: 'higgs', phase: 'prep',
-  args: ['--headless', '--ebook', path.join(SCRATCH, 'x.epub'), '--session', 'x',
-         '--session_dir', path.join(SCRATCH, 'nope'), '--prep_only', '--tts_engine', 'orpheus'],
-});
-
-// Prep without the voice narrator will not guess: the chunk band is the voice's.
-const noSessionDir = refuse('prep with no --higgs_voice', {
-  engine: 'higgs', phase: 'prep',
-  args: ['--headless', '--ebook', path.join(SCRATCH, 'x.epub'), '--session', 'x', '--prep_only', '--tts_engine', 'higgs-v3'],
-});
+const notEpub = path.join(SCRATCH, 'a.txt');
+fs.writeFileSync(notEpub, 'x');
+const orpheus = refuse('an engine prep does not serve', notEpub, 'orpheus');
+const noSessionDir = refuse('a book that is not an EPUB', notEpub, 'higgs-v3');
 
 const CASES = [
-  { r: nearMiss, mustSay: /--tts_engine orpheus disagrees with NARRATOR_ENGINE/i },
-  { r: noSessionDir, mustSay: /needs --higgs_voice/ },
+  { r: orpheus, mustSay: /narrator preps for \['higgs-v3'\], not 'orpheus'/ },
+  { r: noSessionDir, mustSay: /reads EPUB only, not '\.txt'/ },
 ];
 
 console.log('narrator refuses on STDOUT, which is the whole point');

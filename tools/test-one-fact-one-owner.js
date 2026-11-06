@@ -16,7 +16,7 @@
  * This file is the check for the two copies found on 2026-09-13, both of which
  * had already reached output:
  *
- * 1. THE ACRONYM LIST — `python/narrator/text/caps_acronyms.json`, which calls
+ * 1. THE ACRONYM LIST — `shared/text/caps_acronyms.json`, which calls
  *    itself "THE ONE ACRONYM LIST, read by THREE code paths so they can never
  *    drift". Two of the three read DIFFERENT SUBSETS of it. narrator's caps fold
  *    keeps `lettered | spokenAsWord` as printed (paragraph_packer.py
@@ -69,7 +69,8 @@ for (const m of [LISTEN_TEXT_JS, HIGGS_MODELS_JS]) {
 }
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 
-const ACRONYMS_JSON = path.join(REPO, 'python', 'narrator', 'text', 'caps_acronyms.json');
+const ACRONYMS_JSON = path.join(REPO, 'shared', 'text', 'caps_acronyms.json');
+const PACKER_ACRONYMS_JSON = path.join(REPO, 'python', 'narrator', 'text', 'caps_acronyms.json');
 const PACKER_PY = path.join(REPO, 'python', 'narrator', 'text', 'paragraph_packer.py');
 const LISTEN_TEXT_TS = path.join(REPO, 'shared', 'listen-text', 'normalize.ts');
 /** The one fold since B6 step 4, which Listen re-exports. */
@@ -138,8 +139,14 @@ test('NO SECOND HARD-CODED ACRONYM SET in caps.ts or Listen', () => {
   const literalSets = [...ts.matchAll(/new Set\(\s*\[\s*(['"])/g)];
   assert.deepStrictEqual(literalSets.map((m) => m.index), [],
     'normalize.ts or caps.ts builds a Set from string literals again. Caps tokens belong in '
-    + 'python/narrator/text/caps_acronyms.json, where narrator reads them too — a set written '
+    + 'shared/text/caps_acronyms.json, the one list — a set written '
     + 'here moves on its own, which is how WWII reached a book as "Wwii".');
+});
+
+test('the packer kept for the align CLI reads an identical copy of the list', () => {
+  // Python is never edited for the move (step 8), so it keeps its own file. Two copies only stay one fact if they are equal.
+  assert.strictEqual(fs.readFileSync(PACKER_ACRONYMS_JSON, 'utf8').replace(/\r\n/g, '\n'), fs.readFileSync(ACRONYMS_JSON, 'utf8').replace(/\r\n/g, '\n'),
+    'shared/text/caps_acronyms.json and python/narrator/text/caps_acronyms.json have drifted');
 });
 
 test('the categories mean what the readers do with them', () => {

@@ -179,7 +179,6 @@ import {
   NARRATOR_BATCH_RE,
   NARRATOR_WORKER_RE,
   SERVE_PROCESS_RE,
-  buildNarratorSpawn,
   narratorEngineId,
   narratorRunsInWsl,
   type NarratorEngineId,
@@ -1974,7 +1973,7 @@ function jobRunsInWsl(ttsEngine?: string): boolean {
   const id = ttsEngine?.toLowerCase();
   if (id !== 'orpheus' && id !== 'higgs') return false;
   // Prep is the one phase left, and it takes the engine's arm (the worker and retake phases did too).
-  return narratorRunsInWsl(id, 'prep');
+  return narratorRunsInWsl(id);
 }
 
 /**

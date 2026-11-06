@@ -28,7 +28,7 @@ const { SPOKEN_AS_WORD } = require(path.join(DIST, 'tts-spoken-forms.js'));
 const fs = require('fs');
 {
   // THE ONE ACRONYM LIST: both Listen sets are exactly the JSON narrator reads.
-  const json = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'python', 'narrator', 'text', 'caps_acronyms.json'), 'utf-8'));
+  const json = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'shared', 'text', 'caps_acronyms.json'), 'utf-8'));
   assert.deepStrictEqual([...LETTERED_ACRONYMS].sort(), [...json.lettered].sort(), 'LETTERED_ACRONYMS drifted from caps_acronyms.json');
   for (const w of json.spokenAsWord) assert.ok(SPOKEN_AS_WORD.has(w.toLowerCase()), `${w} missing from SPOKEN_AS_WORD`);
   console.log('  ok    the acronym sets are the shared JSON');

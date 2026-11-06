@@ -153,20 +153,15 @@ async function check(name, fn) {
     }
   });
 
-  await check("each golden fixture's guest-native source_epub_path is resolved and the miss is loud", async () => {
-    const goldenRoot = path.join(REPO, 'python', 'narrator', 'tests', 'golden');
-    const fixtures = fs.readdirSync(goldenRoot, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => path.join(goldenRoot, e.name, 'session-state.json'))
-      .filter((p) => fs.existsSync(p));
-    assert.ok(fixtures.length >= 3, `expected the golden fixtures, found ${fixtures.length}`);
-
-    let guestNative = 0;
-    for (const fixture of fixtures) {
-      const state = JSON.parse(fs.readFileSync(fixture, 'utf-8'));
-      const source = state.source_epub_path;
-      if (!source || source.startsWith('/mnt/') || /^[A-Za-z]:/.test(source)) continue;
-      guestNative += 1;
+  await check("a real session's guest-native source_epub_path is resolved and the miss is loud", async () => {
+    // What the three golden sessions recorded, kept here when python/narrator/tests/golden left in step 8.
+    const SOURCES = [
+      '/home/<user>/ebook2audiobook/tmp/staged-ce93d332-1c6a-47b1-86f2-6dec63306486.epub',
+      '/home/<user>/ebook2audiobook/tmp/staged-ccd14111-da29-4fb0-a489-a19a0f126bac.epub',
+      '/home/<user>/ebook2audiobook/tmp/staged-88c038b1-cfa1-425b-9226-af6ff456b029.epub',
+    ];
+    for (const source of SOURCES) {
+      const fixture = source;
 
       captured = [];
       const got = await reassembly.getProjectJsonMetadataFromSourcePath(source);
@@ -180,7 +175,6 @@ async function check(name, fn) {
           `${fixture}: the path it looked at was never converted out of the guest. Lines: ${JSON.stringify(captured)}`);
       }
     }
-    assert.ok(guestNative >= 3, `expected 3 guest-native fixtures, saw ${guestNative}`);
   });
 
   await check('reassembly-bridge does not re-compose the /mnt/ test at the call site', () => {

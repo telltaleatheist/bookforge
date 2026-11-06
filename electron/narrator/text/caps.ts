@@ -13,12 +13,13 @@
  *     words, so a Y-only token is one too; or
  *   - it is on the list (USA, CIA, NASA): vowelled tokens that are not read as words.
  *
- * `caps_acronyms.json` stays beside the Python while the Python's prep still reads it.
+ * `shared/text/caps_acronyms.json` is the list. The packer kept for `cli/align_book_chapters.py` keeps its own
+ * copy, held equal by `tools/test-one-fact-one-owner.js`.
  */
 
-import capsAcronyms from '../../../python/narrator/text/caps_acronyms.json';
+import capsAcronyms from '../../../shared/text/caps_acronyms.json';
 
-const ACRONYMS_FILE = 'python/narrator/text/caps_acronyms.json';
+const ACRONYMS_FILE = 'shared/text/caps_acronyms.json';
 
 /** Malformed refuses by name: an empty set would title-case every acronym and say nothing. */
 function category(key: 'lettered' | 'spokenAsWord'): readonly string[] {

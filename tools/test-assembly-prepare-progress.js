@@ -18,7 +18,7 @@
  *     [ASSEMBLE] Preparing sentences 412/847
  *     [ASSEMBLE] Prepared 847 sentences in 63.4s
  *
- * Printed by python/narrator/assemble/{chapters,run}.py; understood by
+ * Printed by electron/narrator/assemble/{chapters,run}.ts; understood by
  * shared/queue/assembly-prepare.ts; displayed by electron/reassembly-bridge.ts.
  * Every one of those three can be edited without the other two failing to
  * compile, and the failure mode is SILENT AND EXACTLY THE BUG WE STARTED WITH:
@@ -47,10 +47,10 @@ if (!fs.existsSync(MODULE)) {
 }
 const { parseAssemblyPrepare } = require(MODULE);
 
-const CHAPTERS_PY = fs.readFileSync(
-  path.join(REPO, 'python', 'narrator', 'assemble', 'chapters.py'), 'utf-8');
-const RUN_PY = fs.readFileSync(
-  path.join(REPO, 'python', 'narrator', 'assemble', 'run.py'), 'utf-8');
+const CHAPTERS_TS = fs.readFileSync(
+  path.join(REPO, 'electron', 'narrator', 'assemble', 'chapters.ts'), 'utf-8');
+const RUN_TS = fs.readFileSync(
+  path.join(REPO, 'electron', 'narrator', 'assemble', 'run.ts'), 'utf-8');
 const BRIDGE = fs.readFileSync(
   path.join(REPO, 'electron', 'reassembly-bridge.ts'), 'utf-8');
 
@@ -61,22 +61,22 @@ const test = (name, fn) => tests.push({ name, fn });
 
 test('narrator prints the progress line this bar is drawn from', () => {
   assert.ok(
-    CHAPTERS_PY.includes('f"[ASSEMBLE] Preparing sentences {done}/{self._total}"'),
-    'assemble/chapters.py no longer prints "[ASSEMBLE] Preparing sentences <done>/<total>"',
+    CHAPTERS_TS.includes('`[ASSEMBLE] Preparing sentences ${done}/${total}`'),
+    'assemble/chapters.ts no longer prints "[ASSEMBLE] Preparing sentences <done>/<total>"',
   );
   assert.ok(
-    CHAPTERS_PY.includes('f"[ASSEMBLE] Preparing sentences 0/{self._total}"'),
-    'assemble/chapters.py no longer opens the bar at 0/<total>',
+    CHAPTERS_TS.includes('`[ASSEMBLE] Preparing sentences 0/${total}`'),
+    'assemble/chapters.ts no longer opens the bar at 0/<total>',
   );
 });
 
 test('narrator prints the closing line, with the wall time', () => {
   assert.ok(
-    RUN_PY.includes('f"[ASSEMBLE] Prepared {chunk_total(manifest)} sentences in "'),
+    RUN_TS.includes('`[ASSEMBLE] Prepared ${chunkTotal(manifest)} sentences in '),
     'assemble/run.py no longer prints "[ASSEMBLE] Prepared <total> sentences in <s>s"',
   );
   assert.ok(
-    /time\.monotonic\(\) - prepare_started/.test(RUN_PY),
+    /Date\.now\(\) - prepareStarted/.test(RUN_TS),
     'assemble/run.py no longer times the prepare step',
   );
 });
@@ -85,8 +85,8 @@ test('narrator names the work dir it leaves behind on a failure', () => {
   // Not the bar, but the same contract: the work dir moved to local temp, so
   // this log line is the ONLY statement of where the evidence went.
   assert.ok(
-    RUN_PY.includes('f"[assembly] Working directory: {work_dir}"'),
-    'assemble/run.py no longer says where its working directory is',
+    RUN_TS.includes('`[assembly] Working directory: ${workDir}`'),
+    'assemble/run.ts no longer says where its working directory is',
   );
 });
 

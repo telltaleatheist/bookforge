@@ -55,7 +55,6 @@ Module._load = function (request) {
 };
 
 const higgs = require(HIGGS);
-const narratorSpawn = require(path.join(REPO, 'dist', 'electron', 'narrator-spawn.js'));
 
 let passed = 0;
 const failures = [];
@@ -152,19 +151,14 @@ check('the prep door packs to higgsPrepBudget of the VENUE\'s band, and states t
 
 console.log('4. prep imports no model code');
 
-check('the host-prep probe imports no narrator.engine module', () => {
-  assert.ok(Array.isArray(narratorSpawn.HOST_PREP_MODULES) && narratorSpawn.HOST_PREP_MODULES.length > 0);
-  for (const m of narratorSpawn.HOST_PREP_MODULES) {
-    assert.ok(!/^narrator\.engine(\.|$)/.test(m), `the probe still imports ${m}`);
+// "the host-prep probe imports no narrator.engine module" and "narrator's prep route and the packer name no
+// engine module" LEFT IN STEP 8 (2026-11-05): the probe and the route are deleted, and so is narrator.engine.
+check('prep in TypeScript imports no model code', () => {
+  const dir = path.join(REPO, 'electron', 'narrator', 'text');
+  for (const name of fs.readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+    const source = fs.readFileSync(path.join(dir, name), 'utf8');
+    assert.ok(!/from '[^']*(higgs-models|crucible\/|parallel-tts-bridge)/.test(source), `${name} imports model or venue code`);
   }
-});
-
-check('narrator\'s prep route and the packer name no engine module', () => {
-  const app = fs.readFileSync(path.join(REPO, 'python', 'narrator', 'compat', 'app.py'), 'utf8');
-  const route = app.slice(app.indexOf('def route_prep('), app.indexOf('\ndef ', app.indexOf('def route_prep(') + 1));
-  assert.ok(!/from \.\.engine/.test(route), 'route_prep imports from narrator.engine again');
-  const packer = fs.readFileSync(path.join(REPO, 'python', 'narrator', 'text', 'paragraph_packer.py'), 'utf8');
-  assert.ok(!/from \.\.engine/.test(packer), 'paragraph_packer imports from narrator.engine again');
 });
 
 console.log(`\n${passed} passed, ${failures.length} failed`);

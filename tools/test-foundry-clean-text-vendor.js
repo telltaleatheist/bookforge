@@ -65,7 +65,7 @@
  *   - `969dd96` — `wwi` and `wwii` added.
  *
  * Both are CONFORMANCE FIXES: they close divergences from
- * `python/narrator/text/caps_acronyms.json`, which is this side's authority for
+ * `shared/text/caps_acronyms.json`, which is this side's authority for
  * that list and had each word FIRST. The two copies now agree, which is why
  * this file has no sha pin at all and is checked by value — see
  * `checkSpokenAsWordAgreement`, which is the thing that caught both.
@@ -874,7 +874,7 @@ function checkSpokenAsWordAgreement(atShip) {
     [...block[1].matchAll(/'([^']+)'|"([^"]+)"/g)].map((m) => (m[1] ?? m[2]).toLowerCase()),
   );
   const ours = new Set(
-    require('../python/narrator/text/caps_acronyms.json').spokenAsWord.map((w) => w.toLowerCase()),
+    require('../shared/text/caps_acronyms.json').spokenAsWord.map((w) => w.toLowerCase()),
   );
   const missingThere = [...ours].filter((w) => !theirs.has(w)).sort();
   const extraThere = [...theirs].filter((w) => !ours.has(w)).sort();

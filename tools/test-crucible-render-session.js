@@ -98,7 +98,6 @@ fs.writeFileSync(path.join(USER_DATA, 'tool-paths.json'), JSON.stringify({
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 
 const narratorPaths = require(path.join(DIST, 'narrator-paths.js'));
-const narratorSpawn = require(path.join(DIST, 'narrator-spawn.js'));
 const SCRATCH = path.join(WORK, 'scratch');
 narratorPaths.setNarratorScratchRoot(SCRATCH);
 const bridge = require(path.join(DIST, 'parallel-tts-bridge.js'));
@@ -176,110 +175,11 @@ function lift(name) {
     assert.ok(fs.existsSync(SCRATCH), 'the scratch root was not created');
   });
 
-  console.log('3. the prep spawn is built on the host');
-
-  await check('onHost builds a native prep in the TOOLS env: no wsl.exe, narrator.compat.app', () => {
-    const plan = narratorSpawn.buildNarratorSpawn({
-      engine: 'higgs', phase: 'prep', args: ['--prep_only', '--session', ID], envExtras: { X: '1' }, onHost: true,
-    });
-    assert.strictEqual(plan.viaWsl, false, 'the plan crosses into WSL');
-    assert.notStrictEqual(plan.command, 'wsl.exe');
-    assert.strictEqual(plan.command, fakePython, `not the tools env's python: ${plan.command}`);
-    const at = plan.args.indexOf('-m');
-    assert.ok(at >= 0 && plan.args[at + 1] === 'narrator.compat.app', `argv: ${plan.args.join(' ')}`);
-    assert.ok(plan.args.includes('--prep_only') && plan.args.includes(ID));
-    assert.strictEqual(plan.env.NARRATOR_ENGINE, 'higgs-v3', 'the engine id still travels: prep packs BY engine');
-    assert.strictEqual(plan.env.X, '1');
-    assert.ok(plan.env.PYTHONPATH && fs.existsSync(path.join(plan.env.PYTHONPATH, 'narrator', '__init__.py')),
-      `PYTHONPATH does not reach narrator: ${plan.env.PYTHONPATH}`);
-    // Orpheus is retired (step 8): its spawn arm is gone, and asking for one is refused by name.
-    assert.throws(() => narratorSpawn.buildNarratorSpawn({ engine: 'orpheus', phase: 'prep', args: [], envExtras: {}, onHost: true }),
-      /Orpheus is retired/);
-  });
-
-  if (ON_WINDOWS) {
-    await check('MUTATION: the same request WITHOUT onHost is the guest spawn (the toggle is on)', () => {
-      const plan = narratorSpawn.buildNarratorSpawn({
-        engine: 'higgs', phase: 'prep', args: ['--prep_only'], envExtras: {},
-      });
-      assert.strictEqual(plan.viaWsl, true, 'with the toggle on and no onHost, prep must still be the guest arm');
-      assert.strictEqual(plan.command, 'wsl.exe');
-    });
-  }
-
-  await check('onHost is refused by name on a phase that loads the model', () => {
-    for (const phase of ['worker', 'serve']) {
-      assert.throws(
-        () => narratorSpawn.buildNarratorSpawn({ engine: 'higgs', phase, args: [], envExtras: {}, onHost: true }),
-        (err) => /onHost was set on phase '(worker|serve)'/.test(err.message) && /Only prep/.test(err.message),
-        `${phase} accepted onHost`);
-    }
-  });
-
-  await check('onHost and wslCondaEnv together are refused: two answers for one arm', () => {
-    assert.throws(
-      () => narratorSpawn.buildNarratorSpawn({ phase: 'prep', engine: 'higgs', args: [], envExtras: {}, onHost: true, wslCondaEnv: 'qwen-align' }),
-      /onHost and wslCondaEnv 'qwen-align' were both given/);
-  });
-
-  /*
-   * A CHECK STOOD HERE AND ITS SUBJECT IS DELETED.
-   *
-   * "narratorSpawnCrossesIntoWsl is the ONE computation the spawn and the voice
-   * document share" read `electron/higgs-spawn.ts` and proved that the arm the
-   * voice document was WRITTEN for was the same arm the command line was BUILT
-   * for — the two were computed separately once, and the moment a per-run
-   * override lived in one of them they could disagree about which voice a book
-   * was in. narrator's reaction to a voice its document does not name is not a
-   * crash: a whole book renders in the base model's own speaker.
-   *
-   * `higgs-spawn.ts` is deleted (docs/LEGACY-REMOVAL.md) and there is no voice
-   * document, because there is no local Higgs server to start on a voice. The
-   * surviving half of that lesson — that a render must resolve its voice through
-   * ONE function so no two doors can disagree — is `higgsModelForJob` in
-   * `higgs-models.ts`, and `tools/test-higgs-engine.js` is where it is pinned.
-   */
-
-  console.log('4. the tools env is MEASURED before a Crucible-venue prep spawns');
-
-  await check('a tools env whose python is not a python is refused naming the interpreter', async () => {
-    const refusal = await narratorSpawn.hostPrepRefusal();
-    assert.ok(typeof refusal === 'string' && refusal.length > 0, 'an empty file passed as a python');
-    assert.ok(refusal.includes(fakePython), `the refusal must name the interpreter: ${refusal}`);
-    assert.ok(/cannot run narrator's prep/.test(refusal), refusal);
-    assert.ok(/nothing preps inside WSL for a render that does not run there/i.test(refusal),
-      refusal);
-    // And it no longer offers the deleted switch as the way out: the fix is to
-    // install narrator's text dependencies into that interpreter.
-    assert.ok(/pip install -e/.test(refusal), refusal);
-    assert.ok(!/turn on "Render audiobooks/.test(refusal),
-      `it still offers a switch that no longer exists: ${refusal}`);
-  });
-
-  const platformUserData = process.platform === 'darwin'
-    ? path.join(os.homedir(), 'Library', 'Application Support', 'BookForge')
-    : process.platform === 'win32'
-      ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'BookForge')
-      : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'BookForge');
-  const realToolsEnv = path.join(platformUserData, 'runtime', 'tools-env');
-  const realPython = process.platform === 'win32'
-    ? path.join(realToolsEnv, 'python.exe') : path.join(realToolsEnv, 'bin', 'python');
-  if (fs.existsSync(realPython)) {
-    await check(`this machine's tools env can prep (${realToolsEnv})`, async () => {
-      process.env.BOOKFORGE_TOOLS_ENV = realToolsEnv;
-      try {
-        // ONE probe for every engine since 2026-11-04: a Higgs prep's budget is
-        // on its argv, so it imports no `narrator.engine` module to learn it.
-        const refusal = await narratorSpawn.hostPrepRefusal();
-        assert.strictEqual(refusal, null, refusal);
-      } finally {
-        process.env.BOOKFORGE_TOOLS_ENV = FAKE_TOOLS_ENV;
-      }
-    });
-  } else {
-    console.log(`  --    this machine has no tools env at ${realToolsEnv}; the real probe is not measured here`);
-  }
-
+  // Sections 3 and 4 LEFT IN STEP 8 (2026-11-05) with the spawn they drove, dropped by name: "onHost builds a
+  // native prep in the TOOLS env", "the same request WITHOUT onHost is the guest spawn", "onHost is refused by
+  // name on a phase that loads the model", "onHost and wslCondaEnv together are refused", "a tools env whose
+  // python is not a python is refused naming the interpreter", "this machine's tools env can prep".
+  // Prep is TypeScript now, and needs no tools env.
   await check('prepareSession asks no Python, and the local doctor is not back', () => {
     /*
      * It used to assert a two-armed branch: `hostPrepRefusal` on the Crucible
