@@ -238,15 +238,19 @@ const workDirs = () => new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.start
   });
 
   console.log('whole books, through the worker door');
-  await check('an Orpheus session routes to the Python, and everything else to this', async () => {
-    const dir = path.join(root, 'route');
-    fs.mkdirSync(dir);
-    const state = path.join(dir, 'session-state.json');
-    assert.strictEqual(await DOOR.assemblyRoute(dir), 'typescript', 'no state: the reader refuses it by name');
-    for (const [engine, want] of [['orpheus', 'python'], ['higgs-v3', 'typescript'], ['xtts', 'typescript']]) {
-      fs.writeFileSync(state, JSON.stringify({ tts_engine: engine }));
-      assert.strictEqual(await DOOR.assemblyRoute(dir), want, engine);
+  await check('every session assembles through this door: no Python route is left in either bridge', async () => {
+    // Step 8: the Orpheus route to the Python went, and an Orpheus session is refused by name below.
+    assert.deepStrictEqual(Object.keys(DOOR), ['startAssembly']);
+    for (const bridge of ['parallel-tts-bridge.ts', 'reassembly-bridge.ts']) {
+      const source = fs.readFileSync(path.join(__dirname, '..', 'electron', bridge), 'utf8');
+      assert.ok(!/phase: 'assembly'/.test(source), `${bridge} still builds a Python assembly spawn`);
+      assert.ok(source.includes('startAssembly({'), `${bridge} no longer assembles through the door`);
     }
+    // "Can this machine assemble?" asks for what this door is handed, ffmpeg and ffprobe, and never a Python.
+    const bridge = fs.readFileSync(path.join(__dirname, '..', 'electron', 'reassembly-bridge.ts'), 'utf8');
+    const ready = bridge.slice(bridge.indexOf('export function narratorReady('), bridge.indexOf('\n}\n', bridge.indexOf('export function narratorReady(')));
+    assert.ok(/getFfmpegPath\(\)/.test(ready) && /getFfprobePath\(\)/.test(ready), 'narratorReady does not probe ffmpeg and ffprobe');
+    assert.ok(!/narrator\.assemble|buildNarratorSpawn|narratorPythonRoot/.test(ready), 'narratorReady still asks a Python');
   });
   await check('a short book: serial, cover, chapters, gaps, both transcripts, no work dir left', async () => {
     const before = workDirs();

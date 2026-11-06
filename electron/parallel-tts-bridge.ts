@@ -156,7 +156,7 @@ import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './
  */
 import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { listResumableSessions as listSessionsUnder, resumeSession } from './narrator/session/session-store';
-import { assemblyRoute, startAssembly } from './narrator/assemble/assemble-door';
+import { startAssembly } from './narrator/assemble/assemble-door';
 import { startPrep } from './narrator/text/prep-door';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
@@ -5435,79 +5435,10 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // which is slow enough to dominate the job, or nothing at all when WSL is down.
   const settings = config.settings;
 
-  // The device flag is scaffolding on this door — narrator's assembly reads no
-  // device — but it is passed as CPU rather than omitted, because that is what it
-  // truthfully does and a session dump that says CUDA on an assembly is a lie a
-  // reader has to disprove.
-  const asmDeviceArg = 'CPU';
-
-  // De-ring is OPT-IN and lives on the reassembly path (see reassembly-bridge:
-  // config.applyDeRing). This inline TTS→assemble path never auto-applies a per-voice
-  // post-render filter — silently applying it here is exactly what dulled sibilants on
-  // books that had no ringing. Left undefined so the raw sentences encode unchanged;
-  // if de-ring is ever wanted on an inline-assembled job it must be threaded as an
-  // explicit flag, never resolved by default.
-  const postRenderFilter: string | undefined = undefined;
-
   // The silence between chapters. Resolved once, so the number on the command
   // line is the number the log names — the caller's, or BookForge's default when
   // it did not choose (which is not the same as 0).
   const chapterGap = resolveChapterGap(config.chapterGap);
-  // The session's own engine picks the assembler: Orpheus stays on the Python until step 8.
-  const assembler = await assemblyRoute(prepInfo.processDir);
-
-  const args = [
-    '--headless',
-    // Only include --ebook if we have a path (assembly_only doesn't require it)
-    ...(config.epubPath ? ['--ebook', config.epubPath] : []),
-    '--output_dir', asmOutputDir,
-    '--session', prepInfo.sessionId,
-    // THE PROCESS DIR, not the `ebook-<uuid>` dir. narrator's assembly route is
-    // the one place where the two are NOT interchangeable: `session_v1
-    // .build_manifest` calls `load_session_state(process_dir)` directly and opens
-    // `<dir>/session-state.json`, where the render routes go through
-    // `session_store.load_session_state`, which WALKS a session dir's
-    // subdirectories to find it. e2a resolved either shape, so this door sent the
-    // session dir for years and it worked.
-    //
-    // It refuses by name ("session-state.json not found: ..."), which is the good
-    // outcome; the bad one is that nothing in a snapshot can see it. Found by
-    // running the door against the kershaw golden session
-    // (tools/smoke-narrator-assembly.js) — the flags were right, the plan was
-    // right, and every book would have failed to assemble.
-    '--session_dir', prepInfo.processDir,
-    '--device', asmDeviceArg,
-    '--language', settings.language,
-    // THE JOB'S OWN ENGINE, in narrator's spelling. Not the literal 'xtts' this
-    // door used to send when it ran natively, and not omitted as the Higgs door
-    // used to. narrator does not gate assembly on the engine, so any of the three
-    // works today — but only this one is still right if it ever does, and only
-    // this one never names an ENGINE_NEAR_MISS ('higgs' is one; 'higgs-v3' is the
-    // id). A session's own record of what rendered it should agree with the flag.
-    '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
-    '--assemble_only',  // Skip TTS, just combine existing sentence audio files
-    '--no_split',       // Don't split into multiple parts - create single file
-    // THE COVERAGE REPORT — WHENEVER THE FILE IS THERE, whatever the engine.
-    //
-    // `assemble/coverage_gate.py` no longer refuses a book on it (Owen,
-    // 2026-09-05: "assembly will never function, ever, if we expect it to come
-    // out the other side flawless"). It READS it out — every chunk whose audio
-    // did not say its text, the words it dropped, the retake command — and then
-    // assembles. So the question is no longer "is this engine guarded" but "did
-    // anybody measure this book": a report that exists gets read, and an Orpheus
-    // book somebody chose to align is read out too. Absent, assembly says so and
-    // estimates the sentence cues.
-    ...(fsSync.existsSync(coverageReportPath(prepInfo.processDir))
-      ? ['--coverage_report', coverageReportPath(prepInfo.processDir)]
-      : []),
-    // Per-voice post-render filter (Orpheus voices only) — applied at the final encode.
-    ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
-    // THE SILENCE BETWEEN CHAPTERS. Always passed, never conditional — see the
-    // same line in reassembly-bridge.ts.
-    '--chapter_gap', String(chapterGap),
-  ];
-
-  console.log('[PARALLEL-TTS] Running assembly:', args.join(' '));
 
   return new Promise((resolve, reject) => {
     let stderr = '';
@@ -5527,36 +5458,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     const assemblyStartMs = Date.now();
     const FRESHNESS_SLACK_MS = 2000;
 
-    // ONE ASSEMBLY SPAWN. `buildNarratorSpawn` with NO engine is the tools env on
-    // every platform — see its PHASE_ENGINE table, where `assembly` is the single
-    // 'optional' entry and passing no engine is what selects the engine-agnostic
-    // route. The Higgs branch that stood here is gone with the Orpheus one: a
-    // Higgs session is a narrator session and its assembly is the same door.
-    //
-    // narrator's assembler reads the manifest's engine profile for the things
-    // that ARE engine-specific — `engine_profiles.py` (higgs-v3: pads=false,
-    // 10/25 ms raised-cosine fades), `edges.py`, and `_plan_unpadded` realizing
-    // gapBefore/gapAfter as generated silence through one FLAC writer. Prep writes
-    // the `gaps.json` those read and `session_v1` refuses a pads=false session
-    // without it. So the door is engine-agnostic and the AUDIO is not, which is
-    // the correct division: the profile travels in the session, not in the argv.
-    const spawnPython = (): ChildProcess => {
-      const asmPlan = buildNarratorSpawn({
-        phase: 'assembly',
-        args,
-        envExtras: {
-          // No ORPHEUS_* and no CUDA pins: nothing here loads vLLM or MLX.
-          VLLM_USE_V1: '0',
-        },
-      });
-      console.log('[PARALLEL-TTS] Assembly → narrator:', asmPlan.describe());
-      return spawn(asmPlan.command, asmPlan.args, {
-        cwd: asmPlan.cwd,
-        env: asmPlan.env,
-        shell: false,
-      });
-    };
-    session.assemblyProcess = assembler === 'python' ? spawnPython() : startAssembly({
+    // An Orpheus session is refused by name inside (`assemble/chapters.ts`): its padded path is not ported.
+    session.assemblyProcess = startAssembly({
       processDir: prepInfo.processDir,
       outputDir: asmOutputDir,
       coverageReport: fsSync.existsSync(coverageReportPath(prepInfo.processDir)) ? coverageReportPath(prepInfo.processDir) : null,

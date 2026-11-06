@@ -6,11 +6,10 @@ import { publishBridgeEvent } from './bridge-events';
 import * as fs from 'fs';
 import { pipeline } from 'stream/promises';
 import * as path from 'path';
-import { spawn, spawnSync, ChildProcess } from 'child_process';
+import { spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { narratorScratchRoot, wslToWindowsPath } from './narrator-paths';
-import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
-import { assemblyRoute, startAssembly } from './narrator/assemble/assemble-door';
+import { startAssembly } from './narrator/assemble/assemble-door';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
@@ -1158,9 +1157,9 @@ export async function startReassembly(
    * BEFORE any of that, not after — the same rule the variant filing above
    * follows, and for the same reason.
    */
-  let asmEngine: string;
+  // Asked for its refusal only: assembly is the TypeScript door, which reads the engine itself.
   try {
-    asmEngine = await narratorEngineForSession(config.processDir);
+    await narratorEngineForSession(config.processDir);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     reassemblyLog.error('Reassembly refused', { jobId, error });
@@ -1631,8 +1630,6 @@ export async function startReassembly(
   // on the command line is the number the log names — a caller's explicit value,
   // or BookForge's default when it did not choose (which is not the same as 0).
   const chapterGap = resolveChapterGap(config.chapterGap);
-  // The session's own engine picks the assembler: Orpheus stays on the Python until step 8.
-  const assembler = await assemblyRoute(config.processDir);
   reassemblyLog.info('Chapter gap resolved', {
     jobId, stated: config.chapterGap, chapterGap,
   });
@@ -1671,96 +1668,8 @@ export async function startReassembly(
     // on a Crucible server. This door still reassembles a session that already
     // exists, which may be an OLD one on a \wsl$ path, and it does not get to
     // choose where that lives.)
-    const appArgs = [
-      '--headless',
-      '--ebook', epubPath,
-      '--output_dir', stagingDir,
-      '--session', config.sessionId,
-    // THE PROCESS DIR, not the `ebook-<uuid>` dir. narrator's assembly route is
-      // the one place where the two are NOT interchangeable: `session_v1
-      // .build_manifest` calls `load_session_state(process_dir)` directly and opens
-      // `<dir>/session-state.json`, where the render routes go through
-      // `session_store.load_session_state`, which WALKS a session dir's
-      // subdirectories to find it. e2a resolved either shape, so this door sent the
-      // session dir for years and it worked.
-      //
-      // It refuses by name ("session-state.json not found: ..."), which is the good
-      // outcome; the bad one is that nothing in a snapshot can see it. Found by
-      // running the door against the kershaw golden session
-      // (tools/smoke-narrator-assembly.js) — the flags were right, the plan was
-      // right, and every book would have failed to assemble.
-      '--session_dir', config.processDir,
-      '--device', 'CPU',
-      '--language', language,
-      // Read from the session's own provenance rather than the literal 'xtts'
-      // this door sent on every book including Orpheus ones. narrator does not
-      // gate assembly on the engine (`compat/app.py` routes `--assemble_only`
-      // before any engine resolution), so the flag names nothing today — but a
-      // session whose argv disagrees with its own state file is a fact somebody
-      // later has to disprove.
-      '--tts_engine', asmEngine,
-      '--assemble_only',
-      '--no_split',
-      // THE COVERAGE REPORT — WHENEVER THE FILE IS THERE, whatever the engine.
-      //
-      // It used to be keyed off the session's engine, because the report was a
-      // GATE an enforced engine had to satisfy. It is an AUDIT now (Owen,
-      // 2026-09-05): assembly logs every chunk whose audio did not say its text
-      // together with the retake command and assembles the book either way. So
-      // the only question left is whether a report EXISTS — an engine that does
-      // not queue an Align row never has one, and an Orpheus book somebody chose
-      // to align does, and both answers come from the disk rather than a table.
-      ...(fs.existsSync(coverageReportPath(config.processDir))
-        ? ['--coverage_report', coverageReportPath(config.processDir)]
-        : []),
-      // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
-      // instead of the cached XTTS sentences.
-      ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []),
-      // Chapters already encoded during the render. e2a skips both the sentence
-      // concat and the AAC encode for these and drops them straight into the final
-      // concat; it validates and errors on anything it cannot use, and ignores the
-      // flag entirely on the modes where pre-encoded chunks are not equivalent.
-      ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []),
-      // Per-voice post-render filter (Orpheus provenance only) — applied at the
-      // final encode. It is ONE opaque argument that may contain `|`, `:`, `/` and
-      // quotes; it crosses as an argv element and is never shell-interpolated, so
-      // there is nothing left to escape it against.
-      ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
-      // THE SILENCE BETWEEN CHAPTERS. Always passed, never conditional: the
-      // value is the answer for this book whether the caller chose it or took
-      // the default, and a flag that is sometimes absent is a book whose gap
-      // depends on which door assembled it. narrator puts it in the audio, the
-      // chapter markers and both transcripts.
-      '--chapter_gap', String(chapterGap),
-    ];
-
-    // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions
-    // Metadata will be applied after assembly using m4b-tool if available
-
-    // ONE SPAWN, native, every platform. `buildNarratorSpawn` with NO engine is
-    // the tools env — the bundled relocatable python that holds numpy/soundfile/
-    // mutagen with ffmpeg on PATH, which is everything an assembly needs.
-    //
-    // shell:false, where this used to pass shell:true + shellEscapeArgs. That
-    // existed because `conda run` re-invokes through a shell and a bundled python
-    // lives under "Application Support" on macOS; argv is passed as an array now
-    // and never round-trips through a shell, so paths with apostrophes ('Aesop's
-    // Fables') and a `--post_render_filter` chain full of `|` and `:` cross
-    // untouched instead of correctly escaped.
-    const spawnPython = (): ChildProcess => {
-      const asmPlan = buildNarratorSpawn({
-        phase: 'assembly',
-        args: appArgs,
-        envExtras: {},
-      });
-      console.log('[REASSEMBLY] Assembly → narrator:', asmPlan.describe());
-      return spawn(asmPlan.command, asmPlan.args, {
-        cwd: asmPlan.cwd,
-        env: asmPlan.env,
-        shell: false,
-      });
-    };
-    const proc: ChildProcess = assembler === 'python' ? spawnPython() : startAssembly({
+    // An Orpheus session is refused by name inside (`assemble/chapters.ts`): its padded path is not ported.
+    const proc: ChildProcess = startAssembly({
       processDir: config.processDir,
       outputDir: stagingDir,
       sentencesDir: rvcSentencesDir ?? null,
@@ -3097,68 +3006,28 @@ function sendProgress(
 /**
  * CAN THIS MACHINE ASSEMBLE AN AUDIOBOOK?
  *
- * Two halves, and the second is the one that used to be missing.
+ * Assembly is TypeScript (`narrator/assemble/assemble-door.ts`), and what it needs from the
+ * machine is ffmpeg and ffprobe: the two binaries `startAssembly` is handed. So the answer is
+ * whether both run. No Python is asked: a machine with no tools env assembles as well as one
+ * with it. An Orpheus session is refused by name at the door, not here.
  *
- *  1. the `narrator` package is in this checkout (`narratorPythonRoot()` throws
- *     by name when it is not);
- *  2. the tools env's python can actually IMPORT `narrator.assemble` — which is
- *     where numpy / soundfile / mutagen have to be, and where a half-installed
- *     env fails.
+ * Asked once and cached for the life of the process, because it costs two process starts on
+ * the main thread and the binaries do not change under a running app.
  *
- * The old check was `<e2a>/app.py exists`, which answered neither: a checkout
- * with the file and an env missing soundfile passed it and then failed inside the
- * assembler, minutes into a job. This runs the import once and caches the answer
- * for the life of the process, because it costs a python start (~1 s) and the
- * environment does not change under a running app.
- *
- * `customTmpPath` is accepted and ignored: it named an e2a install to look beside,
- * and there is no longer an e2a install. Kept so a caller that still holds a tmp
- * path does not have to be rewritten to ask this question.
+ * `customTmpPath` is accepted and ignored: it named an e2a install to look beside, and there
+ * is no longer an e2a install.
  */
 let narratorReadyCache: boolean | null = null;
 
 export function narratorReady(_customTmpPath?: string): boolean {
   if (narratorReadyCache !== null) return narratorReadyCache;
-  try {
-    narratorPythonRoot();
-  } catch (err) {
-    console.warn('[REASSEMBLY] narrator package not present:', (err as Error).message);
-    narratorReadyCache = false;
-    return false;
+  const missing: string[] = [];
+  for (const [name, binary] of [['ffmpeg', getFfmpegPath()], ['ffprobe', getFfprobePath()]] as const) {
+    const probe = spawnSync(binary, ['-version'], { timeout: 10000, stdio: 'ignore', windowsHide: true });
+    if (probe.status !== 0) missing.push(`${name} (${binary}: ${probe.error ? probe.error.message : `exit ${probe.status}`})`);
   }
-  const plan = buildNarratorSpawn({
-    phase: 'assembly',
-    args: [],
-    envExtras: {},
-  });
-  // `-c import narrator.assemble` rather than `-m narrator.compat.app --help`:
-  // the import is what fails when the env is short a package, and --help would
-  // pass on an env that cannot assemble anything.
-  // `-u` is the interpreter flag every plan carries, and everything before it is the
-  // launcher prefix (conda run -p <env> python). An `indexOf` of -1 would slice the
-  // whole argv and silently probe with the last argument dropped, so it is checked.
-  const dashU = plan.args.indexOf('-u');
-  if (dashU < 0) {
-    throw new Error(
-      'The narrator spawn plan carries no `-u`, so the launcher prefix cannot be '
-      + `separated from the module invocation: ${plan.args.join(' ')}`,
-    );
-  }
-  const probe = spawnSync(
-    plan.command,
-    [...plan.args.slice(0, dashU), '-c', 'import narrator.assemble'],
-    // 15 s, not 60. This runs SYNCHRONOUSLY on the main process thread, which the
-    // bookshelf server shares, so the window is a UI freeze on any machine whose env
-    // is sick — and a Python that has not imported one module in 15 s is not going to
-    // assemble a book. Still owed: an async variant, so the answer costs no freeze at
-    // all (the result is cached after the first call).
-    { env: plan.env, cwd: plan.cwd, timeout: 15000, stdio: 'ignore' },
-  );
-  narratorReadyCache = probe.status === 0;
-  if (!narratorReadyCache) {
-    console.warn('[REASSEMBLY] narrator.assemble is not importable in the tools env '
-      + `(exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`);
-  }
+  narratorReadyCache = missing.length === 0;
+  if (!narratorReadyCache) console.warn('[REASSEMBLY] assembly needs ffmpeg and ffprobe, and these did not run:', missing.join(', '));
   return narratorReadyCache;
 }
 

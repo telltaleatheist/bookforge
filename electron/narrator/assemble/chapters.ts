@@ -8,8 +8,8 @@
  * AND STILL EXITS 0 (Witnesses, 2026: sentences silently missing from a finished book).
  *
  * THE PADDED PATH IS NOT HERE, on the lead's ruling of 2026-11-05: Orpheus is retired and not
- * ported. The bridges send an Orpheus session to the Python until step 8, and this refuses one by
- * name rather than treating it as anything else.
+ * ported. Every session comes here, and this refuses an Orpheus one by name rather than treating it
+ * as anything else.
  *
  * Preparing is I/O, so it runs on a pool bounded by the encoder's `workers`. The order is the
  * serial order: each unit returns its own list, stitched back in chunk order.
