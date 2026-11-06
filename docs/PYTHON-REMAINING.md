@@ -32,12 +32,6 @@ These were never part of narrator, and step 8 does not touch them.
 | `electron/scripts/vllm/text_model_download.py`, `serve_text_vllm.sh` | `electron/text-server.ts` | The local text server, in WSL |
 | The tools env's Python (`electron/tools-env-bootstrap.ts`, which checks `fitz` and `numpy`) | `electron/vlm-convert.ts` (PyMuPDF), `electron/components/component-manager.ts` | Page conversion and component checks. The tools env outlives narrator; only its narrator role went |
 
-## Data kept, read by no code
-
-| File | State |
-|---|---|
-| `electron/data/orpheus-models.json` | Kept by the lead's ruling, as data for ClipForge and `cli/bookforge-tts.py`. **No code reads it.** The app's one reader, `orpheus-assembly-tuning.ts`, was deleted in step 8, and neither ClipForge nor that CLI opens it: `cli/clipforge-process.js:1352` names it in a help line, and `tools/test-higgs-engine.js:1794`, `electron/higgs-models.ts:375` and `settings.service.ts:302` name it in comments. It is a record of the measured tuning |
-
 ## Standalone tools
 
 `tools/*.py`, `tools/foundry-ocr/`, `tools/ocr-lab/`, `tools/aligner/`, `tools/catalog-indexer/`, `tools/blocks/`,
