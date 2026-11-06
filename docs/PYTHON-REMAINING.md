@@ -37,11 +37,17 @@ These were never part of narrator, and step 8 does not touch them.
 `tools/*.py`, `tools/foundry-ocr/`, `tools/ocr-lab/`, `tools/aligner/`, `tools/catalog-indexer/`, `tools/blocks/`,
 `scripts/test-pymupdf-redaction.py` and `test-pymupdf-redact.py` are developer tools. The app reaches none of them.
 
-## Known bug, left alone
+## Known, left alone
 
 `cli/align_book_chapters.py --help` crashes on a literal `%` in a help string (`ValueError: unsupported format
 character`). It did so before step 8, and `cli/*.py` is out of scope. Running the script without `--help` is
 unaffected.
+
+`cli/bookforge-tts.py`'s `--batch-width` and `--mem-budget-gb` still set `NARRATOR_HIGGS3_MLX_*` env vars for a local spawn step 8 removed.
+
+`cli/clipforge-process.js:1352` has a help line naming the deleted `orpheus-models.json`.
+
+Local vLLM in WSL (`electron/text-server.ts`) survives only for the CLI's clean-lines doors: `cli/clean-lines.js`, `bookforge-tts.py --clean-lines` and ClipForge's corpus step.
 
 ## What removes the rest
 
