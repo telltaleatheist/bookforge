@@ -2746,7 +2746,7 @@ export function higgsSpawnEnv(
  * The narration picker's view of the catalog: `{value,label}` rows, with a
  * voice that cannot render yet marked in its LABEL rather than dropped.
  *
- * Mirrors `mergeOrpheusVoices`' output shape so the modal's dropdown code is the
+ * The voice-list shape (`NarrationVoice`) so the modal's dropdown code is the
  * same for both engines.
  */
 export function higgsNarrationVoices(userDataDir: string): {

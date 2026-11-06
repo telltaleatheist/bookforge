@@ -48,42 +48,6 @@ export interface NarrationVoice {
 }
 
 /**
- * The Orpheus voices this build ships, ordered best → worst prosody
- * (user-ranked), accent in the label.
- *
- * NOT A FALLBACK. They are voices the Orpheus engine genuinely has — there is no
- * disk read that could discover or contradict them — which is why the list is
- * stated rather than fetched. What IS discovered is the custom models a user has
- * put in the models folder, and `mergeOrpheusVoices` says how the two meet.
- */
-export const ORPHEUS_BUILTIN_VOICES: readonly NarrationVoice[] = [
-  { value: 'leah', label: 'Leah (Female, American)' },
-  { value: 'tara', label: 'Tara (Female, American)' },
-  { value: 'zoe', label: 'Zoe (Female, American)' },
-  { value: 'mia', label: 'Mia (Female, American)' },
-  { value: 'jess', label: 'Jess (Female, American)' },
-  { value: 'zac', label: 'Zac (Male, American)' },
-  { value: 'dan', label: 'Dan (Male, Cockney)' },
-  { value: 'leo', label: 'Leo (Male, American)' },
-];
-
-/**
- * The built-ins plus whatever custom models were discovered, with collisions
- * resolved in the custom model's favour.
- *
- * A CUSTOM FOLDER OF THE SAME NAME *IS* THAT VOICE NOW — the built-in it collides
- * with is dropped rather than listed twice, because two rows spelled `leah` are
- * two rows the user cannot tell apart and only one of them is what the engine
- * would load.
- */
-export function mergeOrpheusVoices(
-  custom: readonly NarrationVoice[],
-): readonly NarrationVoice[] {
-  const claimed = new Set(custom.map((one) => one.value));
-  return [...ORPHEUS_BUILTIN_VOICES.filter((one) => !claimed.has(one.value)), ...custom];
-}
-
-/**
  * The voices THIS engine can be asked for.
  *
  * ── Why this is a switch and no longer a ternary ────────────────────────────
@@ -103,13 +67,10 @@ export function mergeOrpheusVoices(
 export function narrationVoicesFor(
   engine: string,
   catalog: {
-    readonly orpheus: readonly NarrationVoice[];
     readonly higgs: readonly NarrationVoice[];
   },
 ): readonly NarrationVoice[] {
   switch (engine) {
-    case 'orpheus':
-      return catalog.orpheus;
     case 'higgs':
       return catalog.higgs;
     // Retired, but still reachable from a saved setting or an old job record
@@ -120,6 +81,7 @@ export function narrationVoicesFor(
     // still LOADS and still displays its voice string; what no longer exists is
     // a set of alternatives to offer. The refusal to RENDER lives in
     // `assertRunnableTtsEngine`, not here.
+    case 'orpheus':
     case 'xtts':
     case 'f5':
     case 'voxtral':

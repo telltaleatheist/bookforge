@@ -32,8 +32,6 @@ import { ComponentService } from '../../../core/services/component.service';
  */
 import type { VoicePickerDto } from '@shared/tts/voice-picker-dto';
 import {
-  ORPHEUS_BUILTIN_VOICES,
-  mergeOrpheusVoices,
   narrationVoicesFor,
   type NarrationVoice,
 } from '@shared/tts/narration-voices';
@@ -43,13 +41,6 @@ export type { NarrationVoice };
 @Injectable({ providedIn: 'root' })
 export class NarrationVoicesService {
   private readonly components = inject(ComponentService);
-
-  /**
-   * Orpheus voices, ordered best → worst prosody (user-ranked), accent in the
-   * label. Custom models discovered in the models folder are appended by
-   * `load()` and marked so they are distinguishable from the built-ins.
-   */
-  private readonly orpheus = signal<readonly NarrationVoice[]>(ORPHEUS_BUILTIN_VOICES);
 
   /**
    * Higgs voices. UNSEEDED, and that is the difference from the two lists above.
@@ -113,13 +104,11 @@ export class NarrationVoicesService {
     this.picker.set(res.data as VoicePickerDto);
   }
 
-  readonly orpheusVoices = computed(() => this.orpheus());
   readonly higgsVoices = computed(() => this.higgs());
 
   /** The voices THIS engine can be asked for. The shared rule, over live lists. */
   voicesFor(engine: string): readonly NarrationVoice[] {
     return narrationVoicesFor(engine, {
-      orpheus: this.orpheus(),
       higgs: this.higgs(),
     });
   }
@@ -147,7 +136,7 @@ export class NarrationVoicesService {
   async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
-    await Promise.all([this.loadOrpheus(), this.loadHiggs()]);
+    await this.loadHiggs();
   }
 
   /**
@@ -174,19 +163,4 @@ export class NarrationVoicesService {
     this.higgs.set(res.data as NarrationVoice[]);
   }
 
-  private async loadOrpheus(): Promise<void> {
-    try {
-      const api = (window as any).electron?.orpheusModels;
-      const res = await api?.list();
-      if (!res?.success || !res.data?.length) return;
-      const custom: NarrationVoice[] = res.data.map(
-        (m: { id: string; label: string }) => ({ value: m.id, label: `${m.label} (Custom)` }),
-      );
-      // The collision rule (a custom folder of the same name IS that voice) is
-      // the shared one, so main's copy of this list cannot resolve it differently.
-      this.orpheus.set(mergeOrpheusVoices(custom));
-    } catch {
-      /* keep the built-ins — see the header */
-    }
-  }
 }

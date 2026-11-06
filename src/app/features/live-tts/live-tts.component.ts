@@ -92,7 +92,6 @@ type SessionTake = LiveTake & { audioUrl: string };
               />
             </div>
 
-            @if (!workerCfg.isOrpheus()) {
               <div class="settings-row">
                 <label class="field-label">Device</label>
                 <desktop-select
@@ -104,7 +103,6 @@ type SessionTake = LiveTake & { audioUrl: string };
                   ariaLabel="Device"
                 />
               </div>
-            }
 
             <div class="slider-row">
               <label class="field-label">Speed</label>
@@ -113,7 +111,6 @@ type SessionTake = LiveTake & { audioUrl: string };
               <span class="slider-value">{{ speed().toFixed(2) }}×</span>
             </div>
 
-            @if (!workerCfg.isOrpheus()) {
               <div class="slider-row">
                 <label class="field-label">Temperature</label>
                 <input type="range" min="0.1" max="1" step="0.05"
@@ -132,7 +129,6 @@ type SessionTake = LiveTake & { audioUrl: string };
                   [ngModel]="repetitionPenalty()" (ngModelChange)="repetitionPenalty.set($event)" [disabled]="busy()" />
                 <span class="slider-value">{{ repetitionPenalty().toFixed(1) }}</span>
               </div>
-            }
           </div>
 
           <textarea
@@ -465,15 +461,13 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
     this.captureSampleRate = 24000;
     this.captureText = raw;
     this.captureEngine = this.workerCfg.engine();
-    const settings: PlaySettings = this.workerCfg.isOrpheus()
-      ? { voice, speed: this.speed() }
-      : {
-          voice,
-          speed: this.speed(),
-          temperature: this.temperature(),
-          topP: this.topP(),
-          repetitionPenalty: this.repetitionPenalty(),
-        };
+    const settings: PlaySettings = {
+      voice,
+      speed: this.speed(),
+      temperature: this.temperature(),
+      topP: this.topP(),
+      repetitionPenalty: this.repetitionPenalty(),
+    };
     this.captureSettings = settings;
 
     this.isGenerating.set(true);

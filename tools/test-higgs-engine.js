@@ -250,7 +250,6 @@ const nv = require(path.join(REPO, 'dist', 'shared', 'tts', 'narration-voices.js
 console.log('voice catalog routing');
 
 const CATALOG = {
-  orpheus: [{ value: 'o', label: 'o' }],
   higgs: [{ value: 'h', label: 'h' }],
 };
 
@@ -261,17 +260,14 @@ check('higgs gets the HIGGS list, and no other', () => {
   assert.deepStrictEqual(nv.narrationVoicesFor('higgs', CATALOG), CATALOG.higgs);
 });
 
-check('orpheus still gets the orpheus list', () => {
-  assert.deepStrictEqual(nv.narrationVoicesFor('orpheus', CATALOG), CATALOG.orpheus);
-});
-
+// "orpheus still gets the orpheus list" left in step 8: its roster did. Orpheus is a retired engine below.
 check("a retired engine gets an EMPTY list — and never another engine's", () => {
   // This asserted `CATALOG.xtts` until 2026-09-05, when XTTS left the root: that
   // list was a live read of installed XTTS checkpoints, and there is nothing left
   // to read. Empty is the only true answer. What must NOT happen — and is what
   // this check is really for — is a retired id falling through to the Orpheus or
   // Higgs list, which would offer a voice the record was never rendered in.
-  for (const retired of ['xtts', 'f5', 'voxtral']) {
+  for (const retired of ['orpheus', 'xtts', 'f5', 'voxtral']) {
     assert.deepStrictEqual(nv.narrationVoicesFor(retired, CATALOG), [], retired);
   }
 });

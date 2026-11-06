@@ -361,42 +361,6 @@ export function getEnvPathForEngine(ttsEngine?: string): string {
 }
 
 /**
- * The macOS environment narrator's Orpheus runs in: MLX, not vLLM.
- *
- * NOT the same env as the tools env, and deliberately so. The Mac Orpheus backend
- * needs mlx / mlx-lm / mlx-audio at specific pins (mlx 0.32.0 for the cross-thread
- * decode stream, mlx-lm 0.31.3 for `GenerationBatch`, mlx-audio 0.4.8 — PORT_NOTES
- * section 7a measured all three), and the old ebook2audiobook env was below two of
- * those floors, which is why three MLX test cases SKIP there. Pointing narrator at
- * a near-miss env would not fail: it would silently decline to overlap decoding and
- * run serially, which reads as "the Mac is just slower".
- *
- * ── The lookup, and why it refuses instead of falling back ──────────────────
- *
- * The component seam first, so an installer owns this the moment it exists. Then
- * the conda base Homebrew's miniconda uses, which is where that installer will put
- * it and where a hand-built env goes today. Then a refusal NAMING the env — never
- * a step down to some other Orpheus env, because the whole point of the pins is
- * that the near-miss env is the failure mode.
- */
-export function getNarratorMlxEnv(): string {
-  const managed = componentManager.resolveEntry('narrator-mlx');
-  if (managed) return managed;
-
-  const brewMiniconda = '/opt/homebrew/Caskroom/miniconda/base/envs';
-  const prefix = path.join(brewMiniconda, 'narrator-mlx');
-  if (fs.existsSync(prefix)) return prefix;
-
-  throw new Error(
-    "The 'narrator-mlx' environment is not installed. Orpheus on macOS runs on MLX " +
-      '(mlx 0.32.0 / mlx-lm 0.31.3 / mlx-audio 0.4.8) in its own conda env — the ' +
-      'tools environment has none of them and a near-miss env would silently render ' +
-      `serially. Looked for a managed 'narrator-mlx' component, then ${prefix}. ` +
-      'Create it from packaging/env/narrator-mlx.yml, or point at it in Settings → Add-ons.',
-  );
-}
-
-/**
  * NO NAMED-ENV ARM ANY MORE, and that is a deletion worth naming.
  *
  * `resolveCondaEnv` used to have a third kind beside 'relocatable' and 'prefix':

@@ -220,12 +220,7 @@ export interface TtsEngineCaps {
 // Orpheus finetune voices (e2a VALID_VOICES), ordered best → worst prosody
 // (user-ranked). leah leads → presets[0] is the default. Accent noted in label.
 //
-// The same roster, in the {value,label} spelling a picker wants, is
-// `ORPHEUS_BUILTIN_VOICES` in ./narration-voices.ts — that one is the CATALOG
-// (what a run may be rendered in, merged with the custom models found on disk),
-// this one is a CAPABILITY of the engine as the wizard describes it. They are
-// deliberately not the same object: the catalog grows at runtime and this does
-// not.
+// Its {value,label} picker spelling left in step 8 (2026-11-05): nothing offers an Orpheus voice now.
 const ORPHEUS_VOICES = [
   { id: 'leah', label: 'Leah (Female, American)' },
   { id: 'tara', label: 'Tara (Female, American)' },

@@ -179,10 +179,6 @@ export class WorkerConfigService {
    * renders none.
    */
   readonly engines = computed(() => this.config()?.engines ?? []);
-  /** True when Orpheus is the active engine — i.e. always, since 2026-09-05. The
-   *  worker-count/device controls it gates were a multi-worker-pool concept and
-   *  do not apply to it. */
-  readonly isOrpheus = computed(() => this.engine() === 'orpheus');
   /** True when Higgs is the active streaming engine (a voice change is a server restart there). */
   readonly isHiggs = computed(() => this.engine() === 'higgs');
 
