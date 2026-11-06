@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, protocol, type WebContents } from 'electron';
 import { openNarrateOverlay, registerNarrateOverlayDoors, type NarrateOverlayDeps } from './narrate-overlay';
+import { sayLandingProblem } from './foundry-landing-notice';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -255,6 +256,12 @@ interface FoundryExportLanding {
    * before the field existed has none.
    */
   readonly stepId?: string;
+  /**
+   * WHY THIS BOOK WAS FILED WITHOUT METADATA, a sentence to show as it stands
+   * (foundry-core 0.1.1). The export still landed. Absent when there is nothing
+   * to say. Said in the book window's tray (`sayLandingProblem`).
+   */
+  readonly problem?: string;
   /**
    * WHO THE MINTED FILE SAYS IT IS — added at foundry@6646153 (Wave 47), the
    * mint-metadata modal's declaration, carried so the version this landing
@@ -13842,6 +13849,8 @@ app.whenReady().then(async () => {
       noteFoundryLandingAnnounced(
         foundryLandingKey(landing.projectDir), path.basename(landing.path),
         recordFoundryExportLanding(landing));
+      // Filed without metadata: news for the person, never a failed landing.
+      sayLandingProblem(landing, foundryMount.foundryWindow());
     },
     onImport: (landing) => { void announceFoundryImportLanding(landing); },
     // The mint modal's inheritance (Owen, 2026-08-24): the book's own manifest

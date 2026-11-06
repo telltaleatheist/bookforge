@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, u
 import { FormsModule } from '@angular/forms';
 
 import {
-  asciiFilename, contributorsFromString, fillMintGaps, generatedFilename, inheritMintMeta, MINT_LANGUAGES,
+  asciiFilename, contributorsFromString, generatedFilename, MINT_LANGUAGES,
 } from '@owen/foundry-core/shared/mint-meta';
 import type { MintContributor, MintMeta } from '@owen/foundry-core/shared/mint-meta';
 import { carriedFromPlan } from '@owen/foundry-core/shared/pipeline';
@@ -163,7 +163,8 @@ export class MintMetaDialogComponent {
   /**
    * Pre-fill, field by field, from the first source that says anything: the
    * stored block, the host's record, then for a MINT the scan's own Info
-   * dictionary and the project's name (`meta:mint-seed`). The plan is fetched here for the MINT mode so
+   * dictionary and the project's name (`meta:mint-seed`, one stack composed by
+   * main). The plan is fetched here for the MINT mode so
    * the language can pre-fill from the position (a translated position's
    * plan carries its language) and the run later writes into the folder the
    * plan named.
@@ -171,35 +172,27 @@ export class MintMetaDialogComponent {
   private async load(ask: NonNullable<ReturnType<UiService['mintMetaOpen']>>): Promise<void> {
     if (!api) return;
     try {
-      const stored = await api.meta.readMint(ask.projectDir);
       /*
-       * THE HOST'S RECORD, MERGED UNDERNEATH — Owen's inheritance ruling
-       * (2026-08-24): *"when i generate an epub in bookforge foundry, it
-       * should inherit the parent document's metadata. ill fill out whatever
-       * is missing."* Hosted, the book this project was claimed from already
-       * has a manifest that knows who it is; the STORED block still wins
-       * PER-FIELD, because it is what the person last confirmed on this very
-       * project, and the host answers only the gaps — which on a first
-       * hosted mint is all of them. Standalone the call answers null and
-       * nothing changes.
+       * WHO THE BOOK IS, STACKED BY MAIN — the stored block, the host's record
+       * (Owen, 2026-08-24: *"it should inherit the parent document's metadata.
+       * ill fill out whatever is missing"*), then for a MINT the scan's own Info
+       * and the project's name (2026-11-05: *"when i export an epub, it doesnt
+       * automatically fill the metadata"*). Each source fills only what every
+       * source above it left empty.
        *
-       * THE MERGE IS `inheritMintMeta` (shared/mint-meta.ts) AND NOT THIS
-       * FILE'S, because the settle asks the same question for an export
-       * nobody confirmed at this form (a host's narrate-on-a-step), and two
+       * THE STACK IS `mintSeedFor` (node/doors-meta.ts) AND NOT THIS FILE'S,
+       * because an export nobody confirms at this form (a host's
+       * narrate-on-a-step) is stamped from the same function, and two
        * spellings of "whose title wins" is how a modal and an auto-export come
-       * to stamp two different books from one project.
+       * to stamp two different books from one project (Owen, 2026-11-06: *"yes,
+       * they should fill metadata from the pdf if its available"*).
+       *
+       * A SOURCE THAT FAILS SAYS SO UNDER THE FORM: a host that throws, a scan
+       * that will not read. The form still opens — they can type what the
+       * source could not say.
        */
-      /*
-       * A HOST THAT FAILS SAYS SO UNDER THE FORM. `.catch(() => null)` stood
-       * here and turned a broken host into a blank form with no line anywhere
-       * (2026-09-07); the seam now throws in the host's own words, and the
-       * sentence goes where the person is looking. The form still opens —
-       * they can type what the host could not say.
-       */
-      const host = await api.meta.hostSeed(ask.projectDir).catch((err: unknown) => {
-        this.problem.set(`${err instanceof Error ? err.message : String(err)} Fill in the fields yourself.`);
-        return null;
-      });
+      const seed = await api.meta.mintSeed(ask.projectDir, ask.mode === 'mint');
+      if (seed.problems.length > 0) this.problem.set(`${seed.problems.join(' ')} Fill in the fields yourself.`);
       let planLanguage: string | undefined;
       if (ask.mode === 'mint') {
         /*
@@ -217,28 +210,7 @@ export class MintMetaDialogComponent {
         this.plan = await api.workspace.planExport(ask.inputPath, 'epub', this.ledger.aimedAt(ask.projectDir));
         planLanguage = this.plan.language ?? undefined;
       }
-      let inherited = inheritMintMeta(stored, host);
-      if (ask.mode === 'mint') {
-        /*
-         * ── THE PROJECT'S OWN WORD, UNDER EVERYTHING ABOVE (2026-11-05) ─────
-         *
-         * Owen: *"when i export an epub, it doesnt automatically fill the
-         * metadata."* Standalone, with no stored block and no host, this card
-         * used to ask `meta:read-pdf` about the scan by path — a path the app
-         * had never opened, so the read was refused and a `.catch(() => null)`
-         * made the refusal an empty form, even for a scan whose Info names its
-         * title. Main now reads the scan by PROJECT (`mintSeedFor`), and the
-         * project's name, in BookForge's convention, answers what the scan does
-         * not. Each source fills only the fields every source above it left
-         * empty. A scan that could not be read is said under the form.
-         */
-        const seed = await api.meta.mintSeed(ask.projectDir);
-        if (seed.problem !== null) {
-          const said = this.problem();
-          this.problem.set(said === null ? seed.problem : `${said} ${seed.problem}`);
-        }
-        inherited = fillMintGaps(fillMintGaps(inherited, seed.pdf), seed.name);
-      }
+      const inherited = seed.meta;
       if (inherited !== null) {
         this.title.set(inherited.title);
         this.subtitle.set(inherited.subtitle ?? '');

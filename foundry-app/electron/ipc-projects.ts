@@ -5,8 +5,7 @@
  */
 import { ipcMain } from 'electron';
 import { readEpubMetadata, stampMintMetadata, readPdfMetadata } from '@owen/foundry-core/node/engine';
-import { hostMintMeta } from '@owen/foundry-core/node/host';
-import { listProjects, readManifest, recordMintMeta } from '@owen/foundry-core/node/projects';
+import { listProjects, recordMintMeta } from '@owen/foundry-core/node/projects';
 import { describeProjectDelete, deleteProjectFolder, describeDocumentDelete, openExportDeleteDoor, deleteDocumentFile } from '@owen/foundry-core/node/doors-delete';
 import { admittedPdf, mintSeedFor, writePdfMetadataFor, exportedBook, writeEpubMetadataFor } from '@owen/foundry-core/node/doors-meta';
 import type { DocumentDeletion, MetadataWriteOutcome, MintMeta } from '@owen/foundry-core/shared/types';
@@ -131,16 +130,11 @@ export function registerProjectDoors(): void {
    * ── The mint metadata — who the book says it is, per project ──────────────
    *
    * The block the mint modal edits (shared/mint-meta.ts carries the shape and
-   * Owen's ruling). READ answers null rather than a seed: the SEEDING is the
-   * dialog's decision — it composes a first guess out of the manifest title,
-   * the scan's Info author and the position's language, three facts the
-   * renderer already holds — and main inventing one here would be two seeders
-   * with two opinions. WRITE replaces the whole block; the directory is proved
+   * Owen's ruling). WRITE replaces the whole block; the directory is proved
    * the way every project door proves it, by reading the manifest of the
-   * folder named and nothing else.
+   * folder named and nothing else. It is read back as the top of
+   * `meta:mint-seed`'s stack, below.
    */
-  ipcMain.handle('meta:mint-read', async (_event, projectDir: string) =>
-    (await readManifest(projectDir)).meta ?? null);
   ipcMain.handle('meta:mint-write', async (_event, projectDir: string, meta: MintMeta) => {
     await recordMintMeta(projectDir, meta);
   });
@@ -155,15 +149,13 @@ export function registerProjectDoors(): void {
   ipcMain.handle('meta:mint-stamp', (_event, filePath: string, meta: MintMeta) =>
     stampMintMetadata(exportedBook(filePath), meta, undefined));
   /*
-   * The HOST's answer for who this book is — the hosted modal's seed (Owen:
+   * Who the book is, for the card: the stored block, the host's record (Owen:
    * "it should inherit the parent document's metadata. ill fill out whatever
-   * is missing"). Null standalone; a host that THROWS rejects here in the
-   * host's own words, so the form can say so (2026-09-07); the DIALOG
-   * merges, because the precedence (stored block wins per-field, host fills
-   * the gaps, the position feeds the language) reads two other facts only the
-   * renderer holds.
+   * is missing"), the scan's Info and the project's name, stacked by main
+   * (`mintSeedFor`, doors-meta.ts). The same function stamps every export
+   * nobody confirms, so the card and an unattended export cannot disagree. A
+   * host that throws is a line in `problems`, for the form to say. The
+   * position's language is still the card's to add, from its plan.
    */
-  ipcMain.handle('meta:mint-host', (_event, projectDir: string) => hostMintMeta(projectDir));
-  // The card's empty fields: the scan's Info and the project's name, read by main (doors-meta.ts).
-  ipcMain.handle('meta:mint-seed', (_event, projectDir: string) => mintSeedFor(projectDir));
+  ipcMain.handle('meta:mint-seed', (_event, projectDir: string, scan: boolean) => mintSeedFor(projectDir, scan));
 }

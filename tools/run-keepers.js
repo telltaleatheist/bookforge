@@ -939,6 +939,8 @@ const SUITES = [
   'test-foundry-narrate-target',
   // B5: Narrate is today's dialog drawn over the book window (electron/narrate-overlay.ts).
   'test-narrate-overlay',
+  // An export filed without metadata is said in the book window's notice tray.
+  'test-landing-problem-notice',
   'test-foundry-landing',
   'test-foundry-adopt',
   'test-foundry-export-landing',
