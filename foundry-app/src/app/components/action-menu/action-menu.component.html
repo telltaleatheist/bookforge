@@ -269,9 +269,8 @@
           GRAYED WHEN THE STAGE CANNOT RUN IT, exactly like Translate and
           Simplify — Owen's ruling (2026-08-17 21:45): *"if the step the user
           has selected cant run tts then its grayed out."* `hostReady` is the
-          same predicate the press itself refuses by
-          (`canRunHostActFrom`, shared/stages.ts), so the gray and the
-          sentence cannot disagree; the title says what would make it light up,
+          same answer the press itself refuses by (`hostActLit`, over the aim
+          `hostActPressed` sends), so the gray and the sentence cannot disagree; the title says what would make it light up,
           because a disabled control that keeps its enabled hover is a control
           that explains nothing.
 
@@ -287,8 +286,11 @@
           provenance and names what to export, and the import row's book is the
           reading's book. So the gray means ONE thing now: THIS BOOK HAS NO
           BOOK, which is a scan nobody has read. The export these acts consume is
-          made for them when there is none, and the press sends the reading's
-          step when it is ordered from the row above it (`hostActPositionFrom`).
+          made for them when there is none.
+
+          AND THE SCAN'S OWN ROW IS GREY AGAIN (Owen, 2026-11-06: *"higgs cant
+          read a pdf"*). The dock has refused a press from a scan since 2026-09-11,
+          so a lit tile there only led to a sentence.
 
           THE UNREAD SCAN STAYS GREY ON PURPOSE. There is no bank, so there is
           nothing to mint an EPUB from and nothing for the host to consume — and
@@ -302,8 +304,8 @@
             [disabled]="!hostReady()"
             [title]="hostReady()
               ? act.label + ' — handled by the app Foundry is running inside'
-              : act.label + ' — this book’s pages have not been read yet, and this act is '
-                + 'made from the words in them'"
+              : act.label + ' — this book is standing on its scan, which has no words in it. '
+                + 'Read the pages with OCR, or click a step with text in the tree'"
             (click)="runHostAct(act.id)"
           >
             <svg class="menu-icon" aria-hidden="true"><use href="#ft-wave" /></svg>

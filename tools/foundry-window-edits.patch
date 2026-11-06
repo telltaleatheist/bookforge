@@ -6743,10 +6743,104 @@ index 16c5d408..2fa3a59e 100644
      api?.onNavigate((route) => { void this.router.navigateByUrl(route); });
  
 diff --git a/foundry-app/src/app/components/action-menu/action-menu.acts.ts b/foundry-app/src/app/components/action-menu/action-menu.acts.ts
-index 57b3fda8..8e80de87 100644
+index 57b3fda8..da6baf3b 100644
 --- a/foundry-app/src/app/components/action-menu/action-menu.acts.ts
 +++ b/foundry-app/src/app/components/action-menu/action-menu.acts.ts
-@@ -321,46 +321,6 @@ export function analyse(this: ActionMenuComponent): void {
+@@ -3,7 +3,7 @@
+  */
+ import { computed } from '@angular/core';
+ import { exportNodeId } from '@owen/foundry-core/shared/host-ops';
+-import { hostActAimFrom } from '@owen/foundry-core/shared/stages';
++import { hostActAimFrom, type HostActAim } from '@owen/foundry-core/shared/stages';
+ import { fold } from '@owen/foundry-core/shared/original';
+ import { hosted } from '../../core/foundry';
+ import { isExportView } from '../../core/documents.service';
+@@ -93,6 +93,38 @@ export async function runHostAct(this: ActionMenuComponent, operationId: string)
+   }
+ }
+ 
++/**
++ * WHAT A PRESS OF A BOOK ACT WOULD NAME RIGHT NOW — gathered once, for the press
++ * and for the gray (`hostReady`), so a tile cannot be lit over a press that
++ * refuses. Owen, 2026-11-06, on a bare PDF: *"narrate shouldnt be enabled yet -
++ * theres nothing to narrate"*.
++ *
++ * THE FACTS, AND WHERE EACH COMES FROM. The promise is `promiseIn` rather than a
++ * test on `standingIn`'s answer, because "is the window aimed at a promise here"
++ * is a question the ledger mirror already answers by name. The export on screen
++ * is the focused tab when it is one of this project's finished EPUBs. The position
++ * and ledger are the mirror's, and a press reads them after the unapplied gate so
++ * an Apply that just moved the pointer is what gets named.
++ */
++export function hostActAim(this: ActionMenuComponent, dir: string): HostActAim {
++  const held = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
++  const finished = (held?.exports ?? [])
++    .filter((made) => made.kind === 'epub')
++    .map((made) => made.file);
++  const tab = this.stage.activeDocument();
++  const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
++    ? finished.find((file) => fold(tab.path) === fold(`${dir}/final/${file}`)) ?? null
++    : null;
++  const promise = this.ledger.promiseIn(dir);
++  return hostActAimFrom({
++    promised: promise === null ? null : this.ledger.standingIn(dir),
++    finished,
++    viewing,
++    standing: this.ledger.standingIn(dir),
++    ledger: this.ledger.historyFor(dir)?.ledger ?? null,
++  });
++}
++
+ export async function hostActPressed(this: ActionMenuComponent, operationId: string): Promise<void> {
+   const dir = this.target();
+   if (dir === null) return;
+@@ -128,34 +160,10 @@ export async function hostActPressed(this: ActionMenuComponent, operationId: str
+      * exporting"*); then the position, which names itself unless it is an
+      * arrival, and an arrival names itself only when it IS the book (an EPUB
+      * import — the same answer the tree gives that row). This method's job is
+-     * to gather those facts honestly and to say each refusal as a sentence on
+-     * the strip, which is this menu's own habit for a button that cannot grey
+-     * itself out against a fact this deep in the model.
+-     *
+-     * THE FACTS, AND WHERE EACH COMES FROM. The promise is `promiseIn` rather
+-     * than a test on `standingIn`'s answer, because "is the window aimed at a
+-     * promise here" is a question the ledger mirror already answers by name.
+-     * The export on screen is the focused tab when it is one of this project's
+-     * finished EPUBs — the strongest possible reading of "the file im actually
+-     * exporting". The position and ledger are the mirror's, read after the
+-     * unapplied gate so an Apply that just moved the pointer is what gets named.
++     * to say each refusal as a sentence on the strip; `hostActAim` gathers the
++     * facts, and the gray reads the same answer.
+      */
+-    const held = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
+-    const finished = (held?.exports ?? [])
+-      .filter((made) => made.kind === 'epub')
+-      .map((made) => made.file);
+-    const tab = this.stage.activeDocument();
+-    const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
+-      ? finished.find((file) => fold(tab.path) === fold(`${dir}/final/${file}`)) ?? null
+-      : null;
+-    const promise = this.ledger.promiseIn(dir);
+-    const aim = hostActAimFrom({
+-      promised: promise === null ? null : this.ledger.standingIn(dir),
+-      finished,
+-      viewing,
+-      standing: this.ledger.standingIn(dir),
+-      ledger: this.ledger.historyFor(dir)?.ledger ?? null,
+-    });
++    const aim = hostActAim.call(this, dir);
+     if (aim.kind === 'node') {
+       this.press(operationId, dir, aim.nodeId);
+       return;
+@@ -181,6 +189,7 @@ export async function hostActPressed(this: ActionMenuComponent, operationId: str
+         );
+         return;
+       case 'a-scan':
++        // The tile is grey on this answer (`hostActLit`), so only a press racing the position lands here.
+         this.notices.notice.set(
+           'This book is standing on its scan, and there is no finished export to name — so '
+           + 'running this from here would be a guess about which text you mean. Export the book '
+@@ -321,46 +330,6 @@ export function analyse(this: ActionMenuComponent): void {
    this.ui.openAnalysis();
  }
  
@@ -6794,7 +6888,7 @@ index 57b3fda8..8e80de87 100644
    /*
     * AN EPUB EXPORT GETS THE MINT DIALOG — Owen's ruling (2026-08-24): the
 diff --git a/foundry-app/src/app/components/action-menu/action-menu.component.html b/foundry-app/src/app/components/action-menu/action-menu.component.html
-index a6eaa247..2c86bcdc 100644
+index a6eaa247..2cf8ff50 100644
 --- a/foundry-app/src/app/components/action-menu/action-menu.component.html
 +++ b/foundry-app/src/app/components/action-menu/action-menu.component.html
 @@ -2,12 +2,11 @@
@@ -6933,11 +7027,58 @@ index a6eaa247..2c86bcdc 100644
            take you somewhere rather than make something — and it is the LAST
            thing on it, at the far end from Home, which is where a settings
            control has sat in every window anybody has ever used. It is not in
+@@ -361,9 +269,8 @@
+           GRAYED WHEN THE STAGE CANNOT RUN IT, exactly like Translate and
+           Simplify — Owen's ruling (2026-08-17 21:45): *"if the step the user
+           has selected cant run tts then its grayed out."* `hostReady` is the
+-          same predicate the press itself refuses by
+-          (`canRunHostActFrom`, shared/stages.ts), so the gray and the
+-          sentence cannot disagree; the title says what would make it light up,
++          same answer the press itself refuses by (`hostActLit`, over the aim
++          `hostActPressed` sends), so the gray and the sentence cannot disagree; the title says what would make it light up,
+           because a disabled control that keeps its enabled hover is a control
+           that explains nothing.
+ 
+@@ -379,8 +286,11 @@
+           provenance and names what to export, and the import row's book is the
+           reading's book. So the gray means ONE thing now: THIS BOOK HAS NO
+           BOOK, which is a scan nobody has read. The export these acts consume is
+-          made for them when there is none, and the press sends the reading's
+-          step when it is ordered from the row above it (`hostActPositionFrom`).
++          made for them when there is none.
++
++          AND THE SCAN'S OWN ROW IS GREY AGAIN (Owen, 2026-11-06: *"higgs cant
++          read a pdf"*). The dock has refused a press from a scan since 2026-09-11,
++          so a lit tile there only led to a sentence.
+ 
+           THE UNREAD SCAN STAYS GREY ON PURPOSE. There is no bank, so there is
+           nothing to mint an EPUB from and nothing for the host to consume — and
+@@ -394,8 +304,8 @@
+             [disabled]="!hostReady()"
+             [title]="hostReady()
+               ? act.label + ' — handled by the app Foundry is running inside'
+-              : act.label + ' — this book’s pages have not been read yet, and this act is '
+-                + 'made from the words in them'"
++              : act.label + ' — this book is standing on its scan, which has no words in it. '
++                + 'Read the pages with OCR, or click a step with text in the tree'"
+             (click)="runHostAct(act.id)"
+           >
+             <svg class="menu-icon" aria-hidden="true"><use href="#ft-wave" /></svg>
 diff --git a/foundry-app/src/app/components/action-menu/action-menu.component.ts b/foundry-app/src/app/components/action-menu/action-menu.component.ts
-index 808bd047..5bc7879b 100644
+index 808bd047..45cd1afa 100644
 --- a/foundry-app/src/app/components/action-menu/action-menu.component.ts
 +++ b/foundry-app/src/app/components/action-menu/action-menu.component.ts
-@@ -17,7 +17,6 @@ import { fold } from '@owen/foundry-core/shared/original';
+@@ -10,14 +10,14 @@ import { exportNodeId, type HostOperationOffer } from '@owen/foundry-core/shared
+  * what a stage can do.
+  */
+ import {
+-  canCleanFrom, canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom,
+-  canTranslateFrom, hostActAimFrom,
++  canCleanFrom, canExportFrom, canReadPages, canSimplifyFrom,
++  canTranslateFrom,
+ } from '@owen/foundry-core/shared/stages';
+ import { fold } from '@owen/foundry-core/shared/original';
++import { hostActLit } from './action-menu.host-act';
  import type { ActName } from '@owen/foundry-core/shared/types';
  
  import { ActGatesService } from '../../core/act-gates.service';
@@ -6945,7 +7086,7 @@ index 808bd047..5bc7879b 100644
  import { hosted } from '../../core/foundry';
  import { HostOpsService } from '../../core/host-ops.service';
  import { LedgerService } from '../../core/ledger.service';
-@@ -154,8 +153,8 @@ import * as gates_ from './action-menu.gates';
+@@ -154,8 +154,8 @@ import * as gates_ from './action-menu.gates';
   * are laid out in exactly that sequence.
   *
   * THE THREE GROUPS BECAME TWO SHAPES. Navigation is a SLIM STRIP along the top
@@ -6956,7 +7097,7 @@ index 808bd047..5bc7879b 100644
   * that used to divide three groups are gone because the shapes now do that
   * work: a 30-pixel strip of buttons and a field of 58-pixel tiles cannot be
   * misread as one run of equals, which is the only thing the rules were for.
-@@ -202,11 +201,6 @@ export class ActionMenuComponent {
+@@ -202,11 +202,6 @@ export class ActionMenuComponent {
    protected readonly stage = inject(StageService);
    readonly projects = inject(ProjectsService);
    readonly ledger = inject(LedgerService);
@@ -6968,7 +7109,28 @@ index 808bd047..5bc7879b 100644
    /**
     * THE OTHER HALF OF EVERY MAKE-TILE'S GATE — what this MACHINE can run.
     *
-@@ -395,64 +389,6 @@ export class ActionMenuComponent {
+@@ -345,12 +340,19 @@ export class ActionMenuComponent {
+    * The finer refusals — a voice the host does not have, a queue that will not
+    * take the work — stay at press time and with the host, because a catalogue row
+    * cannot know them.
++   *
++   * ── AND IT READS THE PRESS NOW (Owen, 2026-11-06) ─────────────────────────
++   *
++   * The dock has refused a press from a scan since 2026-09-11, so a lit tile there
++   * only ever led to a sentence. `hostActLit` greys it instead: a scan with no
++   * text, and a read book standing on its scan row with no export, where clicking
++   * the reading's row in the tree lights it.
+    */
+   protected readonly hostReady = computed<boolean>(() => {
+     const dir = this.target();
+     if (dir === null) return false;
+     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
+-    return canRunHostActFrom(project);
++    return hostActLit(project, acts.hostActAim.call(this, dir));
+   });
+ 
+   protected runHostAct(operationId: string): Promise<void> { return acts.runHostAct.call(this, operationId); }
+@@ -395,64 +397,6 @@ export class ActionMenuComponent {
  
    protected analyse(): void { return acts.analyse.call(this); }
  
@@ -7033,6 +7195,35 @@ index 808bd047..5bc7879b 100644
    protected canEditMetadata(): boolean { return gates_.canEditMetadata.call(this); }
  
    protected metadata(): void { return acts.metadata.call(this); }
+diff --git a/foundry-app/src/app/components/action-menu/action-menu.host-act.ts b/foundry-app/src/app/components/action-menu/action-menu.host-act.ts
+new file mode 100644
+index 00000000..0e1fd628
+--- /dev/null
++++ b/foundry-app/src/app/components/action-menu/action-menu.host-act.ts
+@@ -0,0 +1,23 @@
++/**
++ * action-menu.host-act — whether a host's act is lit on the rail. No Angular here,
++ * so a keeper can ask it of real project records.
++ */
++import { canRunHostActFrom, type HostActAim } from '@owen/foundry-core/shared/stages';
++import type { ProjectSummary } from '@owen/foundry-core/shared/types';
++
++/**
++ * THE GRAY READS THE PRESS. A tile is dark when its press could only answer that
++ * the book is standing on a scan, so the two cannot disagree (Owen, 2026-11-06, on
++ * a bare PDF: *"we can narrate once OCR has run, but higgs cant read a pdf"*).
++ *
++ * `canRunHostActFrom` alone was not enough: it reads the catalogue, and a catalogue
++ * says "read" for a bank being filled right now and for a reading whose step was
++ * deleted, on a book whose ledger holds nothing but the scan.
++ *
++ * THE OTHER TWO REFUSALS STAY LIT: several exports, and a history still loading, are
++ * each answered by a sentence that tells the person what to do.
++ */
++export function hostActLit(project: ProjectSummary | null, aim: HostActAim): boolean {
++  if (!canRunHostActFrom(project)) return false;
++  return aim.kind === 'node' || aim.why !== 'a-scan';
++}
 diff --git a/foundry-app/src/app/core/book-edit.service.ts b/foundry-app/src/app/core/book-edit.service.ts
 deleted file mode 100644
 index 8af34e75..00000000

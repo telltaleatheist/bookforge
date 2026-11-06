@@ -927,6 +927,7 @@ const SUITES = [
   'test-vlm-convert-plan',
   'test-vlm-convert-attach',
   'test-foundry-host',
+  'test-book-tile-gates',
   'test-foundry-host-nodes',
   'test-foundry-host-status',
   'test-foundry-host-queue',

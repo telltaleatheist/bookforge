@@ -3,7 +3,7 @@
  */
 import { computed } from '@angular/core';
 import { exportNodeId } from '@owen/foundry-core/shared/host-ops';
-import { hostActAimFrom } from '@owen/foundry-core/shared/stages';
+import { hostActAimFrom, type HostActAim } from '@owen/foundry-core/shared/stages';
 import { fold } from '@owen/foundry-core/shared/original';
 import { hosted } from '../../core/foundry';
 import { isExportView } from '../../core/documents.service';
@@ -93,6 +93,38 @@ export async function runHostAct(this: ActionMenuComponent, operationId: string)
   }
 }
 
+/**
+ * WHAT A PRESS OF A BOOK ACT WOULD NAME RIGHT NOW — gathered once, for the press
+ * and for the gray (`hostReady`), so a tile cannot be lit over a press that
+ * refuses. Owen, 2026-11-06, on a bare PDF: *"narrate shouldnt be enabled yet -
+ * theres nothing to narrate"*.
+ *
+ * THE FACTS, AND WHERE EACH COMES FROM. The promise is `promiseIn` rather than a
+ * test on `standingIn`'s answer, because "is the window aimed at a promise here"
+ * is a question the ledger mirror already answers by name. The export on screen
+ * is the focused tab when it is one of this project's finished EPUBs. The position
+ * and ledger are the mirror's, and a press reads them after the unapplied gate so
+ * an Apply that just moved the pointer is what gets named.
+ */
+export function hostActAim(this: ActionMenuComponent, dir: string): HostActAim {
+  const held = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
+  const finished = (held?.exports ?? [])
+    .filter((made) => made.kind === 'epub')
+    .map((made) => made.file);
+  const tab = this.stage.activeDocument();
+  const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
+    ? finished.find((file) => fold(tab.path) === fold(`${dir}/final/${file}`)) ?? null
+    : null;
+  const promise = this.ledger.promiseIn(dir);
+  return hostActAimFrom({
+    promised: promise === null ? null : this.ledger.standingIn(dir),
+    finished,
+    viewing,
+    standing: this.ledger.standingIn(dir),
+    ledger: this.ledger.historyFor(dir)?.ledger ?? null,
+  });
+}
+
 export async function hostActPressed(this: ActionMenuComponent, operationId: string): Promise<void> {
   const dir = this.target();
   if (dir === null) return;
@@ -128,34 +160,10 @@ export async function hostActPressed(this: ActionMenuComponent, operationId: str
      * exporting"*); then the position, which names itself unless it is an
      * arrival, and an arrival names itself only when it IS the book (an EPUB
      * import — the same answer the tree gives that row). This method's job is
-     * to gather those facts honestly and to say each refusal as a sentence on
-     * the strip, which is this menu's own habit for a button that cannot grey
-     * itself out against a fact this deep in the model.
-     *
-     * THE FACTS, AND WHERE EACH COMES FROM. The promise is `promiseIn` rather
-     * than a test on `standingIn`'s answer, because "is the window aimed at a
-     * promise here" is a question the ledger mirror already answers by name.
-     * The export on screen is the focused tab when it is one of this project's
-     * finished EPUBs — the strongest possible reading of "the file im actually
-     * exporting". The position and ledger are the mirror's, read after the
-     * unapplied gate so an Apply that just moved the pointer is what gets named.
+     * to say each refusal as a sentence on the strip; `hostActAim` gathers the
+     * facts, and the gray reads the same answer.
      */
-    const held = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
-    const finished = (held?.exports ?? [])
-      .filter((made) => made.kind === 'epub')
-      .map((made) => made.file);
-    const tab = this.stage.activeDocument();
-    const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
-      ? finished.find((file) => fold(tab.path) === fold(`${dir}/final/${file}`)) ?? null
-      : null;
-    const promise = this.ledger.promiseIn(dir);
-    const aim = hostActAimFrom({
-      promised: promise === null ? null : this.ledger.standingIn(dir),
-      finished,
-      viewing,
-      standing: this.ledger.standingIn(dir),
-      ledger: this.ledger.historyFor(dir)?.ledger ?? null,
-    });
+    const aim = hostActAim.call(this, dir);
     if (aim.kind === 'node') {
       this.press(operationId, dir, aim.nodeId);
       return;
@@ -181,6 +189,7 @@ export async function hostActPressed(this: ActionMenuComponent, operationId: str
         );
         return;
       case 'a-scan':
+        // The tile is grey on this answer (`hostActLit`), so only a press racing the position lands here.
         this.notices.notice.set(
           'This book is standing on its scan, and there is no finished export to name — so '
           + 'running this from here would be a guess about which text you mean. Export the book '

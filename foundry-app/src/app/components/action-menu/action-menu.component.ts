@@ -10,10 +10,11 @@ import { exportNodeId, type HostOperationOffer } from '@owen/foundry-core/shared
  * what a stage can do.
  */
 import {
-  canCleanFrom, canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom,
-  canTranslateFrom, hostActAimFrom,
+  canCleanFrom, canExportFrom, canReadPages, canSimplifyFrom,
+  canTranslateFrom,
 } from '@owen/foundry-core/shared/stages';
 import { fold } from '@owen/foundry-core/shared/original';
+import { hostActLit } from './action-menu.host-act';
 import type { ActName } from '@owen/foundry-core/shared/types';
 
 import { ActGatesService } from '../../core/act-gates.service';
@@ -339,12 +340,19 @@ export class ActionMenuComponent {
    * The finer refusals — a voice the host does not have, a queue that will not
    * take the work — stay at press time and with the host, because a catalogue row
    * cannot know them.
+   *
+   * ── AND IT READS THE PRESS NOW (Owen, 2026-11-06) ─────────────────────────
+   *
+   * The dock has refused a press from a scan since 2026-09-11, so a lit tile there
+   * only ever led to a sentence. `hostActLit` greys it instead: a scan with no
+   * text, and a read book standing on its scan row with no export, where clicking
+   * the reading's row in the tree lights it.
    */
   protected readonly hostReady = computed<boolean>(() => {
     const dir = this.target();
     if (dir === null) return false;
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
-    return canRunHostActFrom(project);
+    return hostActLit(project, acts.hostActAim.call(this, dir));
   });
 
   protected runHostAct(operationId: string): Promise<void> { return acts.runHostAct.call(this, operationId); }

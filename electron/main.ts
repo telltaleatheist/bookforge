@@ -137,7 +137,7 @@ import { hostStatusOf, type HostStatus } from './foundry-host-status';
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
 import { APPLIED_LABEL, GUIDE_CHOICE, type GuideReviewSave } from '../shared/pronunciation-guide';
 import { guidePathsOfStep, hasGuide } from './narration-glossary';
-import { guideTextMadeWith, ledgerStepsOf } from './pronunciation-applied';
+import { guideTextMadeWith } from './pronunciation-applied';
 import { guidePassOffer, type GuidePassOffer } from './pronunciation-offer';
 import { stepOfGuideNode } from './pronunciation-guide-nodes';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
@@ -2631,14 +2631,16 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
       invokeFoundryAssemble(projectDir, nodeId, settings, context),
   },
   /*
-   * A STEP'S PRONUNCIATION GUIDE — ONE TILE, AND IT OPENS THE GUIDE.
+   * A STEP'S PRONUNCIATION GUIDE — NO TILE, AND IT STILL OPENS THE GUIDE.
    *
-   * Owen, 2026-10-03: *"it shouldnt have pronunciation guide and review
-   * pronunciation as separate tiles. glossary should be a modal. within the modal
-   * you can view the options or have it run a new job."* So the tile declares no
-   * form — a formless act opens the host's own window ("where the host can ask
-   * anything it likes") — and the window, a modal over Foundry's, shows the guide
-   * and is where a new guide is queued (`pronunciation:build`).
+   * Owen, 2026-11-06: *"pronunciation guide is part of ai cleanup. it shouldnt have
+   * its own tile. it should run that when the user cleans up the text."* So
+   * `appliesTo` is empty and `offeredFrom` offers it from nothing. It stays
+   * registered because a door is an invoke by id: the guide's row on the tree
+   * (`HostNode.opens`) and the cleanup modal's "Review it" link
+   * (`GuidePassOffer.review`) both run it. It declares no form, so it opens this
+   * app's window, which shows the guide and is where a new one is queued
+   * (`pronunciation:build`).
    *
    * A GUIDE IS ONE STEP'S (Owen, 2026-10-10: *"maybe it should be a step specific
    * thing. in fact, i think it should"*): made from the text at the step pressed,
@@ -2649,9 +2651,8 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     id: 'bookforge.guide',
     label: 'Pronunciation guide',
     kind: 'guide',
-    appliesTo: 'book',
+    appliesTo: [],
     invoke: (projectDir, nodeId) => openPronunciationGuide(projectDir, nodeId),
-    stateAt: (projectDir, nodeId) => pronunciationGuideStateAt(projectDir, nodeId),
   },
 ];
 
@@ -2870,29 +2871,6 @@ function guideMadeWithOf(projectDir: string, step: string): string | null {
     }
   }
   return null;
-}
-
-/**
- * HOW THE GUIDE TILE STANDS AT A STEP (foundry 6ba06d2's `stateAt`): done when the
- * step has a guide of its own, or its text was made with one — a cleanup that read
- * its input's guide, a "Pronunciation adjusted" step (Owen, 2026-11-02: the guide
- * *"should already be done as part of that line item"*). Pressing it then opens that
- * guide (`openPronunciationGuide`). Null — the plain label — everywhere else.
- */
-function pronunciationGuideStateAt(projectDir: string, pressed: string): FoundryHostOperationState | null {
-  const nodeId = stepOfGuideNode(pressed) ?? pressed;
-  if (!guideManifestOf(projectDir).steps.includes(nodeId) && promisedRowOf(projectDir, nodeId) === null) return null;
-  if (guideOwnedBy(projectDir, nodeId)) {
-    return { done: true, label: 'Pronunciation guide ✓', detail: 'This step has its own pronunciation guide. Open it to review or apply it.' };
-  }
-  const madeWith = guideMadeWithOf(projectDir, nodeId);
-  if (madeWith === null) return null;
-  const from = ledgerStepsOf(projectDir).find((s) => s.id === madeWith)?.label ?? madeWith;
-  return {
-    done: true,
-    label: 'Pronunciation guide ✓',
-    detail: `This step was made with the pronunciation guide on “${from}”. Open it to see what it decided.`,
-  };
 }
 
 /**
