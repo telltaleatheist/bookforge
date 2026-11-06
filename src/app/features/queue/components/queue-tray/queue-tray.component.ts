@@ -42,7 +42,7 @@ import { DecimalPipe, NgTemplateOutlet } from '@angular/common';
 import { ChangeDetectionStrategy, Component, ElementRef, inject, output, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { prepFraction, type PlannedStep } from '@shared/queue/bench';
+import { prepFraction, type LadderRung, type PlannedStep } from '@shared/queue/bench';
 import { QueueTrayService, type BookPlanView } from '../../services/queue-tray.service';
 
 /**
@@ -343,14 +343,14 @@ interface CardState {
          block's behaviour and therefore already learned. -->
     <ng-template #bookCard let-plan let-staged="staged" let-first="first">
       @let state = cardState(plan, staged, first);
-      <article class="bcard" [class.on]="openKey() === plan.key">
+      <article class="bcard" [class.on]="isOpen(plan)">
         <div class="bcard-row">
           <button
             type="button"
             class="face"
-            [attr.aria-expanded]="openKey() === plan.key"
-            (click)="toggleCard(plan.key)"
-            [title]="'What ' + plan.title + ' still has to run'"
+            [attr.aria-expanded]="isOpen(plan)"
+            (click)="toggleCard(plan)"
+            [title]="'What ' + plan.title + ' has done and still has to run'"
           >
             <span class="chev" aria-hidden="true">▸</span>
             @if (plan.cover) {
@@ -390,24 +390,37 @@ interface CardState {
           >✕</button>
         </div>
 
-        @if (openKey() === plan.key) {
-          <!-- The chain, as the queue page draws it: a dot, a name, and only a
-               number when one has been measured. -->
+        @if (isOpen(plan)) {
+          <!-- THE WHOLE CHAIN, done steps included (Owen, 2026-11-06: *"a list of
+               done/to do items for this book"*), from 'plan.ladder' — the one the
+               queue page's lane draws. The running rung has a bar when the step has
+               measured one, and always the step's own words for what it is doing. -->
           <div class="ladder">
-            @for (step of plan.steps; track step.stepId) {
-              <div class="rung" [class.now]="step.status === 'running'">
+            @for (rung of plan.ladder; track rung.stepId) {
+              <div class="rung" [class.now]="rung.status === 'running'" [class.done]="rung.status === 'done'"
+                   [class.bad]="rung.status === 'failed'">
                 <span class="rdot" aria-hidden="true"></span>
-                <span class="rname">{{ step.label }}</span>
-                @if (step.status === 'running' && step.percent !== null) {
-                  <span class="rval">{{ step.percent | number:'1.0-0' }}%</span>
-                }
-                @if (tray.etaForStep(step.stepId); as left) {
-                  <span class="rval soft">{{ left }}</span>
+                <span class="rname">{{ rung.label }}</span>
+                @if (rung.status === 'running') {
+                  @if (rung.percent !== null) {
+                    <span class="bar thin rbar"><i [style.width.%]="rung.percent"></i></span>
+                    <span class="rval">{{ rung.percent | number:'1.0-0' }}%</span>
+                  } @else {
+                    <span class="rval">now</span>
+                  }
+                  @if (tray.etaForStep(rung.stepId); as left) {
+                    <span class="rval soft">{{ left }}</span>
+                  }
+                } @else {
+                  <span class="rval soft">{{ rungWord(rung) }}</span>
                 }
               </div>
-              @if (stepNote(step); as note) {
-                <span class="why" [class.warn]="step.reason?.kind === 'admission'">
-                  <span class="dot" aria-hidden="true"></span>{{ note }}
+              @if (rung.doing; as doing) {
+                <span class="doing" [title]="doing">{{ doing }}</span>
+              }
+              @if (noteFor(plan, rung.stepId); as still) {
+                <span class="why" [class.warn]="still.warn">
+                  <span class="dot" aria-hidden="true"></span>{{ still.note }}
                 </span>
               }
             }
@@ -869,6 +882,23 @@ interface CardState {
 
     .rung.now .rdot { background: var(--accent); border: 0; }
 
+    .rung.done .rdot { background: var(--text-muted); border: 0; }
+
+    .rung.bad .rdot { background: var(--danger-text, var(--warning-text)); border: 0; }
+
+    .rbar { flex: 0 0 64px; height: 4px; margin-top: 0; }
+
+    /* What the running step says it is doing, under its rung: the line a step
+       with no fraction to report is read by. */
+    .doing {
+      margin: -2px 0 0 14px;
+      font-size: 10px;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     /* The name takes the free space, so both numbers land against the card's
        right edge whether there are two of them or one. */
     .rname {
@@ -1014,8 +1044,37 @@ export class QueueTrayComponent {
    * ONE at a time, like the page's Completed blocks: the shelf is 452px of a
    * window somebody is working in, and a panel that can be expanded into a
    * wall is the shape this redesign took out.
+   *
+   * UNTIL SOMEBODY CHOOSES, A RUNNING BOOK IS OPEN (Owen, 2026-11-06: *"i expected
+   * there to be progress bars and a list of done/to do items for this book"*) —
+   * the page's own rule (`planOpen`). A click takes over from then on.
    */
   readonly openKey = signal<string | null>(null);
+  private readonly chosen = signal(false);
+
+  isOpen(plan: BookPlanView): boolean {
+    if (this.chosen()) return this.openKey() === plan.key;
+    return plan.ladder.some((rung) => rung.status === 'running');
+  }
+
+  /** The word a still rung wears where a running one wears its number. */
+  rungWord(rung: LadderRung): string {
+    switch (rung.status) {
+      case 'done': return 'done';
+      case 'failed': return 'failed';
+      case 'cancelled': return 'removed';
+      case 'held': return 'stopped';
+      default: return 'to do';
+    }
+  }
+
+  /** A still rung's reason, when the order of the ladder does not already say it. */
+  noteFor(plan: BookPlanView, stepId: string): { note: string; warn: boolean } | null {
+    const step = plan.steps.find((one) => one.stepId === stepId);
+    if (step === undefined) return null;
+    const note = this.stepNote(step);
+    return note === null ? null : { note, warn: step.reason?.kind === 'admission' };
+  }
 
   /** How many slots are in use, for the band's own heading. */
   busyLanes(): number {
@@ -1044,8 +1103,10 @@ export class QueueTrayComponent {
   }
 
   /** Open one book's chain, or close the one that is open. */
-  toggleCard(key: string): void {
-    this.openKey.update(open => (open === key ? null : key));
+  toggleCard(plan: BookPlanView): void {
+    const open = this.isOpen(plan);
+    this.chosen.set(true);
+    this.openKey.set(open ? null : plan.key);
   }
 
   /**

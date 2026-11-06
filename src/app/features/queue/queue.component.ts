@@ -159,8 +159,8 @@ import {
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { CdkScrollable } from '@angular/cdk/scrolling';
 
-import { prepFraction, prepLabel } from '@shared/queue/bench';
-import type { BookPlan, FinishedRun, PlannedStep, StillReason } from '@shared/queue/bench';
+import { prepFraction, prepLabel, runLadder } from '@shared/queue/bench';
+import type { BookPlan, FinishedRun, LadderRung, PlannedStep, StillReason } from '@shared/queue/bench';
 import type { JobType, ServerReach, ServerShadow, StepStatus } from '@shared/queue/engine-types';
 import { runElapsedSeconds } from '@shared/queue/job-timing';
 import { BRIEF_STEP_TYPES } from '@shared/queue/job-words';
@@ -352,6 +352,8 @@ interface ChainRung {
   status: StepStatus;
   type: JobType;
   percent: number | null;
+  /** What a running step says it is doing (`LadderRung.doing`). */
+  doing: string | null;
   /** Finished successfully — the part of the chain a Stop would keep. */
   done: boolean;
   /** Over in moments: drawn with its state and no bar (`BRIEF_STEP_TYPES`). */
@@ -1227,6 +1229,9 @@ interface ChainRung {
                         <span class="rval span">{{ rung.done ? 'done' : 'waiting' }}</span>
                       }
                     </div>
+                    @if (rung.doing; as doing) {
+                      <div class="rdoing" [title]="doing">{{ doing }}</div>
+                    }
                   }
                 </div>
               }
@@ -1487,9 +1492,23 @@ interface ChainRung {
         </div>
 
         @if (planOpen(plan)) {
+          <!-- THE WHOLE CHAIN, finished steps included (Owen, 2026-11-06: *"a list
+               of done/to do items for this book"*). 'plan.ladder' is the bench's;
+               a rung that is still scheduled is drawn with its controls from
+               'plan.steps', and a finished one as a quiet row that says so. -->
           <div class="chain">
-            @for (step of plan.steps; track step.stepId) {
-              @if (staged) {
+            @for (rung of plan.ladder; track rung.stepId) {
+              @let step = plannedOf(plan, rung.stepId);
+              @if (step === null) {
+                <div class="cstep finished-step">
+                  <span class="spine" aria-hidden="true"></span>
+                  <span class="sdot" [class.done]="rung.status === 'done'" [class.bad]="rung.status === 'failed'"
+                        aria-hidden="true"></span>
+                  <span class="cname plain">{{ rung.label }}</span>
+                  <span class="cmid"></span>
+                  <span class="cright">{{ finishedWord(rung) }}</span>
+                </div>
+              } @else if (staged) {
                 <!-- Names only. Nothing staged has a queue position, a slot, or
                      a reason to be still beyond "not sent yet" — and the line
                      above already carries that, once. -->
@@ -1565,8 +1584,13 @@ interface ChainRung {
                   </span>
 
                   <span class="cright">
+                    @if (step.status === 'running' && step.percent !== null) {
+                      <span class="bar thin cbar"><i [style.width.%]="step.percent"></i></span>
+                    }
                     @if (step.percent !== null) {
                       {{ step.percent | number:'1.0-0' }}%
+                    } @else if (step.status === 'running') {
+                      now
                     }
                     <!--
                       THE PER-STEP CONTROLS APPEAR ON HOVER OR FOCUS. A book of
@@ -1609,6 +1633,9 @@ interface ChainRung {
                     </span>
                   </span>
                 </div>
+                @if (rung.doing; as doing) {
+                  <div class="cdoing" [title]="doing">{{ doing }}</div>
+                }
 
                 @if (expanded().has(step.stepId)) {
                   @if (rowFor(step.stepId); as row) {
@@ -2958,6 +2985,22 @@ interface ChainRung {
     }
 
     .sdot.wait { border: 2px dashed var(--text-muted); }
+    .sdot.done { background: var(--text-tertiary); }
+    .sdot.bad { background: var(--danger-text, var(--warning-text)); }
+    .cstep.finished-step .cname { color: var(--text-tertiary); }
+    .cbar { width: 72px; }
+
+    /* What the running step says it is doing, under its row: the line a step with
+       no fraction to report is read by. */
+    .cdoing, .rdoing {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cdoing { margin: -4px 0 4px 26px; }
+    .rdoing { grid-column: 2 / -1; margin-top: -2px; }
     .sdot.held { border: 2px dashed var(--text-tertiary); background: var(--bg-input); }
 
     @keyframes q-pulse {
@@ -4804,17 +4847,27 @@ export class QueueComponent {
    * a book is three-quarters through its chain.
    */
   chainFor(jobId: string): ChainRung[] {
-    const job = this.queueService.snapshot().jobs.find((row) => row.id === jobId);
-    if (job === undefined) return [];
-    return job.steps.map((step) => ({
-      stepId: step.id,
-      label: step.label,
-      status: step.status,
-      type: step.type,
-      percent: step.progress.percent ?? null,
-      done: step.status === 'done',
-      brief: BRIEF_STEP_TYPES.has(step.type),
+    // The bench's ladder, so this lane and the book card below it cannot read a run two ways.
+    return runLadder(this.queueService.snapshot(), [jobId]).map((rung) => ({
+      stepId: rung.stepId,
+      label: rung.label,
+      status: rung.status,
+      type: rung.type,
+      percent: rung.percent,
+      doing: rung.doing,
+      done: rung.status === 'done',
+      brief: BRIEF_STEP_TYPES.has(rung.type),
     }));
+  }
+
+  /** The schedulable half of a rung — null for a step that has finished. */
+  plannedOf(plan: BookPlan, stepId: string): PlannedStep | null {
+    return plan.steps.find((step) => step.stepId === stepId) ?? null;
+  }
+
+  /** The word a finished rung wears in the book card. */
+  finishedWord(rung: LadderRung): string {
+    return rung.status === 'done' ? 'done' : rung.status === 'failed' ? 'failed' : 'removed';
   }
 
   /**

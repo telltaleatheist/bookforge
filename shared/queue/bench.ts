@@ -39,6 +39,7 @@ import {
   type ActiveBatchProgress,
   type PrepSubProgress,
   type GpuThermalReading,
+  type JobType,
   type JobStageProgress,
   type QueueJob,
   type QueueSnapshot,
@@ -1014,6 +1015,61 @@ export interface BookPlan {
    * fires when a class here is explicitly refused by the lane's engine.
    */
   classes: string[];
+  /**
+   * THE BOOK'S WHOLE CHAIN, finished steps included — what is done, what is
+   * running and what is still to do (Owen, 2026-11-06: *"i expected there to be
+   * progress bars and a list of done/to do items for this book ... and its not even
+   * telling me which step its on"*). `steps` drops the finished ones by design,
+   * because it is what is left to schedule; this is what the reader is shown.
+   * {@link runLadder} builds it, for the card and for the lane alike.
+   */
+  ladder: LadderRung[];
+}
+
+/** One step of a book's chain, as a person reads it. */
+export interface LadderRung {
+  jobId: string;
+  stepId: string;
+  type: JobType;
+  label: string;
+  status: StepStatus;
+  /** 0-100 when the step has measured one; null is drawn as no bar, never as zero. */
+  percent: number | null;
+  /**
+   * WHAT A RUNNING STEP SAYS IT IS DOING, in its own words ("clean-text: 264/873",
+   * "Aligning chapter 4 of 12"), or null when it has said nothing yet. Always drawn
+   * on the running rung, so a step that cannot report a fraction still names its
+   * work rather than showing an empty bar.
+   */
+  doing: string | null;
+}
+
+/**
+ * THE LADDER FOR THESE RUNS, in chain order, every step whatever its state.
+ * Read off the snapshot, so the card in the tray, the lane on the queue page and
+ * a keeper all ask one function.
+ */
+export function runLadder(snapshot: QueueSnapshot, jobIds: readonly string[]): LadderRung[] {
+  const rungs: LadderRung[] = [];
+  for (const jobId of jobIds) {
+    const job = snapshot.jobs.find((one) => one.id === jobId);
+    if (job === undefined) continue;
+    for (const step of job.steps) rungs.push(rungOf(job, step));
+  }
+  return rungs;
+}
+
+function rungOf(job: QueueJob, step: QueueStep): LadderRung {
+  const said = step.progress.message ?? step.progress.detail ?? null;
+  return {
+    jobId: job.id,
+    stepId: step.id,
+    type: step.type,
+    label: step.label,
+    status: step.status,
+    percent: step.progress.percent ?? null,
+    doing: step.status === 'running' && said !== null && said.trim() !== '' ? said : null,
+  };
 }
 
 /** A step inside a book plan: running ones are marked, not re-drawn. */
@@ -1194,7 +1250,7 @@ function plansOf(snapshot: QueueSnapshot, pending: boolean): BookPlan[] {
     if (plan === undefined) {
       plan = {
         key, title: job.title, jobIds: [], steps: [], allHeld: true,
-        travels: false, waitFor: [], waitForResolved: [], classes: [],
+        travels: false, waitFor: [], waitForResolved: [], classes: [], ladder: [],
       };
       byKey.set(key, plan);
     }
@@ -1218,6 +1274,7 @@ function plansOf(snapshot: QueueSnapshot, pending: boolean): BookPlan[] {
     }
 
     for (const step of job.steps) {
+      plan.ladder.push(rungOf(job, step));
       if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
       plan.steps.push({
         jobId: job.id,
