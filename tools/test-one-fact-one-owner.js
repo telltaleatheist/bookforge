@@ -283,25 +283,20 @@ test('the shipped catalog loads with no overlay, and every fine-tune is still li
   });
 });
 
-test('a fine-tune\'s voice document with no venue band is REFUSED by name, never packed to local numbers', () => {
+test('a fine-tune with no venue band is REFUSED by name, never packed to local numbers', () => {
   const catalog = readJson(CATALOG_JSON);
   const fineTune = catalog.models.find((m) => m.kind === 'checkpoint');
   withLoadedCatalog((higgs) => {
     const model = higgs.listHiggsModels().find((m) => m.id === fineTune.id);
-    const userDataDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ofoo-'));
-    assert.throws(
-      () => higgs.higgsVoicesDocument(model, { arm: 'wsl', userDataDir, translatePath: (x) => x }),
-      /no Crucible server has stated its cap, band and pace/,
-      'a fine-tune document was written without the venue\'s numbers');
-    // And with the venue's band, the document carries THOSE numbers, whole.
     const venueBand = { server: 'pc', voice: fineTune.id, maxChars: 800, ceilingChars: 700, floorChars: 400,
       targetChars: null, paceCharsPerSec: 16.14, maxCharsPerSec: 20.98, minCharsPerSec: 12.42 };
-    const doc = higgs.higgsVoicesDocument(model, { arm: 'wsl', userDataDir, translatePath: (x) => x, venueBand });
-    const entry = doc[fineTune.id];
-    assert.deepStrictEqual(
-      [entry.maxChars, entry.safeMinChars, entry.safeMaxChars, entry.paceCharsPerSec, entry.maxCharsPerSec, entry.minCharsPerSec],
-      [800, 400, 700, 16.14, 20.98, 12.42],
-      'the voice document is not the venue\'s numbers');
+    assert.throws(
+      () => higgs.higgsPrepBudget(model, { ...venueBand, floorChars: null }),
+      /states no safe band/,
+      'a fine-tune was packed without the venue\'s numbers');
+    // And with the venue's band, prep packs to THOSE numbers.
+    assert.deepStrictEqual(higgs.higgsPrepBudget(model, venueBand), { floorChars: 400, capChars: 700 },
+      'the band prep packs to is not the venue\'s numbers');
   });
 });
 

@@ -2396,13 +2396,6 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  /** Route Higgs jobs through WSL. Separate from the Orpheus toggle on purpose:
-   *  the two envs are independent, and folding them together would make enabling
-   *  Orpheus silently promise a Higgs env that is not there. */
-  toggleWsl2ForHiggs(enabled: boolean): void {
-    this.updateToolPath('useWsl2ForHiggs', enabled ? 'true' : '');
-  }
-
   selectWslDistro(distro: string): void {
     this.updateToolPath('wslDistro', distro);
   }

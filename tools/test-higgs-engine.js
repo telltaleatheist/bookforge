@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Tests for THE HIGGS ENGINE OPTION — the engine-id model, the catalog's
- * refusals, the doctor's parsing, and the spawn's argv/env.
+ * Tests for THE HIGGS ENGINE OPTION — the engine-id model and the catalog's
+ * refusals. Serving is Crucible's; what BookForge keeps of a voice is this catalog.
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-higgs-engine.js
  *
@@ -20,10 +20,8 @@
  *    ceiling — a DIFFERENT person, not a bad clone;
  *  - a reference clip sent without its transcript conditions every sentence on a
  *    mismatch;
- *  - a doctor that reads a missing probe line as a pass reports green for a
- *    machine with no WSL at all;
- *  - and an Orpheus argv that shifted by one flag during this work would not
- *    show up until somebody rendered a book.
+ *  - and a checkpoint named for one arm and handed to the other is a load that fails
+ *    with a path nobody on that machine has ever seen.
  *
  * So: pure functions, compiled modules, no GPU, no WSL, no Electron main loop.
  */
@@ -90,6 +88,19 @@ require.cache['electron-stub'] = {
 const TRUE_HOST = process.platform;
 const HOST_TMP = os.tmpdir();
 const HOST_PLATFORM_DESC = Object.getOwnPropertyDescriptor(process, 'platform');
+const CATALOG_FILE = path.join(DIST, 'data', 'higgs-models.json');
+function withExtraVoices(extra, fn) {
+  const shipped = fs.readFileSync(CATALOG_FILE, 'utf-8');
+  const parsed = JSON.parse(shipped);
+  parsed.models = [...parsed.models, ...extra];
+  fs.writeFileSync(CATALOG_FILE, JSON.stringify(parsed, null, 2), 'utf-8');
+  try { return fn(); } finally { fs.writeFileSync(CATALOG_FILE, shipped, 'utf-8'); }
+}
+/** A voice as the catalog would hold it, through the door every render resolves a voice by. */
+function resolving(model) {
+  return withExtraVoices([model], () => higgs.resolveHiggsModel(model.id));
+}
+
 function setPlatform(value) {
   Object.defineProperty(process, 'platform', { value, configurable: true });
   if (value === 'win32') {
@@ -107,24 +118,7 @@ function onArm(arm, fn) {
   try { return fn(); } finally { setPlatform('win32'); }
 }
 
-/**
- * The two document targets. A `HiggsDocumentTarget` says which arm's checkpoint
- * path to write and — on darwin — what the catalog's userData-relative path is
- * relative TO. There is no default: the whole point is that a document carries
- * exactly one arm's directory.
- */
-const WSL_DOC = { arm: 'wsl' };
 const MAC_USER_DATA = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-userdata-'));
-const MAC_DOC = { arm: 'darwin', userDataDir: MAC_USER_DATA };
-/**
- * A FINE-TUNE'S DOCUMENT NEEDS THE VENUE'S NUMBERS (2026-09-28): its cap, band and pace are the
- * server's, from GET /v1/voices, and a fine-tune document without them is refused by name. Prep
- * always passes one in the app (`venueBandForPrep`); these are the keeper's.
- */
-const VENUE = { server: 'keeper', voice: 'probe', maxChars: 900, ceilingChars: 800, floorChars: 500,
-  targetChars: null, paceCharsPerSec: 16, maxCharsPerSec: 20.8, minCharsPerSec: 12.31 };
-const FT_WSL_DOC = { ...WSL_DOC, venueBand: VENUE };
-const FT_MAC_DOC = { ...MAC_DOC, venueBand: VENUE };
 
 // THE PICKER'S userData. `higgsVoiceUnavailableReason` and the two lists over it
 // check the DISK for what the host owns the location of — darwin checkpoints
@@ -382,8 +376,6 @@ check('deathstalker is staged on BOTH arms, each in that arm\'s own shape', () =
   assert.ok(m.voice.checkpoint.wsl.startsWith('/'), 'the wsl path is not absolute');
   assert.ok(!m.voice.checkpoint.darwin.startsWith('/'),
     'the darwin path is absolute — it would name one machine only');
-  // Beside `base`, which is where higgsMlxBaseDir puts the zero-shot weights, so
-  // one directory holds everything the MLX arm loads.
   assert.match(m.voice.checkpoint.darwin, /^runtime\/higgs-models\//);
   assert.ok(m._checkpointArmNote, 'nothing says why a checkpoint is named per arm');
   assert.match(m._checkpointArmNote, /new certificate/i,
@@ -398,7 +390,7 @@ check('a MISSHAPEN per-arm path is refused when the catalog is READ, not when it
     kind: 'checkpoint', voice: { checkpoint: { wsl: 'higgs_v3_merged/x' } },
     backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
   });
-  assert.throws(() => higgs.higgsVoicesDocument(wslRelative, WSL_DOC),
+  assert.throws(() => onArm('wsl', () => resolving(wslRelative)),
     /wsl checkpoint .* is not a guest-resident path/,
     'a relative WSL path was accepted');
 
@@ -407,7 +399,7 @@ check('a MISSHAPEN per-arm path is refused when the catalog is READ, not when it
     voice: { checkpoint: { darwin: '/Users/<user>/Library/Application Support/BookForge/x' } },
     backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
   });
-  assert.throws(() => higgs.higgsVoicesDocument(darwinAbsolute, MAC_DOC),
+  assert.throws(() => onArm('darwin', () => resolving(darwinAbsolute)),
     /darwin checkpoint .* is absolute/,
     'an absolute darwin path was accepted — it names one machine only');
 
@@ -415,13 +407,13 @@ check('a MISSHAPEN per-arm path is refused when the catalog is READ, not when it
     kind: 'checkpoint', voice: { checkpoint: { darwin: '../../elsewhere/x' } },
     backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
   });
-  assert.throws(() => higgs.higgsVoicesDocument(escapes, MAC_DOC), /climbs out of userData/);
+  assert.throws(() => onArm('darwin', () => resolving(escapes)), /climbs out of userData/);
 
   const unknownArm = probeVoice({
     kind: 'checkpoint', voice: { checkpoint: { linux: '/opt/x' } },
     backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
   });
-  assert.throws(() => higgs.higgsVoicesDocument(unknownArm, WSL_DOC), /linux/,
+  assert.throws(() => onArm('wsl', () => resolving(unknownArm)), /linux/,
     'an arm BookForge does not render on was accepted as a staging key');
 });
 
@@ -433,11 +425,7 @@ check('the RETIRED voice.checkpointDir is refused by name, never read', () => {
     backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
   });
   let threw = null;
-  // A literal rather than `envOpts`, which is a `const` declared in section 4 and
-  // still in its temporal dead zone here.
-  try {
-    higgs.higgsSpawnEnv(legacy, { voicesPath: '/mnt/c/tmp/higgs-probe-voices.json' });
-  } catch (err) { threw = err; }
+  try { resolving(legacy); } catch (err) { threw = err; }
   assert.ok(threw, 'the retired single-path shape was accepted');
   assert.match(threw.message, /voice\.checkpointDir, which is retired/);
   assert.match(threw.message, /ONE LOCATION PER ARM/);
@@ -491,7 +479,7 @@ check('the shape must match the kind — all six malformed pairings refused', ()
   ];
   for (const [why, overrides] of cases) {
     const m = probeVoice(overrides);
-    assert.throws(() => higgs.higgsVoicesDocument(m, WSL_DOC), /Higgs voice "probe"/,
+    assert.throws(() => onArm('wsl', () => resolving(m)), /Higgs voice "probe"/,
       why + ' was accepted');
   }
 });
@@ -553,7 +541,6 @@ check('ONE engine-level sampling - 0.8 / 0.95 / 50 - reaches EVERY Higgs voice o
   // or it is refused, so 14 copies of a number can never drift.
   const engine = higgs.higgsEngineSampling();
   assert.deepStrictEqual(engine, { temperature: 0.8, topP: 0.95, topK: 50 });
-  assert.ok(/very good reason|boson default/i.test(higgs.higgsCatalogSamplingRule()));
   // WHAT THIS HOLDS THE CATALOG TO, and what it deliberately no longer does.
   // Until 2026-09-10 it asserted the shipped catalog carries NO per-block
   // sampling at all - the rule's absence, not its mechanism. mistborn/served now
@@ -625,18 +612,12 @@ check('resolveHiggsModel REFUSES an unknown voice and lists the known ones', () 
   assert.match(threw.message, /default/, 'the refusal does not say what IS available');
 });
 
-// The spawn-env probe options, declared here because the two checks below need
-// them and `PROMOTED_ENV_OPTS` in section 4 has not been initialised yet at this point.
-const PROMOTED_ENV_OPTS = { voicesPath: '/mnt/c/tmp/higgs-probe-voices.json' };
-
 check('resolveHiggsModel RESOLVES the certified deathstalker — no refusal left', () => {
   // Every refusal this voice used to trip — pending, malformed, unmeasured cap,
-  // oversized reference — must now pass, and it must build a real spawn env.
+  // oversized reference — must now pass.
   const m = higgs.resolveHiggsModel('deathstalker');
   assert.strictEqual(m.id, 'deathstalker');
   assert.strictEqual(m.kind, 'checkpoint');
-  assert.ok(higgs.higgsSpawnEnv(m, PROMOTED_ENV_OPTS).NARRATOR_HIGGS_VOICES,
-    'the certified voice cannot build a spawn env');
 });
 
 check('resolveHiggsModel REFUSES an empty voice rather than picking one', () => {
@@ -653,7 +634,6 @@ check('the served default voice resolves', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 console.log('voice refusals');
 
-const DOC_PATH = '/mnt/c/tmp/higgs-probe-voices.json';
 /**
  * A synthesised catalog entry. Defaults to kind 'default' — the one shape that
  * needs neither clips nor an adapter — so a test that is not about shape does
@@ -668,21 +648,15 @@ function probeVoice(overrides) {
     backends: { served: { referenceSecondsCap: 30, allowedControls: [] } },
   }, overrides);
 }
-const envOpts = { voicesPath: DOC_PATH };
 
 check('a blank, whitespace or missing transcript is REFUSED, naming the file', () => {
-  // This caught a real hole on 2026-09-04: the refusal lived only in
-  // resolveHiggsModel, so a caller holding a model from listHiggsModels() —
-  // which deliberately returns rows resolveHiggsModel refuses — got an
-  // untranscribed clip all the way into the voice document. The check now lives
-  // at the boundary that emits the value, which is what this asserts.
   for (const bad of ['', '   ', undefined]) {
     const m = probeVoice({
       kind: 'clips',
       voice: { clips: [{ path: '/tmp/cd_00001100.wav', transcript: bad, seconds: 14 }] },
     });
     let threw = null;
-    try { higgs.higgsSpawnEnv(m, envOpts); } catch (err) { threw = err; }
+    try { resolving(m); } catch (err) { threw = err; }
     assert.ok(threw, 'transcript ' + JSON.stringify(bad) + ' was accepted');
     assert.match(threw.message, /cd_00001100/, 'the refusal does not name the clip');
     assert.match(threw.message, /transcript/i);
@@ -690,14 +664,12 @@ check('a blank, whitespace or missing transcript is REFUSED, naming the file', (
 });
 
 check('a clip with no declared `seconds` is REFUSED', () => {
-  // narrator refuses it rather than probing the file, so this would otherwise
-  // fail only after the server had spent ~5 minutes coming up.
   for (const bad of [undefined, null, 0, -1, 'x']) {
     const m = probeVoice({
       kind: 'clips',
       voice: { clips: [{ path: '/tmp/a.wav', transcript: 'hello there', seconds: bad }] },
     });
-    assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /duration/i,
+    assert.throws(() => resolving(m), /duration/i,
       'seconds ' + JSON.stringify(bad) + ' was accepted');
   }
 });
@@ -711,7 +683,7 @@ check('TWO reference clips are REFUSED — vllm-omni takes exactly one', () => {
     ] },
   });
   let threw = null;
-  try { higgs.higgsSpawnEnv(m, envOpts); } catch (err) { threw = err; }
+  try { resolving(m); } catch (err) { threw = err; }
   assert.ok(threw, 'a multi-clip voice was accepted');
   assert.match(threw.message, /EXACTLY ONE/);
   assert.match(threw.message, /join/i, 'the refusal does not say how to fix it');
@@ -722,7 +694,7 @@ check('a reference over the 30 s server cap is REFUSED before launch', () => {
     kind: 'clips',
     voice: { clips: [{ path: '/tmp/a.wav', transcript: 'long one', seconds: 42 }] },
   });
-  assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /cap/);
+  assert.throws(() => resolving(m), /cap/);
 });
 
 check('a 27 s single joined reference PASSES', () => {
@@ -730,8 +702,7 @@ check('a 27 s single joined reference PASSES', () => {
     kind: 'clips',
     voice: { clips: [{ path: '/tmp/joined.wav', transcript: 'a joined pair', seconds: 27.4 }] },
   });
-  const e = higgs.higgsSpawnEnv(m, envOpts);
-  assert.strictEqual(e.NARRATOR_HIGGS_VOICES, DOC_PATH);
+  assert.strictEqual(resolving(m).id, 'probe');
 });
 
 check('a checkpoint WITH a measured cap and its source passes', () => {
@@ -740,13 +711,13 @@ check('a checkpoint WITH a measured cap and its source passes', () => {
     voice: { checkpoint: { wsl: '/home/x/higgs-models/probe' } },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
-  assert.ok(higgs.higgsSpawnEnv(m, envOpts));
+  assert.strictEqual(onArm('wsl', () => resolving(m)).id, 'probe');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. The voice document and the NARRATOR_* environment
 // ─────────────────────────────────────────────────────────────────────────────
-console.log('voice document and narrator env');
+console.log('the default voice and its caps');
 
 const defaultVoice = higgs.resolveHiggsModel('default');
 
@@ -763,28 +734,6 @@ check('the measured caps come through, with their provenance', () => {
 check('caps are ABSENT, not zero, for a voice that declares none', () => {
   const bare = Object.assign({}, defaultVoice, { backends: undefined });
   assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(bare), {});
-});
-
-check('the voice document is narrator-shaped and holds exactly ONE voice', () => {
-  // One voice per document on purpose: narrator's load_voices validates EVERY
-  // clip path in the file, so shipping the whole catalog would make one moved
-  // reference fail every other voice's render with an unrelated filename.
-  const doc = higgs.higgsVoicesDocument(defaultVoice, WSL_DOC);
-  assert.deepStrictEqual(Object.keys(doc), ['default']);
-  assert.strictEqual(doc.default.kind, 'default');
-  assert.strictEqual(doc.default.maxReferenceSeconds, 30);
-  assert.deepStrictEqual(doc.default.allowedControls, []);
-});
-
-check('a clone voice document carries path, transcript AND seconds', () => {
-  const m = probeVoice({
-    id: 'ds', kind: 'clips',
-    voice: { clips: [{ path: '/a/joined.wav', transcript: 'He said it was here.', seconds: 27.4 }] },
-  });
-  const doc = higgs.higgsVoicesDocument(m, WSL_DOC);
-  assert.deepStrictEqual(doc.ds.clips, [
-    { path: '/a/joined.wav', transcript: 'He said it was here.', seconds: 27.4 },
-  ]);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -809,13 +758,13 @@ function stagedVoice(checkpoint, extra) {
 check('a WSL-only fine-tune is REFUSED ON DARWIN, by name, and loads on WSL', () => {
   const m = stagedVoice({ wsl: '/home/<user>/higgs_v3_merged/ds' });
 
-  const doc = onArm('wsl', () => higgs.higgsVoicesDocument(m, FT_WSL_DOC));
-  assert.strictEqual(doc.ft.checkpointDir, '/home/<user>/higgs_v3_merged/ds',
+  assert.strictEqual(onArm('wsl', () => higgs.higgsCheckpointDirFor(m, 'wsl')), '/home/<user>/higgs_v3_merged/ds',
     'the arm that HAS the weights did not get them');
+  assert.strictEqual(onArm('wsl', () => resolving(m)).id, 'ft');
 
   let threw = null;
-  try { onArm('darwin', () => higgs.higgsVoicesDocument(m, FT_MAC_DOC)); } catch (err) { threw = err; }
-  assert.ok(threw, "darwin was handed a document for a voice that machine has no copy of");
+  try { onArm('darwin', () => resolving(m)); } catch (err) { threw = err; }
+  assert.ok(threw, "darwin resolved a voice that machine has no copy of");
   // BY NAME: the voice, the arm, and what to do — never the other arm's path and
   // never a search of the disk.
   assert.match(threw.message, /Higgs voice "ft" is not staged for the Mac/);
@@ -831,7 +780,7 @@ check('a darwin-only fine-tune is REFUSED ON WSL, by name', () => {
   // voice that does not exist there.
   const m = stagedVoice({ darwin: 'runtime/higgs-models/ds' });
   let threw = null;
-  try { onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC)); } catch (err) { threw = err; }
+  try { onArm('wsl', () => resolving(m)); } catch (err) { threw = err; }
   assert.ok(threw, 'WSL was handed the Mac\'s copy');
   assert.match(threw.message, /Higgs voice "ft" is not staged for WSL/);
   assert.match(threw.message, /no wsl checkpoint in the catalog/);
@@ -845,23 +794,14 @@ check('staged on BOTH arms: each arm gets ITS path, absolute and arm-shaped', ()
     darwin: 'runtime/higgs-models/ds_ad4lm_prod_ckpt1080',
   });
 
-  const wsl = onArm('wsl', () => higgs.higgsVoicesDocument(m, FT_WSL_DOC));
-  assert.strictEqual(wsl.ft.checkpointDir,
-    '/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
-    'the WSL document does not carry the GUEST path');
+  const wsl = higgs.higgsCheckpointDirFor(m, 'wsl');
+  assert.strictEqual(wsl, '/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
+    'the WSL arm did not get the GUEST path');
 
-  const mac = onArm('darwin', () => higgs.higgsVoicesDocument(m, FT_MAC_DOC));
-  // RESOLVED TO ABSOLUTE against the fixture userData, because that is what
-  // narrator's MLX backend opens — `require_generation_config` does
-  // os.path.isdir on this exact string, and a relative one would resolve against
-  // whatever cwd the worker happened to have.
-  assert.strictEqual(mac.ft.checkpointDir,
-    path.join(MAC_USER_DATA, 'runtime', 'higgs-models', 'ds_ad4lm_prod_ckpt1080'));
-  assert.ok(path.isAbsolute(mac.ft.checkpointDir), 'the darwin path reached narrator relative');
-  assert.ok(mac.ft.checkpointDir.startsWith(MAC_USER_DATA),
-    'the darwin path was resolved against something other than userData');
-  assert.notStrictEqual(wsl.ft.checkpointDir, mac.ft.checkpointDir,
-    'both arms got the same directory — one of them cannot open it');
+  // RESOLVED TO ABSOLUTE against the fixture userData: the picker asks the disk with this string.
+  const mac = higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA);
+  assert.strictEqual(mac, path.join(MAC_USER_DATA, 'runtime', 'higgs-models', 'ds_ad4lm_prod_ckpt1080'));
+  assert.notStrictEqual(wsl, mac, 'both arms got the same directory — one of them cannot open it');
 });
 
 check('the darwin arm REFUSES to resolve without a userData directory', () => {
@@ -869,8 +809,7 @@ check('the darwin arm REFUSES to resolve without a userData directory', () => {
   // how a render loads 8.5 GB of the wrong weights (or none).
   const m = stagedVoice({ darwin: 'runtime/higgs-models/ds' });
   let threw = null;
-  try { onArm('darwin', () => higgs.higgsVoicesDocument(m, { arm: 'darwin' })); }
-  catch (err) { threw = err; }
+  try { higgs.higgsCheckpointDirFor(m, 'darwin'); } catch (err) { threw = err; }
   assert.ok(threw, 'a userData-relative path was resolved against nothing');
   assert.match(threw.message, /no userData directory was given/);
   assert.match(threw.message, /no default and no search/);
@@ -915,14 +854,6 @@ check('the PICKER and Listen show a checkpoint voice only on an arm that has it'
  * over the shipped file — the mutation would pass. A renderable-on-one-arm row is
  * what makes the arm-awareness observable.
  */
-const CATALOG_FILE = path.join(DIST, 'data', 'higgs-models.json');
-function withExtraVoices(extra, fn) {
-  const shipped = fs.readFileSync(CATALOG_FILE, 'utf-8');
-  const parsed = JSON.parse(shipped);
-  parsed.models = [...parsed.models, ...extra];
-  fs.writeFileSync(CATALOG_FILE, JSON.stringify(parsed, null, 2), 'utf-8');
-  try { return fn(); } finally { fs.writeFileSync(CATALOG_FILE, shipped, 'utf-8'); }
-}
 
 check('a fine-tune certified on ONE arm is renderable there and greyed on the other', () => {
   const wslOnly = {
@@ -984,10 +915,6 @@ check('caps come from the ARM\'s own block, and never from the other one', () =>
   });
   assert.strictEqual(higgs.higgsVoiceCapsForModel(m, 'wsl').maxChars, 1200);
   assert.strictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').maxChars, 800);
-  // But a fine-tune's DOCUMENT carries the VENUE's number on either arm (2026-09-28): the cap is
-  // the server's, and this arm's block is not consulted for it.
-  assert.strictEqual(higgs.higgsVoicesDocument(m, FT_WSL_DOC).twoarm.maxChars, VENUE.maxChars);
-  assert.strictEqual(higgs.higgsVoicesDocument(m, FT_MAC_DOC).twoarm.maxChars, VENUE.maxChars);
 });
 
 check("EVERY backend block states its cap — measured, or null, with a KNOWN source", () => {
@@ -1049,409 +976,6 @@ check('the SAMPLING MIRROR equals the checkpoint dir\'s generation_config.json',
   assert.notDeepStrictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').sampling, mirrorOf(drifted));
 });
 
-
-check('a checkpoint document carries checkpointDir AND the venue cap AND kind', () => {
-  // THE CAP MUST TRAVEL. narrator's load_voices raises for a fine-tune entry with
-  // no `maxChars` — so `refuseUnmeasuredAdapter` was guarding a number that never
-  // reached the engine, and the day deathstalker is promoted with its length
-  // sweep the render would have been refused while the measurement sat in a JSON
-  // file nobody read. `kind` is stated rather than left to narrator's derivation
-  // (absent + checkpointDir => 'checkpoint'), so the refusal path infers nothing.
-  const m = probeVoice({
-    id: 'ft', kind: 'checkpoint',
-    voice: { checkpoint: { wsl: '/home/x/higgs-models/ft' } },
-    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
-  });
-  const doc = higgs.higgsVoicesDocument(m, FT_WSL_DOC);
-  assert.strictEqual(doc.ft.checkpointDir, '/home/x/higgs-models/ft');
-  assert.ok(!('clips' in doc.ft), 'a fine-tune is TEXT-ONLY — no clips key');
-  assert.ok(!('adapterDir' in doc.ft), 'the old adapterDir key is still emitted');
-  assert.strictEqual(doc.ft.kind, 'checkpoint');
-  // The cap that travels is the VENUE's (2026-09-28), under narrator's closed source word 'catalog'.
-  assert.strictEqual(doc.ft.maxChars, VENUE.maxChars);
-  assert.strictEqual(doc.ft.maxCharsSource, 'catalog');
-});
-
-check('the default document carries its cap too, so nothing is inferred', () => {
-  // narrator would otherwise fall back to HiggsV3Defaults.MAX_CHARS — also 600,
-  // and labelled a placeholder on that side. The two agreeing today is a
-  // coincidence, not a contract.
-  const doc = higgs.higgsVoicesDocument(defaultVoice, WSL_DOC);
-  assert.strictEqual(doc.default.kind, 'default');
-  assert.ok(!('clips' in doc.default), "kind 'default' must not emit a clips key");
-  assert.strictEqual(doc.default.maxChars, 600);
-  // narrator VALIDATES this vocabulary: 'catalog' | 'placeholder' | 'length-sweep'.
-  assert.strictEqual(doc.default.maxCharsSource, 'placeholder');
-});
-
-const HIGGS3_PREFIX = '/home/t/anaconda3/envs/higgs3';
-const SGLOMNI_PREFIX = '/home/t/anaconda3/envs/sglomni';
-
-// ── EVERY STACK ROW RUNS AGAINST AN EXPLICIT FIXTURE ───────────────────────
-//
-// Higgs v3 is served by two stacks and `serving.stack` picks one. It shipped as
-// vllm-omni and FLIPPED to sglang-omni on 2026-09-06, on the night-3
-// measurements (same 50 chunks, same checkpoint, one seed: vllm-omni at 16 in
-// flight gives 4 early stops / 13 damaged / 6 sustained voice switches; SGLang
-// gives 0 / 5 / 0, at 2.5x the throughput).
-//
-// The rows below used to build ONE env from the shipped catalog and assert
-// vllm-omni facts about it. That is two mistakes in one: the flip turned them
-// red, and — worse — whichever stack was not shipped stopped being tested at
-// exactly the moment a regression in it could go unnoticed. So each stack gets
-// its own fixture model (the catalog's own serving block with `stack` replaced,
-// carried as the per-model override the catalog already supports), BOTH are
-// always exercised, and the SHIPPED value is asserted separately, on its own row.
-const STACKS = ['vllm-omni', 'sglang-omni'];
-const SHIPPED_STACK = higgs.higgsServingSpec().stack;
-
-/** `defaultVoice`, pinned to one stack. */
-function voiceOnStack(stack) {
-  return Object.assign({}, defaultVoice, {
-    serving: Object.assign({}, higgs.higgsServingSpec(), { stack }),
-  });
-}
-/** The guest conda prefix each stack's launcher runs out of. */
-const PREFIX_FOR_STACK = {
-  'vllm-omni': HIGGS3_PREFIX,
-  'sglang-omni': SGLOMNI_PREFIX,
-};
-/** The launcher file name each stack deploys into that prefix. */
-const LAUNCHER_FOR_STACK = {
-  'vllm-omni': higgs.higgsServingSpec().launchScript,
-  'sglang-omni': higgs.higgsServingSpec().sglang.launchScript,
-};
-/** A launching spawn env for one stack. */
-function envOnStack(stack) {
-  const prefix = PREFIX_FOR_STACK[stack];
-  return higgs.higgsSpawnEnv(voiceOnStack(stack), {
-    voicesPath: '/mnt/c/tmp/voices.json',
-    serveScriptPath: `${prefix}/bin/${LAUNCHER_FOR_STACK[stack]}`,
-    condaEnvPrefix: prefix,
-    wslDistro: 'Ubuntu',
-  });
-}
-const envByStack = Object.fromEntries(STACKS.map((s) => [s, envOnStack(s)]));
-
-// `env` stays the name the rows below use for the vllm-omni one — that is the
-// stack the `HIGGS_*` / deploy-profile rows are ABOUT, and they say so now.
-const env = envByStack['vllm-omni'];
-const sglEnv = envByStack['sglang-omni'];
-
-check('narrator is addressed by NARRATOR_*, and the LAUNCH SCRIPT by HIGGS_*', () => {
-  // TWO SETS, TWO READERS, AND THE DISTINCTION IS THE WHOLE POINT.
-  //
-  // An early draft of higgs-models.ts INVENTED a `HIGGS_*` set as a guess at
-  // narrator's variable names, because engine/higgs had not landed yet; when it
-  // did, its names were `NARRATOR_*` and every invented one was deleted. This
-  // row asserted that deletion by refusing any `HIGGS_` prefix at all — which
-  // was right while nothing else read one, and became wrong on 2026-09-05.
-  //
-  // `serve_higgs_v3.sh` is an operator's script that narrator RUNS rather than
-  // reimplements, and a script is configured through the environment. Its
-  // variables really are `HIGGS_*`, they belong to it, and until this commit
-  // NONE of them were set — so the catalog's serving block described a
-  // configuration nothing applied.
-  assert.strictEqual(env.NARRATOR_HIGGS_VOICES, '/mnt/c/tmp/voices.json');
-  assert.strictEqual(env.NARRATOR_HIGGS3_SERVE_SCRIPT,
-    `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`);
-  assert.strictEqual(env.NARRATOR_HIGGS3_WSL_DISTRO, 'Ubuntu');
-
-  // The launch script's set, against the catalog rather than literals.
-  const serving = higgs.higgsServingSpec();
-  assert.strictEqual(env.HIGGS_ENV, HIGGS3_PREFIX);
-  assert.strictEqual(env.HIGGS_HOST, serving.host);
-  assert.strictEqual(env.HIGGS_PORT, String(serving.port));
-  assert.strictEqual(env.HIGGS_GPU_MEM_UTIL, String(serving.gpuMemoryUtilization));
-  assert.strictEqual(env.HIGGS_CODEC_GPU_MEM_UTIL, String(serving.codecGpuMemoryUtilization));
-  assert.strictEqual(env.HIGGS_MAX_MODEL_LEN, String(serving.maxModelLen));
-  assert.strictEqual(env.HIGGS_MAX_NUM_SEQS, String(serving.maxNumSeqs));
-
-  // The allowlist read out of `serve_higgs_v3.sh` left in step 8 with the script: Crucible owns Higgs serve.
-});
-
-/*
- * A MIRROR CHECK STOOD HERE AND HAS NOTHING LEFT TO MIRROR.
- *
- * It compared `electron/scripts/higgs/{serve_higgs_v3.sh, serve_higgs_sgl.sh,
- * higgs_default_frames7500.yaml}` BYTE FOR BYTE against narrator's own packaged
- * copies, because two clients — BookForge, which deployed its copy into
- * <env>/bin/ and hashed it, and narrator, which runs its own — must not be able
- * to run different scripts under one set of measurements.
- *
- * Its own comment said this copy "dies with the legacy local render path". It
- * did (docs/LEGACY-REMOVAL.md). `python/narrator/engine/higgs/launch/` is now
- * the ONLY copy, which is the state the mirror existed to approximate, so every
- * check below reads it directly. `.gitattributes` still pins those files to LF,
- * and that still matters for the reason the profile makes sharp: a cap
- * certificate binds to the yaml's sha256, and a CRLF checkout is not the file
- * anything was measured against.
- */
-
-check('HIGGS_MODEL_DIR is narrator\'s to export, never BookForge\'s', () => {
-  // The server is keyed on it — it is which merged checkpoint comes up — and
-  // narrator exports it per voice from the voice document (v3_served.py
-  // `_launch_exports`), unsetting it for the base speaker. A second authority on
-  // this side would be a whole book in the wrong narrator.
-  assert.ok(!('HIGGS_MODEL_DIR' in env));
-});
-
-check('a launch script with no HIGGS_ENV is REFUSED, not defaulted', () => {
-  // The script's own fallback is a hardcoded `$HOME/anaconda3/envs/higgs3`: true
-  // on the machine it was transcribed from, and a server started out of the
-  // wrong env (or none) anywhere else. CUDA_HOME, PATH, LD_LIBRARY_PATH and the
-  // `vllm-omni` binary itself all hang off it.
-  assert.throws(() => higgs.higgsSpawnEnv(defaultVoice, {
-    voicesPath: DOC_PATH,
-    serveScriptPath: `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`,
-  }), /HIGGS_ENV/);
-  // And the reverse: a prefix with no script is an arm that launches nothing.
-  assert.throws(() => higgs.higgsSpawnEnv(defaultVoice, {
-    voicesPath: DOC_PATH, condaEnvPrefix: HIGGS3_PREFIX,
-  }), /no launch script/);
-});
-
-check('an arm that launches NO server gets no server-launch variable', () => {
-  // The Mac samples in-process. A bind address or a memory fraction there is a
-  // lever read by nothing, which is how a Mac spawn ends up looking like a
-  // served one.
-  const e = higgs.higgsSpawnEnv(defaultVoice, { voicesPath: DOC_PATH });
-  for (const key of ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
-    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG']) {
-    assert.ok(!(key in e), `a non-launching spawn carries ${key}`);
-  }
-  // EXCEPT the batch width, which narrator itself reads: `serve_concurrency()`
-  // refuses BY NAME when it is unset, so a door that renders and finds it
-  // missing dies after the session is already built.
-  assert.strictEqual(e.HIGGS_MAX_NUM_SEQS, String(higgs.higgsServingSpec().maxNumSeqs));
-});
-
-check('a serving block with a bad number is REFUSED by field name', () => {
-  // These land on a vllm-omni command line inside a guest, five minutes before
-  // anything can be heard. A substituted "plausible" value is a server that
-  // comes up at the wrong width and renders a whole book that way.
-  //
-  // PINNED TO vllm-omni, because every field it patches is that stack's. Read off
-  // the SHIPPED catalog instead, these silently stopped asserting anything the
-  // day the stack flipped: `higgsSpawnEnv` returns the SGLang set before it ever
-  // looks at `gpuMemoryUtilization`, so `assert.throws` had nothing to catch.
-  const spec = Object.assign({}, higgs.higgsServingSpec(), { stack: 'vllm-omni' });
-  const withServing = (patch) => probeVoice({
-    id: 'bad', kind: 'default', voice: {},
-    serving: Object.assign({}, spec, patch),
-  });
-  const opts = {
-    voicesPath: DOC_PATH,
-    serveScriptPath: `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`,
-    condaEnvPrefix: HIGGS3_PREFIX,
-  };
-  assert.throws(() => higgs.higgsSpawnEnv(withServing({ maxNumSeqs: 0 }), opts), /maxNumSeqs/);
-  assert.throws(() => higgs.higgsSpawnEnv(withServing({ gpuMemoryUtilization: 1.4 }), opts),
-    /gpuMemoryUtilization/);
-  assert.throws(
-    () => higgs.higgsSpawnEnv(withServing({ codecGpuMemoryUtilization: undefined }), opts),
-    /codecGpuMemoryUtilization/);
-  assert.throws(() => higgs.higgsSpawnEnv(withServing({ maxModelLen: 8192.5 }), opts),
-    /maxModelLen/);
-  // A DECLARED null is the auto-discovered profile and emits nothing; an ABSENT
-  // key would make "nobody has decided" and "we chose the default" the same
-  // catalog, so it is refused.
-  assert.throws(() => higgs.higgsSpawnEnv(withServing({ deployConfig: undefined }), opts),
-    /deployConfig/);
-  // A BARE PROFILE NAME IS REFUSED HERE, not carried into the guest to die. It
-  // costs a 297 s cold start to learn that vllm-omni answers "Deploy config not
-  // found" for one (measured 2026-09-05, 0.28.0:
-  // config_factory._load_user_deploy_config joins a bare name to the deploy dir
-  // without appending .yaml), and that failure arrives as a dead worker rather
-  // than as a sentence about the catalog. serve_higgs_v3.sh refuses it too — in
-  // the guest, one process later.
-  assert.throws(
-    () => higgs.higgsSpawnEnv(withServing({ deployConfig: 'higgs_multimodal_qwen3_low_latency' }),
-      opts),
-    /bare profile NAME/);
-  // A FILE NAME is resolved against the env prefix, because the installer puts
-  // our profiles in <env>/bin/ and vllm-omni would resolve a bare file name
-  // against its OWN deploy/ directory inside site-packages.
-  const chosen = higgs.higgsSpawnEnv(
-    withServing({ deployConfig: 'higgs_multimodal_qwen3_low_latency.yaml' }), opts);
-  assert.strictEqual(chosen.HIGGS_DEPLOY_CONFIG,
-    `${HIGGS3_PREFIX}/bin/higgs_multimodal_qwen3_low_latency.yaml`);
-  // A value that already carries a separator is the caller saying exactly where
-  // the file is — including one of vllm-omni's own, which is not under our bin.
-  const explicit = higgs.higgsSpawnEnv(
-    withServing({ deployConfig: '/opt/vllm_omni/deploy/higgs_multimodal_qwen3.yaml' }), opts);
-  assert.strictEqual(explicit.HIGGS_DEPLOY_CONFIG,
-    '/opt/vllm_omni/deploy/higgs_multimodal_qwen3.yaml');
-  // And `null` still means vllm-omni's auto-discovered profile — now stated as
-  // the EMPTY STRING rather than by saying nothing.
-  //
-  // THE LAUNCHER'S DEFAULT CHANGED on 2026-09-13. It reads
-  // `${HIGGS_DEPLOY_CONFIG-<its own certified sibling>}` — the `-` form, not
-  // `:-` — so an UNSET variable now means the frames-7500 profile that ships
-  // beside the script, and only an explicitly EMPTY one means vllm-omni's. A
-  // catalog `null` that emitted nothing would therefore have become its own
-  // opposite in silence.
-  const none = higgs.higgsSpawnEnv(withServing({ deployConfig: null }), opts);
-  assert.ok('HIGGS_DEPLOY_CONFIG' in none,
-    'a null deployConfig said nothing at all — the launcher reads silence as its '
-    + "OWN certified profile, not as vllm-omni's");
-  assert.strictEqual(none.HIGGS_DEPLOY_CONFIG, '');
-});
-
-check('the catalog names the profile that raises the frame ceiling (vllm-omni)', () => {
-  // The served speech endpoint IGNORES a per-request max_tokens, so stage 0's
-  // default_sampling_params.max_tokens in the deploy profile is a hard ceiling on
-  // every render: vllm-omni's auto profile sets 2048 frames = 81.92 s and cuts
-  // anything longer mid-sentence while reporting success. Leaving deployConfig
-  // null is therefore not a neutral default any more, and this row is what says
-  // so — it is the one failure with no crash to notice.
-  const spec = higgs.higgsServingSpec();
-  assert.strictEqual(spec.deployConfig, 'higgs_default_frames7500.yaml',
-    'the catalog no longer names the 7500-frame profile, so every render is capped at 81.92 s');
-  // ON THE vllm-omni FIXTURE, because that is the only stack `--deploy-config`
-  // exists on. SGLang-Omni has no deploy profile at all — which is also why
-  // sampling MUST ride on every request there — so asserting this of the shipped
-  // env would fail the day the stack flipped, for a reason that has nothing to do
-  // with the frame ceiling.
-  assert.strictEqual(env.HIGGS_DEPLOY_CONFIG, `${HIGGS3_PREFIX}/bin/${spec.deployConfig}`,
-    "the catalog's profile did not resolve to the installer's copy");
-  // AND IT IS KEPT IN THE CATALOG EVEN WHILE THE OTHER STACK IS SHIPPED. The two
-  // blocks sit side by side precisely so neither stack's measured configuration
-  // is lost while the other is selected, and a flip back is one word.
-  assert.ok(!('HIGGS_DEPLOY_CONFIG' in sglEnv),
-    'the sglang arm carries a deploy profile, which that stack has no flag for');
-});
-
-check(`the SHIPPED stack (${SHIPPED_STACK}) gets the matching variable set`, () => {
-  // The one row here that is about THE CATALOG rather than about a stack. It is
-  // what would catch a flip breaking the app rather than only breaking the tests:
-  // whichever stack `serving.stack` names, the spawn must carry that stack's
-  // launcher variables and none of the other's.
-  assert.ok(STACKS.includes(SHIPPED_STACK),
-    `serving.stack is ${JSON.stringify(SHIPPED_STACK)}, which this suite has no fixture for`);
-  // `defaultVoice` — the REAL catalog entry with no `serving` override — so this
-  // reads `serving.stack` through the same path the app does. Same voicesPath as
-  // `envOnStack` so the deep-equal below is about the STACK and not about a
-  // fixture string.
-  const shipped = higgs.higgsSpawnEnv(defaultVoice, {
-    voicesPath: '/mnt/c/tmp/voices.json',
-    serveScriptPath: `${PREFIX_FOR_STACK[SHIPPED_STACK]}/bin/${LAUNCHER_FOR_STACK[SHIPPED_STACK]}`,
-    condaEnvPrefix: PREFIX_FOR_STACK[SHIPPED_STACK],
-    wslDistro: 'Ubuntu',
-  });
-  assert.strictEqual(shipped.HIGGS_STACK, SHIPPED_STACK);
-  // The shipped env IS the fixture env for that stack. If these ever disagreed it
-  // would mean the fixtures are not exercising the path the catalog takes, which
-  // would make every stack row in this file worthless.
-  assert.deepStrictEqual(shipped, envByStack[SHIPPED_STACK]);
-  const V = ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
-    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'NARRATOR_HIGGS3_SERVE_SCRIPT'];
-  const S = ['HIGGS_SGL_ENV', 'HIGGS_SGL_HOST', 'HIGGS_SGL_PORT', 'HIGGS_SGL_MEM_FRACTION',
-    'HIGGS_SGL_CUDA_GRAPH_MAX_BS', 'HIGGS_SGL_MAX_NEW_TOKENS',
-    'NARRATOR_HIGGS_SGL_SERVE_SCRIPT'];
-  const sgl = SHIPPED_STACK === 'sglang-omni';
-  for (const key of sgl ? S : V) {
-    assert.ok(key in shipped, `the shipped ${SHIPPED_STACK} spawn is missing ${key}`);
-  }
-  for (const key of sgl ? V : S) {
-    assert.ok(!(key in shipped), `the shipped ${SHIPPED_STACK} spawn carries ${key}`);
-  }
-});
-
-check('the CAPS do not travel — narrator refuses a caps payload by name', () => {
-  // maxChars/edgeFade/sampling are BookForge's own business (prep packing and
-  // assembly). narrator's higgs_v3_config_from_worker_kwargs RAISES on `caps`
-  // because those are Orpheus knobs that v3 implements none of.
-  for (const k of Object.keys(env)) {
-    assert.ok(!/MAX_CHARS|TEMPERATURE|TOP_P|TOP_K|EDGE_FADE/.test(k),
-      'a cap leaked into the spawn env as ' + k);
-  }
-});
-
-check('every env value is a STRING — a number would arrive as undefined', () => {
-  for (const [k, v] of Object.entries(env)) {
-    assert.strictEqual(typeof v, 'string', k + ' is not a string');
-  }
-});
-
-check('the ATTACH url is emitted only when a server is already up — and per STACK', () => {
-  // ONE VARIABLE PER STACK, and that is load-bearing rather than tidy. Each
-  // backend reads only its own name (`HiggsSglServedBackend` looks at
-  // NARRATOR_HIGGS_SGL_URL, `HiggsV3ServedBackend` at NARRATOR_HIGGS3_URL), so a
-  // stale variable from the other stack cannot point one stack's client at the
-  // other stack's server — which would answer /health and /v1/models in the right
-  // shapes and then drop half of every request body.
-  const NAME = {
-    'vllm-omni': 'NARRATOR_HIGGS3_URL',
-    'sglang-omni': 'NARRATOR_HIGGS_SGL_URL',
-  };
-  for (const stack of STACKS) {
-    const url = `http://127.0.0.1:${stack === 'sglang-omni' ? 8200 : 8095}`;
-    // Not emitted when nothing was attached to: narrator would otherwise skip
-    // starting a server and poll a port with nothing on it.
-    assert.ok(!(NAME[stack] in envByStack[stack]),
-      `${NAME[stack]} is set on a launching spawn`);
-    const attached = higgs.higgsSpawnEnv(voiceOnStack(stack), {
-      voicesPath: DOC_PATH, baseUrl: url,
-    });
-    assert.strictEqual(attached[NAME[stack]], url);
-    // AND THE OTHER STACK'S NAME IS NOT SET, on either.
-    const other = STACKS.find((s) => s !== stack);
-    assert.ok(!(NAME[other] in attached),
-      `attaching on ${stack} also set ${NAME[other]}`);
-  }
-});
-
-check('NO adapter-strategy variable is emitted, ever — there is no LoRA path', () => {
-  // Deleted 2026-09-04. NARRATOR_HIGGS3_ADAPTER_STRATEGY existed to choose
-  // between 'lora-modules' and 'merged-dir' once someone established which
-  // vllm-omni accepted. The answer is NEITHER-as-a-choice: vllm-omni cannot load
-  // a LoRA at runtime at all (no adapter flags on `vllm-omni serve`; the
-  // higgs_audio_v3 talker class does not implement SupportsLoRA), so a voice is
-  // always a merged checkpoint and there is nothing to select between.
-  const m = probeVoice({
-    kind: 'checkpoint',
-    voice: { checkpoint: { wsl: '/home/x/ft' } },
-    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
-  });
-  const e = higgs.higgsSpawnEnv(m, envOpts);
-  assert.ok(!('NARRATOR_HIGGS3_ADAPTER_STRATEGY' in e));
-  assert.deepStrictEqual(
-    Object.keys(e).filter((k) => /ADAPTER|LORA/i.test(k)), [],
-    'an adapter/LoRA variable survives in the spawn env',
-  );
-});
-
-check('a voice on a serving stack it does not match is REFUSED', () => {
-  const wrong = Object.assign({}, defaultVoice, { engineVersion: 'v9' });
-  assert.throws(() => higgs.higgsServingFor(wrong), /shared serving block is for/);
-});
-
-check('the cold start recorded is the MEASURED 297 s, and it is the only startup number here', () => {
-  // CORRECTED 2026-09-13. This check used to read:
-  //
-  //     assert.strictEqual(spec.readyTimeoutSeconds, 300);
-  //     assert.ok(spec.coldStartSeconds < spec.readyTimeoutSeconds);
-  //
-  // justified by a comment saying "narrator's READY_TIMEOUT_SECONDS is 300 ...
-  // three seconds of margin". NARRATOR'S VALUE IS 900 (python/narrator/engine/
-  // higgs/v3_engine.py:130, READY_TIMEOUT_SECONDS = 900.0), so this was a GREEN
-  // guard laundering a false cross-repo belief — exactly the second-order
-  // finding of crucible/docs/ARCHITECTURE.md, one rung worse, because a red
-  // guard at least announces itself.
-  //
-  // `readyTimeoutSeconds` was never on the HiggsServingSpec interface and no
-  // production code read it (whole-repo grep, 2026-09-13: this keeper, the JSON
-  // and two prose notes). It is DELETED rather than corrected to 900: writing a
-  // live timeout here would need a measured cold start on this stack that
-  // nobody has taken, and that is a ruling. So the assertion that remains is
-  // the one measured number.
-  const spec = higgs.higgsServingSpec();
-  assert.strictEqual(spec.coldStartSeconds, 297);
-  assert.ok(!('readyTimeoutSeconds' in spec),
-    'readyTimeoutSeconds is back in higgs-models.json. It is not on HiggsServingSpec and nothing '
-    + 'reads it; a startup limit that lives here must be MEASURED and wired, not declared.');
-});
 
 /*
  * TWO WATCHDOG CHECKS STOOD HERE AND THEIR SUBJECT IS DELETED.
@@ -1653,36 +1177,22 @@ const ZS_REFS = higgs.higgsRefsDir(ZS_USER_DATA);
 check('a clip NAME resolves under <userData>/runtime/higgs-models/refs, and is REFUSED when absent', () => {
   assert.strictEqual(ZS_REFS.replace(/\\/g, '/'), (ZS_USER_DATA + '/runtime/higgs-models/refs').replace(/\\/g, '/'));
   const m = higgs.listHiggsModels().find((v) => v.id === 'zeroshot-thirdreich');
+  const clip = m.voice.clips[0];
   // No userData at all: refused by name, never guessed — the darwin checkpoint rule.
-  assert.throws(() => higgs.higgsVoicesDocument(m, { arm: 'wsl' }), /userData/,
+  assert.throws(() => higgs.higgsReferenceClipPath(m, clip), /userData/,
     'a bare clip name was resolved with no userData directory');
-  // userData given, clip not staged there: refused naming the folder to copy into.
-  let threw = null;
-  try { higgs.higgsVoicesDocument(m, { arm: 'wsl', userDataDir: ZS_USER_DATA }); } catch (err) { threw = err; }
-  assert.ok(threw, 'a missing clip was written into the document');
-  assert.match(threw.message, /thirdreich\.wav/);
-  assert.match(threw.message, /runtime\/higgs-models\/refs/, 'the refusal does not say where the clip goes');
-  // Staged: the document carries THIS MACHINE's absolute path, translated for the arm.
+  // userData given, clip not staged there: offered disabled, naming the folder to copy into.
+  const missing = higgs.higgsVoiceUnavailableReason(m, ZS_USER_DATA);
+  assert.ok(missing, 'a missing clip was offered as available');
+  assert.match(missing, /thirdreich\.wav/);
+  assert.match(missing, /runtime\/higgs-models\/refs/, 'the refusal does not say where the clip goes');
+  // Staged: the clip is THIS MACHINE's absolute path.
   fs.mkdirSync(ZS_REFS, { recursive: true });
   for (const v of higgs.listHiggsModels().filter((x) => x.kind === 'clips')) {
     fs.writeFileSync(path.join(ZS_REFS, v.voice.clips[0].path), '');
   }
-  const doc = higgs.higgsVoicesDocument(m, {
-    arm: 'wsl', userDataDir: ZS_USER_DATA, translatePath: (p) => 'GUEST:' + p.replace(/\\/g, '/'),
-  })['zeroshot-thirdreich'];
-  assert.strictEqual(doc.kind, 'clips');
-  assert.strictEqual(doc.clips.length, 1);
-  assert.strictEqual(doc.clips[0].path,
-    'GUEST:' + path.join(ZS_REFS, 'thirdreich.wav').replace(/\\/g, '/'),
-    'the document path is not the staged clip translated for the guest');
-  assert.strictEqual(doc.clips[0].seconds, 15);
-  assert.strictEqual(doc.maxChars, 600);
-  assert.strictEqual(doc.targetChars, 600);
-  assert.strictEqual(doc.maxReferenceSeconds, 30);
-  assert.ok(!('checkpointDir' in doc), 'a zero-shot document must not name a checkpoint');
-  // The Mac arm resolves the SAME name under its own userData.
-  const mac = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: ZS_USER_DATA })['zeroshot-thirdreich'];
-  assert.strictEqual(mac.clips[0].path, path.join(ZS_REFS, 'thirdreich.wav'));
+  assert.strictEqual(higgs.higgsVoiceUnavailableReason(m, ZS_USER_DATA), null);
+  assert.strictEqual(higgs.higgsReferenceClipPath(m, clip, ZS_USER_DATA), path.join(ZS_REFS, 'thirdreich.wav'));
 });
 
 check('a relative clip with a directory in it, or an empty path, is REFUSED as malformed', () => {
@@ -1693,8 +1203,8 @@ check('a relative clip with a directory in it, or an empty path, is REFUSED as m
     });
     assert.ok(higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA),
       'clip path ' + JSON.stringify(bad) + ' was accepted by the picker');
-    assert.throws(() => higgs.higgsVoicesDocument(m, { arm: 'wsl', userDataDir: ZS_USER_DATA }),
-      /bare file name|no path/, 'clip path ' + JSON.stringify(bad) + ' reached the document');
+    assert.match(higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA), /bare file name|no path/,
+      'clip path ' + JSON.stringify(bad) + ' was refused for the wrong reason');
   }
   // An ABSOLUTE path is host-native and needs no userData — the other spelling.
   const abs = path.join(ZS_REFS, 'thirdreich.wav');
@@ -1703,8 +1213,7 @@ check('a relative clip with a directory in it, or an empty path, is REFUSED as m
     voice: { clips: [{ path: abs, transcript: 'a line', seconds: 12 }] },
     backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
   });
-  const doc = higgs.higgsVoicesDocument(m, WSL_DOC).probe;
-  assert.strictEqual(doc.clips[0].path, abs);
+  assert.strictEqual(higgs.higgsReferenceClipPath(m, m.voice.clips[0]), abs);
 });
 
 check('a darwin checkpoint the catalog names but the disk lacks is offered DISABLED, naming the dir', () => {
@@ -1791,8 +1300,7 @@ check('the deathstalker fine-tune names its HuggingFace source, and a malformed 
 check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', () => {
   // THE ONE MISTAKE THIS FIELD INVITES. A join is (modelSelfTailS + injectS), so injectS must
   // already have the tail taken out of it. Declaring the target join as the inject lands every
-  // join long by the tail — orpheus-models.json records exactly that as how thirdreich shipped
-  // 0.24 s long on every join. The validator checks the three numbers add up.
+  // join long by the tail — thirdreich shipped 0.24 s long on every join that way. The validator checks the three numbers add up.
   const wrong = { injectS: 0.84, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
     method: 'm', source: 's', measuredOn: '2026-09-11' };
   const m = probeVoice({
@@ -1800,7 +1308,7 @@ check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', 
     backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } }, chunkGap: wrong,
   });
   let threw = null;
-  try { higgs.higgsVoicesDocument(m, FT_WSL_DOC); } catch (e) { threw = e; }
+  try { onArm('wsl', () => resolving(m)); } catch (e) { threw = e; }
   assert.ok(threw, 'an inject that ignores the model tail was accepted');
   assert.match(threw.message, /NET of the tail/);
   // And the well-formed one passes, so the check is not simply rejecting every gap.
@@ -1810,35 +1318,14 @@ check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', 
     chunkGap: { injectS: 0.62, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
       method: 'm', source: 's', measuredOn: '2026-09-11' },
   });
-  higgs.higgsVoicesDocument(right, FT_WSL_DOC);
+  onArm('wsl', () => resolving(right));
 });
-check('the VENUE\'s pace becomes the length band in the document, on both arms', () => {
-  // The guard's band is centred on the pace the machine that renders measured: since 2026-09-28
-  // (Owen: "single source of truth. that source should be where the models are served") that pace
-  // is the server's, stated on GET /v1/voices with all three rates, and the catalog keeps none.
-  // narrator still keeps only the ratios and re-centres them on the book's own running median
-  // (`truncation.PaceTracker`); only where the seed comes from moved.
-  const m = probeVoice({
-    kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
-    backends: { served: {}, mlx: {} },
-  });
-  const doc = higgs.higgsVoicesDocument(m, FT_WSL_DOC).probe;
-  assert.strictEqual(doc.paceCharsPerSec, VENUE.paceCharsPerSec);
-  assert.strictEqual(doc.maxCharsPerSec, VENUE.maxCharsPerSec);
-  assert.strictEqual(doc.minCharsPerSec, VENUE.minCharsPerSec);
-  // The Mac's document carries the same venue band.
-  const mac = higgs.higgsVoicesDocument(m, FT_MAC_DOC).probe;
-  assert.strictEqual(mac.maxCharsPerSec, doc.maxCharsPerSec);
-  assert.strictEqual(mac.minCharsPerSec, doc.minCharsPerSec);
-  // SAMPLING RIDES IN THE DOCUMENT, per arm: a block's own (with its reason)
-  // for that arm, the ENGINE-LEVEL one for a block that states none - so no
-  // document is ever written without the number that renders.
+check('a block\'s own sampling is its arm\'s, and a pace on a block is refused', () => {
   const sampled = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
     backends: { served: { sampling: { temperature: 1, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' },
                 mlx: { sampling: { temperature: 0.7, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' } } });
-  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, FT_MAC_DOC).probe.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
-  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, FT_WSL_DOC).probe.sampling, { temperature: 1, topP: 0.95, topK: 50 });
-  assert.deepStrictEqual(doc.sampling, higgs.higgsEngineSampling(), 'a block with no sampling writes the engine-level one');
+  assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(sampled, 'darwin').sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(sampled, 'wsl').sampling, { temperature: 1, topP: 0.95, topK: 50 });
   // A pace on a backend block is refused by name, not read: the pace is the server's.
   const perArm = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
     backends: { served: { pace: { median: 16 } } } });
@@ -1949,7 +1436,7 @@ check('the WSL arm takes a GUEST path verbatim, and refuses a drive path', () =>
 });
 
 onArm('darwin', () => {
-  check('an ABSOLUTE Mac directory travels verbatim — resolver AND document', () => {
+  check('an ABSOLUTE Mac directory travels verbatim', () => {
     const m = higgs.higgsModelForRender('deathstalker', {
       checkpointDir: OVERRIDE_DIR,
       note: 'keeper: a merged checkpoint on this Mac',
@@ -1957,12 +1444,6 @@ onArm('darwin', () => {
     // `higgsCheckpointDirFor` must NOT join userData onto it: that would name a
     // directory inside Application Support that has never held these weights.
     assert.strictEqual(higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA), OVERRIDE_DIR);
-    // And the document — the only thing narrator reads — carries the same string.
-    const doc = higgs.higgsVoicesDocument(m, FT_MAC_DOC);
-    assert.strictEqual(doc[m.id].checkpointDir, OVERRIDE_DIR);
-    assert.match(doc[m.id]._overrideNote, /merged checkpoint on this Mac/);
-    // The cap is the venue's, override or not (2026-09-28).
-    assert.strictEqual(doc[m.id].maxChars, VENUE.maxChars);
   });
 
   check('a relative override, and a directory that does not exist, are REFUSED', () => {
@@ -2020,8 +1501,6 @@ onArm('darwin', () => {
     // that deviates — BY CONSTRUCTION, not by being exempt from it.
     assert.match(m.backends.mlx._samplingNote, /reason/i);
     assert.match(m.backends.mlx._samplingNote, /0\.8 control/);
-    const doc = higgs.higgsVoicesDocument(m, FT_MAC_DOC);
-    assert.deepStrictEqual(doc[m.id].sampling, { temperature: 0.8, topP: 0.95, topK: 50 });
   });
 
   check('a sampling value outside its range is REFUSED by name', () => {

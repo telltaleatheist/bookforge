@@ -7,8 +7,6 @@
  * spelled, and how a narrator process looks in a process list.
  */
 
-import { shouldUseWsl2ForHiggs } from './tool-paths';
-
 /**
  * The engine ids a session or a Crucible can name. `orpheus` is retired and nothing renders it, but old
  * sessions record it, so it still has a spelling. `xtts` is retired and is not one.
@@ -65,7 +63,3 @@ export const NARRATOR_APP_RE = 'narrator\\.compat\\.app';
 /** Either batch door. Used where a sweep does not care which it caught. */
 export const NARRATOR_BATCH_RE = 'narrator\\.compat\\.(worker|app)';
 
-/** Is this engine's WSL toggle on, on this machine? */
-export function narratorRunsInWsl(engine: NarratorEngineId | undefined): boolean {
-  return process.platform === 'win32' && engine === 'higgs' && shouldUseWsl2ForHiggs();
-}

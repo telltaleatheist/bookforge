@@ -221,7 +221,7 @@ export async function cancelPrepare(jobId: string): Promise<boolean> {
  * the clean-session sweep read a session back from.
  *
  * The `ebook-` guard is a rail, not a check on the caller: every scratch session
- * narrator writes is `<root>/ebook-<uuid>` (`sessionHomeFor`), so a path that is
+ * narrator writes is `<root>/ebook-<uuid>` (`newSessionDir`), so a path that is
  * not one of those is a bug in the caller and removing it recursively would be
  * the kind of mistake nothing gives back.
  */

@@ -23,11 +23,8 @@
  *
  * When the generation venue is a Crucible server (any server, `local` included):
  *
- *  1. `prepRunsInWsl(venue, engine)` is false whatever the engine's WSL toggle
- *     says — driven here through the REAL config reader with both toggles on.
- *  2. `sessionHomeFor` places the session on a host-native path under the stated
- *     scratch root; the legacy venue, same toggles, same engine, goes to the
- *     guest exactly as before — so the venue is provably the ONE thing deciding.
+ *  1. No venue, engine or toggle can place a render in the guest: the bridge has no branch that could.
+ *  2. `newSessionDir` places the session on a host-native path under the stated scratch root.
  *  3. The prep spawn is built `onHost`: native arm, the TOOLS env's python,
  *     `-m narrator.compat.app`, never `wsl.exe`. Refused by name on any other
  *     phase and when combined with a guest env.
@@ -140,19 +137,14 @@ function lift(name) {
   console.log('1. no render can enter the guest, whatever the toggles say');
 
   /*
-   * THIS SECTION USED TO BE A CONTRAST. It drove `prepRunsInWsl` with a Crucible
-   * venue and with the LEGACY one and showed that only the venue moved the
-   * answer. The legacy venue is deleted (docs/LEGACY-REMOVAL.md), so there is
-   * nothing to contrast with — and what is left is the stronger statement: with
-   * BOTH WSL toggles on and either engine named, no venue this app can construct
-   * preps in the guest, because there is only one kind of venue left.
+   * THIS SECTION USED TO BE A CONTRAST between a Crucible venue and the legacy one, and then a
+   * `prepRunsInWsl` that answered false for every venue. Both are gone: there is no question left
+   * to ask, so what is pinned is that the question does not come back.
    */
-  await check('prepRunsInWsl is false for every venue, both engines, both toggles on', () => {
-    for (const venue of [CRUCIBLE, LOCAL]) {
-      for (const engine of ['higgs', 'orpheus']) {
-        assert.strictEqual(bridge.prepRunsInWsl(venue, engine), false,
-          `${engine} on crucible "${venue.server}" would prep in the guest`);
-      }
+  await check('the bridge has no branch that places a session in the guest', () => {
+    const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
+    for (const name of ['prepRunsInWsl', 'sessionHomeFor', 'sessionRunsInWsl', 'jobRunsInWsl', 'getWslSessionsRoot', 'shouldUseWsl2ForHiggs']) {
+      assert.ok(!new RegExp(`\\b${name}\\(`).test(src), `${name} is back in the bridge`);
     }
   });
 
@@ -160,18 +152,9 @@ function lift(name) {
 
   const ID = 'ccd14111-da29-4fb0-a489-a19a0f126bac';
   await check('a Crucible-venue session is host-native under the stated scratch root', () => {
-    for (const venue of [CRUCIBLE, LOCAL]) {
-      for (const engine of ['higgs', 'orpheus']) {
-        const home = bridge.sessionHomeFor(venue, engine, ID);
-        assert.strictEqual(home.inGuest, false, `${engine}/${venue.server}: placed in the guest`);
-        assert.strictEqual(home.sessionDir, path.join(SCRATCH, `ebook-${ID}`),
-          `${engine}/${venue.server}: ${home.sessionDir}`);
-        assert.strictEqual(home.sessionDirForReading, home.sessionDir,
-          'a native session is read where it is written');
-        assert.ok(!isUnc(home.sessionDir) && !home.sessionDir.startsWith('/'),
-          `${engine}/${venue.server}: not a host path: ${home.sessionDir}`);
-      }
-    }
+    const dir = bridge.newSessionDir(ID);
+    assert.strictEqual(dir, path.join(SCRATCH, `ebook-${ID}`), dir);
+    assert.ok(!isUnc(dir) && !dir.startsWith('/'), `not a host path: ${dir}`);
     assert.ok(fs.existsSync(SCRATCH), 'the scratch root was not created');
   });
 
@@ -190,7 +173,7 @@ function lift(name) {
      */
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
     const at = src.indexOf('export async function prepareSession(');
-    const body = src.slice(at, src.indexOf('const home = sessionHomeFor(', at));
+    const body = src.slice(at, src.indexOf('const sessionDirForReading = newSessionDir(', at));
     assert.ok(!/hostPrepRefusal/.test(body),
       'prepareSession asks about a Python again, and prep needs none');
     assert.ok(!/higgsEnvironmentRefusal/.test(body),
@@ -230,48 +213,16 @@ function lift(name) {
     }
   });
 
-  await check('the guest branch of sessionHomeFor asks narratorScratchRoot() before getWslSessionsRoot()', () => {
-    const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
-    const at = src.indexOf('export function sessionHomeFor(');
-    const guest = src.slice(at, src.indexOf('return {', at));
-    const scratch = guest.indexOf('narratorScratchRoot();');
-    const wsl = guest.indexOf('getWslSessionsRoot()');
-    assert.ok(scratch > 0 && wsl > 0 && scratch < wsl,
-      'the copy-out destination must be checked before the guest session root is derived');
-    assert.ok(/RULING OWED: a scratch root on a NETWORK drive is deliberately NOT refused/.test(guest),
-      'the network-drive decision is a labelled ruling, not an omission');
-  });
-
   console.log('7. nothing else in a Crucible-venue run enters the guest');
 
-  await check('every guest gate asks sessionRunsInWsl(session), which reads the venue', () => {
-    const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
-    const fn = (name) => {
-      const at = src.indexOf(name);
-      assert.ok(at > 0, `${name} not found`);
-      return src.slice(at, at + 1600);
-    };
+  await check('no teardown enters the guest', () => {
     /*
-     * TWO GATES LEFT THIS LIST ON 2026-09-15 with the local renderer.
-     * `ensureGuestCanReachSession` mounted the library share INSIDE the guest for
-     * a render that was about to happen there, and `acquireGpuForJob` carried an
-     * `orpheusViaWsl` clear-guest arm. Neither has a subject any more: nothing
-     * renders in the guest, so nothing needs the share mounted there or the guest
-     * cleared before it.
-     *
-     * The two TEARDOWN gates below SURVIVE and still ask, and that is not
-     * leftover: a session object outlives its render, Stop and quit share one
-     * teardown path, and a session restored from an older queue file can still
-     * carry a venue this build would never mint.
+     * This used to ask that every guest gate read the venue (`sessionRunsInWsl`). The gates are gone
+     * with what they guarded: no session is in the guest, so Stop and quit have no guest arm.
      */
-    const stopAt = src.indexOf('export async function stopParallelConversion(');
-    assert.ok(/if \(sessionRunsInWsl\(session\)\) \{/.test(src.slice(stopAt, stopAt + 6000)),
-      'Stop must not tear down guest workers for a session that has none');
-    const quitAt = src.indexOf('Killing all workers on app shutdown');
-    assert.ok(/if \(sessionRunsInWsl\(session\)\) \{/.test(src.slice(quitAt, quitAt + 1500)),
-      'the quit teardown must not enter the guest for a session that never did');
-    const pred = fn('function sessionRunsInWsl(');
-    assert.ok(/if \(session\.venue\?\.where === 'crucible'\) return false;/.test(pred));
+    const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
+    assert.ok(!/from '\.\/wsl-lifecycle'/.test(src), 'the bridge reaches for the guest teardown again');
+    assert.ok(!/destroyWslSessionWorkers|killWslWrapper/.test(src), 'a guest teardown is back');
   });
 
   await check('every door that PREPS decides the venue first and hands it to prepareSession', () => {

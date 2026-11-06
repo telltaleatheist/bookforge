@@ -98,8 +98,8 @@ check('the live bands of 2026-11-04 (mac and the PC, GET /v1/voices) pack as the
   // floor-ceiling as each server stated them; narrator packed exactly these.
   const live = { deathstalker: [600, 900], mistborn: [300, 600], sigma: [400, 800], thirdreich: [500, 800] };
   for (const [id, [lo, hi]] of Object.entries(live)) {
-    assert.deepStrictEqual(higgs.higgsPrepBudgetArgs(model(id), band({ floorChars: lo, ceilingChars: hi })),
-      ['--chunk_max_chars', String(hi), '--chunk_floor_chars', String(lo)], id);
+    assert.deepStrictEqual(higgs.higgsPrepBudget(model(id), band({ floorChars: lo, ceilingChars: hi })),
+      { floorChars: lo, capChars: hi }, id);
   }
 });
 

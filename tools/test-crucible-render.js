@@ -1056,8 +1056,6 @@ async function bridgeSeamChecks() {
      * fell back to a local path on a failure would be the silent downgrade
      * crucible/render.ts refuses in its header.
      */
-    assert.ok(/venue\.where === 'crucible'/.test(bridge),
-      'the seam branches on the venue, not on a nullable server name');
     for (const file of ['generation-venue.ts', 'step-venue.ts']) {
       const src = fs.readFileSync(path.join(REPO, 'electron', 'crucible', file), 'utf8');
       assert.strictEqual((src.match(/where: 'legacy-local-narrator'/g) || []).length, 0,

@@ -397,28 +397,27 @@ async function main() {
       'neither side states one: nothing is invented here, and the caller refuses by name');
   });
 
-  // ── 4. the voice document prep packs against ───────────────────────────────
-  await check('the VOICE DOCUMENT carries the venue\'s cap, band and pace — not the local 900', () => {
+  // ── 4. the band prep packs to ──────────────────────────────────────────────
+  await check('the band prep packs to is the venue\'s cap, band and pace — not the local 900', () => {
     const stated = band.statedBandForDocument(VENUE_BAND, LOCAL_900.backends.served.targetChars);
-    const doc = higgs.higgsVoicesDocument(LOCAL_900, { arm: 'wsl', venueBand: stated });
-    const entry = doc.deathstalker;
-    assert.strictEqual(entry.maxChars, 800, 'the cap is the venue\'s, never the catalog\'s 900');
-    assert.strictEqual(entry.safeMaxChars, 800, 'and so is the ceiling the packer packs to');
-    assert.strictEqual(entry.safeMinChars, 600, 'and the floor it merges up to');
-    assert.strictEqual(entry.targetChars, 800, 'the local 900 survives only as a CLAMPED target');
-    assert.strictEqual(entry.paceCharsPerSec, 16.64,
+    assert.strictEqual(stated.maxChars, 800, 'the cap is the venue\'s, never the catalog\'s 900');
+    assert.strictEqual(stated.ceilingChars, 800, 'and so is the ceiling the packer packs to');
+    assert.strictEqual(stated.floorChars, 600, 'and the floor it merges up to');
+    assert.strictEqual(stated.targetChars, 800, 'the local 900 survives only as a CLAMPED target');
+    assert.strictEqual(stated.paceCharsPerSec, 16.64,
       'the guard is centred on the pace the rendering machine measured');
-    assert.strictEqual(entry.minCharsPerSec, 12.8);
-    assert.ok(/crucible "mac"/.test(entry._venueNote || ''),
-      'the document says WHOSE numbers these are, so a post-mortem can tell');
+    assert.strictEqual(stated.minCharsPerSec, 12.8);
+    assert.strictEqual(stated.server, 'mac', 'the band says WHOSE numbers these are');
+    assert.deepStrictEqual(higgs.higgsPrepBudget(LOCAL_900, stated), { floorChars: 600, capChars: 800 },
+      'prep does not pack to the venue\'s band');
   });
 
-  await check('with no venue a fine-tune\'s document is REFUSED, never the local catalog\'s', () => {
+  await check('a venue that states no band for a fine-tune is REFUSED, never the local catalog\'s', () => {
     // 2026-09-28 (Owen: "single source of truth. that source should be where the models are
     // served"): a fine-tune's cap, band and pace are the server's only. The local render this case
     // used to cover is deleted (docs/LEGACY-REMOVAL.md), so there is no second answer to fall to.
-    assert.throws(() => higgs.higgsVoicesDocument(LOCAL_900, { arm: 'wsl' }),
-      /no Crucible server has stated its cap, band and pace/);
+    const noBand = { ...band.statedBandForDocument(VENUE_BAND, null), floorChars: null };
+    assert.throws(() => higgs.higgsPrepBudget(LOCAL_900, noBand), /states no safe band/);
   });
 
   // ── 5. what the Listen packer does with the two answers ────────────────────

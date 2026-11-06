@@ -64,7 +64,6 @@
  *      CLI both use to state the scratch root
  */
 
-import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -81,7 +80,6 @@ import {
   getWslHiggsCondaEnv,
   wslPathToWindows,
 } from './tool-paths';
-import { componentManager } from './components/component-manager';
 import {
   getActiveToolsEnvPath,
   getToolsEnvDir,
@@ -281,86 +279,6 @@ export function toolsEnvPathIfInstalled(): string | null {
 }
 
 /**
- * A marker path for an environment that lives inside the WSL guest.
- *
- * It is never opened. The WSL spawn resolves its env by NAME (`conda run -n
- * <envName>`), and this value exists only so the Windows-side resolution has
- * something non-throwing to return for an engine whose environment is not on
- * this filesystem at all — the Listen picker's availability probe asks the same
- * question the spawn does, and it must not report "unavailable" for the one
- * arrangement that actually works.
- */
-function guestEnvMarker(name: string): string {
-  return path.join(app.getPath('userData'), 'runtime', name);
-}
-
-/**
- * Get the environment path for a specific TTS engine.
- *
- * Different TTS engines require different environments (vLLM's transformers pin
- * conflicts with the tools env's, and MLX is in neither).
- *
- * @param ttsEngine - The TTS engine name (e.g. 'orpheus', 'higgs'); omitted for
- *                    the engine-agnostic tools doors.
- */
-export function getEnvPathForEngine(ttsEngine?: string): string {
-  // Higgs never resolves to a WINDOWS env, ever — not even the "point at your own
-  // install" shape F5 and Voxtral had. Its serving stack is vLLM-Omni, which has
-  // no Windows build at all, so the only correct answer on win32 is the WSL env
-  // prefix and the only correct answer without the WSL toggle is a refusal.
-  //
-  // THE REFUSAL IS THE POINT. Falling through to the branch below would hand back
-  // the generic tools env, which does not contain vllm_omni and would fail
-  // somewhere deep in a worker with an ImportError that says nothing about WSL.
-  // This says the thing a person can act on.
-  if (ttsEngine?.toLowerCase() === 'higgs') {
-    if (process.platform === 'win32') {
-      if (!shouldUseWsl2ForHiggs()) {
-        throw new Error(
-          'Higgs runs on vLLM-Omni, which has no Windows build. Enable "WSL2 for Higgs" in ' +
-            'Settings → Higgs and install the Higgs environment there.',
-        );
-      }
-      return guestEnvMarker('higgs_wsl_env');
-    }
-    const managed = componentManager.resolveEntry('higgs-env');
-    if (managed) return managed;
-    throw new Error(
-      'Higgs TTS environment not found. Install or locate it in Settings → Higgs.',
-    );
-  }
-
-  // Orpheus runs in its OWN external/managed conda env (vLLM's deps conflict with
-  // the tools env's). The user points at it via Settings → Add-ons; we resolve
-  // through the component seam with NO silent fallback to the tools env (it lacks
-  // vLLM and would crash deep in the worker). The UI already hides the engine
-  // until installed; this guards stale jobs and saved settings.
-  //
-  // This map had two more rows — `voxtral: 'voxtral-env'` and `f5: 'f5-env'` —
-  // removed with their components on 2026-09-05 when the narration picker became
-  // Orpheus and Higgs. A saved job that still names one now falls through to the
-  // tools env, which does not have that engine either; `assertRunnableTtsEngine`
-  // refuses both ids BY NAME long before a spawn (shared/tts/engine-caps.ts).
-  const externalEngineComponent: Record<string, string> = {
-    orpheus: 'orpheus',
-  };
-  const componentId = externalEngineComponent[ttsEngine?.toLowerCase() ?? ''];
-  if (componentId) {
-    const managed = componentManager.resolveEntry(componentId);
-    if (managed) {
-      return managed;
-    }
-    const label = componentId.charAt(0).toUpperCase() + componentId.slice(1);
-    throw new Error(
-      `${label} TTS environment not found. Install or locate ${label} in Settings → Add-ons.`
-    );
-  }
-
-  // No engine — the tools doors.
-  return toolsEnvPath();
-}
-
-/**
  * NO NAMED-ENV ARM ANY MORE, and that is a deletion worth naming.
  *
  * `resolveCondaEnv` used to have a third kind beside 'relocatable' and 'prefix':
@@ -404,16 +322,8 @@ export function toUnpackedPath(p: string): string {
  * Note: for Orpheus on Windows with the WSL toggle on, and for Higgs on Windows,
  * the spawn crosses into the guest and never consults this function.
  *
- * @param ttsEngine - Optional TTS engine name; omitted for the tools doors.
  */
-export function getPythonInvocation(ttsEngine?: string): PythonInvocation {
-  if (ttsEngine) {
-    // An engine env is always somebody else's prefix (a component, or a guest
-    // marker the WSL spawn never reaches) — run it through conda.
-    const envPath = getEnvPathForEngine(ttsEngine);
-    console.log(`[NARRATOR-PATHS] Using conda env: ${envPath} for engine: ${ttsEngine}`);
-    return { command: getCondaPath(), args: ['run', '--no-capture-output', '-p', envPath, 'python'] };
-  }
+export function getPythonInvocation(): PythonInvocation {
   const env = resolveToolsEnv();
   if (env.kind === 'relocatable') {
     console.log(`[NARRATOR-PATHS] Using the managed tools env: ${env.path}`);
@@ -688,7 +598,6 @@ export const narratorPaths = {
   toolsEnvPath,
   getPythonInvocation,
   getCondaPath,
-  getEnvPathForEngine,
   normalizePath,
   setCondaPath,
   // WSL path conversion

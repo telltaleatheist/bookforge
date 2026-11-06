@@ -1,15 +1,9 @@
 /**
- * Parallel TTS Bridge - Worker pool coordinator for parallel audiobook conversion
+ * Parallel TTS Bridge - the coordinator of an audiobook render.
  *
- * Coordinates multiple ebook2audiobook worker processes to convert EPUBs to audiobooks
- * in parallel. Each worker processes an assigned sentence range, writing audio files
- * to a shared session directory. After all workers complete, the bridge triggers
- * final assembly.
- *
- * Integration with ebook2audiobook's parallel-workers branch:
- * - --prep_only: Get sentence counts without conversion
- * - --worker_mode: Process assigned range, skip assembly
- * - --sentence_start / --sentence_end: Define worker's sentence range
+ * Prep packs the book into a session directory on this machine (TypeScript,
+ * `electron/narrator/`), a Crucible server speaks it (`electron/crucible/render.ts`),
+ * and assembly joins the audio that came back over HTTP (TypeScript again).
  */
 
 import { onBridgeEvent, publishBridgeEvent } from './bridge-events';
@@ -161,13 +155,11 @@ import { getFfmpegPath, getFfprobePath } from './tool-paths';
 
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, unloadOllamaModels } from './gpu-arbiter';
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
-import { destroyWslGuestProcesses, wslPkillGraceful, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import { resolveChapterGap } from '../shared/audio/chapter-gap';
 import { stopAnalyticsError, stopSentence, type StopReason } from '../shared/queue/stop-reason';
 import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
 /* The text server's own command line, so the global `|vllm` sweep spares it. */
-import { TEXT_SERVER_PROTECT_RE } from './text-server';
 import { ownBatchPids, parseWmicProcessCsv } from '../shared/gpu/own-batch-processes';
 import {
   higgsCheckpointArm, higgsModelForJob, higgsPrepBudget,
@@ -180,7 +172,6 @@ import {
   NARRATOR_WORKER_RE,
   SERVE_PROCESS_RE,
   narratorEngineId,
-  narratorRunsInWsl,
   type NarratorEngineId,
 } from './narrator-spawn';
 
@@ -211,49 +202,6 @@ import {
   type PrepHandle,
 } from './prep-handles';
 
-/**
- * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
- * cases so prep, the lightweight worker, and the app.py worker stay in sync:
- *
- *  1. Folder-discovered custom Orpheus model. This is the BATCH path, so it resolves
- *     with `purpose: 'batch'` — a voice with both artifact forms installed renders from
- *     its MERGED copy here, while the resident streaming server takes the adapter (see
- *     OrpheusServePurpose in orpheus-models.ts). A worker renders one voice for hours and
- *     never switches, so it has nothing to gain from the shared base and everything to
- *     gain from skipping vLLM's per-token LoRA GEMMs.
- *     - MERGED  → --orpheus_model_dir + the folder's voice token (orpheus.py points
- *       every backend at the dir and skips the built-in allowlist that otherwise
- *       drops it to leah).
- *     - ADAPTER → --orpheus_base_dir + --orpheus_adapter_dir + the voice token. Still
- *       reached for a voice installed ONLY as an adapter (nothing else to serve).
- *       e2a loads the shared base and serves the LoRA per request; it hard-errors on
- *       a missing base, a malformed adapter, or a missing/'internal' voice, so the
- *       three flags always travel together.
- *  2. Catalog fine-tune / built-in voice → pass --fine_tuned verbatim.
- *
- * A third case sat between these until 2026-09-05: a user-added XTTS checkpoint,
- * pre-staged into e2a's layout and passed as --custom_model/--custom_model_dir/
- * --voice with `--fine_tuned internal`. "Add your own voice" was an XTTS feature
- * end to end (the folder held an XTTS config.json + model.pth), and it went with
- * the engine — a voice is a fine-tune produced outside the app now.
- *
- * PATHS ARE PUSHED IN THEIR NATIVE WINDOWS FORM. Every arg later passes through
- * buildWslBashCommand, which rewrites `\\wsl$\…` and `C:\…` args to WSL-native paths
- * for an Orpheus-via-WSL spawn (see its loop over condaArgs). Translating here as
- * well would be redundant, and pre-translating would break the NON-WSL spawn, which
- * gets the same array untouched.
- */
-/**
- * Which artifact form THIS job's Orpheus voice will be served from — the input to
- * VRAM sizing, because an adapter spawn allocates the resident LoRA and the punica
- * workspace OUTSIDE vLLM's reservation (see ORPHEUS_ADAPTER_HEADROOM_MB).
- *
- * Mirrors pushVoiceArgs' resolution exactly, so sizing and the spawn can never
- * disagree about what is being loaded. A non-Orpheus job, an explicit
- * --orpheus_model_dir (a merged folder by definition), and a stock/unresolvable voice
- * are all 'merged' — i.e. every pre-adapter path keeps its exact previous sizing.
- * Propagates the base-missing throw: the preflight is the right place to surface it.
- */
 
 /**
  * Kill a process and all its children (process tree)
@@ -811,14 +759,6 @@ export async function cacheSessionToBfp(
   }
 }
 
-/**
- * Cache TTS session to an LL project directory, keyed by language.
- * Unlike cacheSessionToBfp, this supports multiple sessions (one per language)
- * and does NOT delete the original (the chaining handler still needs it).
- *
- * Destination: ${projectDir}/stages/03-tts/sessions/${language}/ebook-{uuid}/
- * Returns the cached sentences path for use in assembly chaining.
- */
 /** How often the publish counts what has landed. */
 const PUBLISH_PROGRESS_MS = 2_000;
 
@@ -1945,151 +1885,14 @@ export async function cleanupStaleTempFolders(maxAgeHours: number = 24): Promise
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * DOES THIS JOB'S PYTHON RUN INSIDE THE WSL GUEST?
+ * WHERE A NEW SESSION LIVES: under the "Narrator scratch folder" setting, or the machine-local default
+ * (`defaultNarratorScratchRoot`). Host-native always: the render is on a Crucible server, and its artifacts
+ * arrive over HTTP into this directory.
  *
- * Asked by everything that is NOT the spawn: where the session directory lives,
- * whether the EPUB has to be staged, which teardown ladder a kill uses, whether a
- * detected output path needs translating back to Windows, and whether a wedged VM
- * means "do not retry".
- *
- * ── It used to lie about Higgs, and the reason expired ───────────────────────
- *
- * This was `shouldUseWslForSpawn` and it returned FALSE for Higgs on purpose:
- * every caller was also the gate in front of `spawnWithWslSupport`, and a Higgs
- * command through that function came out an Orpheus command (it rewrote argv by
- * pattern). So the lie kept Higgs away from it, and each site that genuinely
- * needed the truth had to say `|| (isHiggsJob(...) && higgsRunsInWsl())` and
- * remember to.
- *
- * `spawnWithWslSupport` is gone, so the lie has no beneficiary and several sites
- * were quietly wrong for Higgs: a Higgs job's guest workers were not
- * session-torn-down, its retake did not stage session state into the guest, and a
- * wedged VM did not stop it retrying. It now answers the question it asks.
- *
- * Delegates to `narratorRunsInWsl`, so the answer the app acts on and the arm the
- * spawn actually takes are the same computation rather than two that agree today.
+ * EXPORTED for `tools/test-crucible-render-session.js`.
  */
-function jobRunsInWsl(ttsEngine?: string): boolean {
-  const id = ttsEngine?.toLowerCase();
-  if (id !== 'orpheus' && id !== 'higgs') return false;
-  // Prep is the one phase left, and it takes the engine's arm (the worker and retake phases did too).
-  return narratorRunsInWsl(id);
-}
-
-/**
- * DOES THIS RENDER'S PREP — and therefore its SESSION — live in the WSL guest?
- *
- * `jobRunsInWsl` answers for the ENGINE on this machine. A render whose
- * generation step runs on a Crucible server (`generation-venue.ts`) does not
- * run the engine on this machine at all, so the engine's toggle says nothing
- * about it: the session is created on a host-native path from the start, the
- * prep runs here in the tools env (`NarratorSpawnRequest.onHost`), the render's
- * artifacts arrive over HTTP into that directory, and assembly reads it in
- * place. Nothing in such a run enters the guest — not the prep, not the session,
- * not a copy out of it. See `prepareSession`.
- *
- * The legacy local venue keeps the engine's answer exactly as it was.
- *
- * EXPORTED for `tools/test-crucible-render-session.js`, which drives it with
- * the real config reader behind `jobRunsInWsl` and both venues.
- */
-export function prepRunsInWsl(venue: GenerationVenue, ttsEngine?: string): boolean {
-  if (venue.where === 'crucible') return false;
-  return jobRunsInWsl(ttsEngine);
-}
-
-/**
- * THE SAME QUESTION FOR A LIVE SESSION — the one every teardown, mount and
- * guest-clearing gate must ask, so a Crucible-venue session is never torn down
- * in a guest it never entered, never has a drive mounted for it there, and
- * never waits for a guest worker that does not exist.
- *
- * A session with no venue is one that never generates (assembly-only), and for
- * it the engine's answer is what it always was.
- */
-function sessionRunsInWsl(session: ConversionSession): boolean {
-  if (session.venue?.where === 'crucible') return false;
-  return jobRunsInWsl(session.config.settings.ttsEngine);
-}
-
-/** Where a new session is created — see `sessionHomeFor`. */
-export type SessionHome =
-  | {
-      inGuest: true;
-      /** The guest sessions root the session (and the staged EPUB) go under. */
-      guestRoot: string;
-      /** The session dir as the GUEST spells it (`/home/...`). */
-      sessionDir: string;
-      /** The same directory as the host reads it (`\\wsl$\...`). */
-      sessionDirForReading: string;
-    }
-  | {
-      inGuest: false;
-      /** A host-native path under the stated scratch root. */
-      sessionDir: string;
-      sessionDirForReading: string;
-    };
-
-/**
- * WHERE A NEW SESSION LIVES, decided from the venue and the engine.
- *
- * The guest's filesystem for a legacy WSL prep, so the session dir and the
- * staged EPUB are somewhere the spawned python can open; a host-native path
- * under `narratorScratchRoot()` otherwise — and "otherwise" INCLUDES EVERY
- * CRUCIBLE-VENUE RENDER, whatever the engine's WSL toggle says
- * (`prepRunsInWsl`). Until 2026-09-14 this asked `jobRunsInWsl` alone, so a
- * Higgs book bound for the Mac's Crucible was prepped inside the guest, its
- * session written to ext4, the artifacts downloaded into a `\\wsl$` path, and
- * the whole session then copied back out — onto a library share the guest could
- * not write. The render had already finished. Now the session is native from the
- * start and no step of such a run enters WSL.
- *
- * Lifted out of `prepareSession` (which spawns) so that
- * `tools/test-crucible-render-session.js` can drive the shipped placement with
- * the real config reader and both venues.
- */
-export function sessionHomeFor(
-  venue: GenerationVenue,
-  ttsEngine: string | undefined,
-  sessionId: string,
-): SessionHome {
-  if (prepRunsInWsl(venue, ttsEngine)) {
-    // THE COPY-OUT DESTINATION, CHECKED BEFORE THE RENDER. After a legacy WSL
-    // render `normalizeWslSessionToWindows` copies the session from ext4 onto
-    // the scratch root, and `narratorScratchRoot()` refuses by name — naming
-    // the "Narrator scratch folder" setting — when that root's volume is not
-    // mounted. That answer used to arrive AFTER the whole book had rendered;
-    // asked here, it arrives before prep spawns.
-    //
-    // RULING OWED: a scratch root on a NETWORK drive is deliberately NOT refused
-    // here. The copy-out routes by a probed fact (`copyDirOutOfWsl`: the guest
-    // copies when it has the drive mounted, Windows copies through \\wsl$ when
-    // it does not), so a Z:\ root works on either road; the 2026-09-14 failure
-    // on exactly that root was the probe (`test -d` on a stale mount point),
-    // fixed in `wslSeesDrive`. Refusing a network root would refuse a root
-    // somebody deliberately put on the NAS. (The DEFAULT root has been
-    // machine-local since 2026-09-21, so this only ever concerns a stated one.)
-    narratorScratchRoot();
-
-    // The session is created in the GUEST sessions root — BookForge's own
-    // directory inside WSL (`<guest home>/bookforge-sessions`), not the `tmp/`
-    // of an ebook2audiobook checkout, which is where it went until Phase 6.
-    const guestRoot = getWslSessionsRoot();
-    const sessionDir = `${guestRoot}/ebook-${sessionId}`;
-    return {
-      inGuest: true,
-      guestRoot,
-      sessionDir,
-      // Convert to Windows UNC path for reading from Node.js
-      sessionDirForReading: wslToWindowsPath(sessionDir),
-    };
-  }
-  // Native session dir — the "Narrator scratch folder" setting, or the
-  // machine-local default (`defaultNarratorScratchRoot`).
-  // Must match where the spawned narrator writes it (buildToolsSpawnEnv passes
-  // the same resolution as NARRATOR_SESSIONS_ROOT).
-  const sessionDir = path.join(narratorScratchRoot(), `ebook-${sessionId}`);
-  return { inGuest: false, sessionDir, sessionDirForReading: sessionDir };
+export function newSessionDir(sessionId: string): string {
+  return path.join(narratorScratchRoot(), `ebook-${sessionId}`);
 }
 
 /**
@@ -2121,59 +1924,6 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-/**
- * WSL guest teardown — all the actual signalling/escalation lives in wsl-lifecycle.ts.
- * The rules that keep the VM alive:
- *   - NEVER SIGKILL a guest GPU process (force-killing a process kernel-stuck in a dxg
- *     GPU wait is what wedges the whole WSL VM until a reboot).
- *   - Escalation past SIGTERM is `wsl.exe -t <distro>` — VM terminate releases the GPU
- *     at the hypervisor level and cannot leave a half-dead process behind.
- *   - Kills are SESSION-SCOPED: the old global "narrator.compat.(worker|app)" pattern once
- *     caught a freshly resumed job's worker 7s into vLLM init (the wedge trigger).
- *   - The wsl.exe wrapper on Windows is only taskkilled AFTER the guest process is
- *     confirmed dead (killing the wrapper first severed the in-guest pkill mid-flight).
- */
-
-/** Session-scoped guest kill pattern: matches this job's narrator batch doors
- *  (their argv contains `--session <id>`), never another session's worker and never
- *  the persistent Listen server, which carries no session id and is a different
- *  module. Falls back to the global narrator pattern only when the session id is
- *  missing or unsafe to put in a shell.
- *
- *  THE OLD PATTERNS MATCHED NOTHING after the cut-over: `(worker|app)\.py` does not
- *  appear in `python -u -m narrator.compat.worker`, and neither does
- *  `ebook2audiobook.*\.py`. A kill pattern that matches nothing does not fail — the
- *  sweep reports success and leaves a vLLM process holding ~6 GB of VRAM, which is
- *  the shape that wedges the WSL VM and the shape that makes the next job refuse to
- *  start for lack of memory. */
-function wslSessionPattern(sessionId: string | undefined | null): string {
-  if (sessionId && /^[\w-]+$/.test(sessionId)) return `${NARRATOR_BATCH_RE}.*${sessionId}`;
-  return NARRATOR_BATCH_RE;
-}
-
-/**
- * Tear down ONE session's guest workers: cooperative SIGTERM (worker.py installs a
- * handler and exits itself, releasing the GPU from inside) → verified wait →
- * VM terminate if anything refuses to die. AWAITED by callers so the outcome is real,
- * not fire-and-forget. Default 60s grace: during vLLM init/graph capture Python defers
- * signal delivery until native code returns, which can take tens of seconds.
- */
-async function destroyWslSessionWorkers(session: ConversionSession, label: string, graceMs = 60000): Promise<void> {
-  await destroyWslGuestProcesses(wslSessionPattern(session.prepInfo?.sessionId), { graceMs, label });
-}
-
-/** Close the Windows-side wsl.exe wrapper. Only call AFTER the guest process is
- *  confirmed dead (or the VM terminated) — then it's just closing a pipe host. */
-function killWslWrapper(proc: ChildProcess, label: string): void {
-  const pid = proc?.pid;
-  if (!pid) return;
-  try {
-    execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
-    console.log(`[PARALLEL-TTS] ${label}: closed wsl.exe wrapper (PID ${pid})`);
-  } catch {
-    // already exited with the guest — the normal case
-  }
-}
 
 /**
  * Safety-net reaper for orphaned BATCH audiobook workers (worker.py / app.py) of a
@@ -2211,9 +1961,6 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
           { stdio: 'ignore', timeout: 8000 }
         );
       } catch { /* none matched */ }
-      // WSL-hosted workers are handled by destroyWslSessionWorkers (session-scoped
-      // SIGTERM → verify → VM terminate) — NEVER pkill -9 in the guest: force-killing
-      // a process kernel-stuck in a dxg GPU wait is what wedges the entire WSL VM.
       return;
     }
     // macOS / Linux: find candidate PIDs by session id, then SIGKILL only those whose
@@ -2862,7 +2609,7 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { narratorScratchRoot, narratorScratchRootIfAvailable, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslToWindowsPath, impliedExportDirOf, renderSessionDirOf } from './narrator-paths';
+import { narratorScratchRoot, narratorScratchRootIfAvailable, getWslDistro, windowsToWslPath, wslToWindowsPath, impliedExportDirOf, renderSessionDirOf } from './narrator-paths';
 
 export function isHiggsJob(settings: ParallelTtsSettings): boolean {
   return settings.ttsEngine === 'higgs';
@@ -3209,10 +2956,7 @@ interface ConversionSession {
   crucibleRemovedLine?: string;
   /**
    * WHERE THIS SESSION'S GENERATION STEP RUNS — decided once, before prep, and
-   * carried here so every later question ("does this session live in the WSL
-   * guest?", "is there a guest worker to tear down?", "must the session be
-   * copied out of WSL before assembly?") is answered from the same record the
-   * launch was. `sessionRunsInWsl` reads it.
+   * carried here so every later question is answered from the same record the launch was.
    *
    * Absent only on a session that never generates (assembly-only).
    */
@@ -3735,36 +3479,20 @@ export async function killAllWorkers(
       clearInterval(session.watchdogTimer);
     }
 
-    if (sessionRunsInWsl(session)) {
-      // ONE session-scoped guest teardown covers every worker of this session:
-      // cooperative SIGTERM → verified wait → VM terminate for a survivor (never
-      // SIGKILL — that's the WSL wedge trigger). Shorter grace: the app is quitting.
-      await destroyWslSessionWorkers(session, `quit ${jobId}`, 10000);
-      // Only now close the Windows-side wsl.exe wrappers (harmless post-exit).
-      for (const worker of session.workers) {
-        if (worker.process) killWslWrapper(worker.process, `worker ${worker.id}`);
+    // Kill all worker processes (including child process trees)
+    for (const worker of session.workers) {
+      if (worker.process && !worker.process.killed) {
+        killProcessTree(worker.process, `worker ${worker.id}`);
       }
-      // Assembly runs NATIVELY on Windows for WSL sessions (see runAssembly) — a
-      // normal process-tree kill both covers it and closes any legacy WSL wrapper.
-      if (session.assemblyProcess && !session.assemblyProcess.killed) {
-        killProcessTree(session.assemblyProcess, 'assembly');
-      }
-    } else {
-      // Kill all worker processes (including child process trees)
-      for (const worker of session.workers) {
-        if (worker.process && !worker.process.killed) {
-          killProcessTree(worker.process, `worker ${worker.id}`);
-        }
-      }
-      // Kill assembly process if running
-      if (session.assemblyProcess && !session.assemblyProcess.killed) {
-        killProcessTree(session.assemblyProcess, 'assembly');
-      }
+    }
+    // Kill assembly process if running
+    if (session.assemblyProcess && !session.assemblyProcess.killed) {
+      killProcessTree(session.assemblyProcess, 'assembly');
     }
 
     // Safety net: reap any leftover NATIVE batch workers for this job (handle lost /
     // signal didn't take). Session-id-scoped, so the persistent Listen server is never
-    // hit. The WSL side is already covered by the pattern-based teardown above.
+    // hit.
     reapOrphanedSessionWorkers(session.prepInfo?.sessionId);
   }
 
@@ -3841,11 +3569,6 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
 // Session Preparation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Run e2a with --prep_only to get total sentence count and session info
- * We generate our own session ID and read the session-state.json file after completion
- * (avoids fragile stdout parsing)
- */
 /**
  * THE CHUNK LENGTHS THIS BOOK IS PACKED TO, ASKED OF THE MACHINE THAT WILL SPEAK IT.
  *
@@ -3976,10 +3699,9 @@ export async function prepareSession(
   epubPath: string,
   settings: ParallelTtsSettings,
   /**
-   * WHERE THE RENDER RUNS, decided before this is called. It decides where the
-   * session is created and which python preps it — see `prepRunsInWsl`. Passed
-   * rather than re-decided here because the launch points remember it on the
-   * session, and one render must have one answer.
+   * WHERE THE RENDER RUNS, decided before this is called. Passed rather than
+   * re-decided here because the launch points remember it on the session, and one
+   * render must have one answer.
    */
   venue: GenerationVenue,
   /**
@@ -4000,7 +3722,6 @@ export async function prepareSession(
   prepJobId?: string  // Used only to address first-run model-download progress notes
 ): Promise<PrepInfo> {
   const sessionId = crypto.randomUUID();
-  const engine = narratorEngineFor(settings);
 
   // THE ENGINE IS NOT ON THIS MACHINE, and prep is TypeScript: nothing here asks for a Python.
   // There WAS an `else if (isHiggsJob(settings))` here that ran the Higgs doctor —
@@ -4010,22 +3731,12 @@ export async function prepareSession(
   // its capability record and its own refusals. Asking here would be this app's
   // second opinion about somebody else's card.
 
-  // WHERE THE SESSION LIVES — `sessionHomeFor`: the guest for a legacy WSL prep,
-  // a host-native path for everything else, every Crucible-venue render included.
-  //
-  // The `|| (isHiggsJob(...) && higgsRunsInWsl())` that used to be needed here is
-  // gone: `jobRunsInWsl` answers for Higgs now. It did not before, because every
-  // caller was also the gate in front of `spawnWithWslSupport`, and a Higgs command
-  // through that function came out an Orpheus command. See jobRunsInWsl's header.
-  const home = sessionHomeFor(venue, settings.ttsEngine, sessionId);
-  const sessionDirForReading = home.sessionDirForReading;
+  const sessionDirForReading = newSessionDir(sessionId);
   /*
    * THE DIRECTORY A STOP HAS TO TAKE WITH IT, noted before anything can write
    * into it. narrator's prep writes `session-state.json` in here, and that file
    * is what a resume and the clean-session sweep read a session back from — so
    * a prep killed half-way must not leave one behind (`prep-handles.ts`).
-   * The READABLE path: for a WSL prep that is the UNC one, because this process
-   * is the one that deletes it.
    */
   handle.noteSession(sessionDirForReading);
   handle.throwIfCancelled('before the session was created');
@@ -4433,11 +4144,9 @@ const MAX_WORKER_RETRIES = 2;  // Maximum retry attempts per worker
  * two backends do not produce the same audio, so half a book in each is an
  * audible seam no test asserts.
  *
- * ASKED BEFORE PREP (2026-09-14), because the answer also decides WHERE the
- * session is created and which python preps it — `prepareSession`,
- * `prepRunsInWsl`: a Crucible-venue render is host-native from the start and
- * never enters WSL. The fresh launch points ask this and carry the venue into
- * their session literal; a resume asks `decideAndRememberVenue`.
+ * ASKED BEFORE PREP (2026-09-14), because a book is packed to the band of the machine
+ * that will speak it. The fresh launch points ask this and carry the venue into their
+ * session literal; a resume asks `decideAndRememberVenue`.
  *
  * There is no local fallback. When the legacy switch is off and no server can
  * be chosen, this THROWS with the reason — before a session directory or a
@@ -5262,13 +4971,6 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // All three are gone. The one that mattered is preserved as the DEFAULT rather
   // than as a special case.
   //
-  // AND `normalizeWslSessionToWindows` STAYS — it is what makes this possible.
-  // Orpheus prep and render still run in WSL, so the session is written to ext4;
-  // that function copies it onto a Windows path after generation and repoints
-  // prepInfo. Without it a native assembly would be reading the \\wsl$ 9p mount,
-  // which is slow enough to dominate the job, or nothing at all when WSL is down.
-  const settings = config.settings;
-
   // The silence between chapters. Resolved once, so the number on the command
   // line is the number the log names — the caller's, or BookForge's default when
   // it did not choose (which is not the same as 0).
@@ -5436,18 +5138,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       // Format 3: "created: /path/file.m4b"
       const outputMatch = output.match(/(?:output[^']*to|saved to|created|wrote)[:\s]+(['"]?)([\/~][^'":\n]+\.m4b)\1/i);
       if (outputMatch) {
-        let detectedPath = outputMatch[2].trim();
-        // A guest job names its output as the GUEST sees it, so it is converted
-        // whichever guest form it came back as — the `/mnt/` half of that test
-        // lives inside the converter since FIX-8, and a caller that repeats it
-        // leaves the other half silently unconverted. What is left here is the
-        // converter's own precondition: the match above also admits a `~`-rooted
-        // string, which is neither guest-absolute nor Windows.
-        if (jobRunsInWsl(settings.ttsEngine) && detectedPath.startsWith('/')) {
-          detectedPath = wslToWindowsPath(detectedPath);
-          console.log('[PARALLEL-TTS] Converted WSL output path to Windows:', detectedPath);
-        }
-        outputPath = detectedPath;
+        outputPath = outputMatch[2].trim();
       }
     });
 
@@ -5757,20 +5448,6 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
 // Stage bars
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * The ordered stage bars for a TTS run.
- *
- * A TTS job is four phases with wildly different shapes, and until now the renderer
- * derived them from `phase` alone — which meant "Preparing" flipped to 100% the
- * instant a worker spawned, and everything genuinely slow (extracting the book,
- * loading 6.9 GB of weights, then rendering) collapsed into one bar that read 0%
- * for its first fifteen minutes.
- *
- * Built fresh from session state on every emit rather than mutated through a
- * StageTracker: each input is already monotonic (prep finishes once, each worker
- * loads once, the rendered set only grows), so there is no accumulated state worth
- * keeping — and a rebuilt list can't drift out of sync with the session it describes.
- */
 /**
  * Each TTS stage's NORMALIZED share of the run (sums to 1). The renderer uses these
  * to price stages it has not reached yet — without them the only assumption available
@@ -6714,7 +6391,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
    * models first, and no longer waits behind `external-gpu-job.lock`
    * (`queue-engine.ts`, `pump`).
    *
-   * `sessionRunsInWsl` is the precedent for the shape: it gates on the venue so
+   * It gates on the venue so
    * a Crucible session "is never torn down in a guest it never entered". Same
    * rule, different resource — never hold a card it never touches.
    *
@@ -8349,32 +8026,6 @@ export async function startParallelConversion(
 }
 
 /**
- * Headless single-range batch render for the CLI (`bookforge-tts --mode tts`).
- *
- * Drives the REAL audiobook path with zero reimplementation: `prepareSession` packs
- * the text into generation chunks (~300 chars for Orpheus) and creates the e2a
- * session; a single `worker.py` renders every chunk (WSL-safe for Orpheus, VRAM-tier
- * sized by `acquireGpuForJob`); each worker's own close handler drives
- * `checkAllWorkersComplete`, whose `skipAssembly` branch runs
- * `normalizeWslSessionToWindows` (moves the WSL output onto a Windows-native path) and
- * then deletes the session. We stop there — the caller concatenates the per-sentence
- * FLACs. Every inter-clip gap is already baked into each `{i}.flac` by orpheus.py
- * `_save_audio`, so a plain numeric-order concat is byte-faithful to what assembly
- * would join.
- *
- * NO IPC (outside the app every `rendererSend` reaches no one; `emitComplete` releases
- * the GPU and returns early), NO assembly, NO powerSaveBlocker, NO persistent state.
- * Fails loud on every missing precondition (NO FALLBACKS): 0 chunks, GPU preflight
- * shortfall, or an incomplete sentence set all throw with a naming message.
- *
- * Returns the directory holding the per-sentence FLACs and the chunk count.
- */
-/** Copy already-rendered {i}.flac (i < total, >1 KB) from a prior session's cache into
- *  a fresh session's sentences dir, so the worker SKIPS them and renders only what's
- *  missing (resume). Prep is deterministic for the same input+settings, so the sentence
- *  index lines up. Copying (vs pointing) keeps assembly reading one dir. Returns the
- *  number seeded. */
-/**
  * TEST MODE, APPLIED THE SAME WAY BY EVERY DOOR — cap the chunks a run renders.
  *
  * ── Why this is a function and not four lines twice ─────────────────────────
@@ -8718,37 +8369,21 @@ export async function stopParallelConversion(
     }
   }
 
-  if (sessionRunsInWsl(session)) {
-    // ONE session-scoped guest teardown, AWAITED: cooperative SIGTERM (the worker
-    // exits itself between sentences, releasing the GPU) → verified wait → VM
-    // terminate for a survivor. Never SIGKILL (the WSL wedge trigger). Awaiting also
-    // means stopAndCacheParallelConversion flushes the cache only after files are
-    // stable — the old fire-and-forget kill raced the flush.
-    await destroyWslSessionWorkers(session, `stop ${jobId}`);
-    for (const worker of session.workers) {
-      if (worker.process) killWslWrapper(worker.process, `worker ${worker.id}`);
+  // Kill all worker processes (including child process trees like vLLM)
+  for (const worker of session.workers) {
+    if (worker.process) {
+      killProcessTree(worker.process, `worker ${worker.id}`);
     }
-    // Assembly runs NATIVELY on Windows for WSL sessions — normal tree kill.
-    if (session.assemblyProcess) {
-      killProcessTree(session.assemblyProcess, 'assembly');
-    }
-  } else {
-    // Kill all worker processes (including child process trees like vLLM)
-    for (const worker of session.workers) {
-      if (worker.process) {
-        killProcessTree(worker.process, `worker ${worker.id}`);
-      }
-    }
-    // Kill assembly process if running
-    if (session.assemblyProcess) {
-      killProcessTree(session.assemblyProcess, 'assembly');
-    }
+  }
+  // Kill assembly process if running
+  if (session.assemblyProcess) {
+    killProcessTree(session.assemblyProcess, 'assembly');
   }
 
   // Safety net: reap any NATIVE batch workers for THIS job whose handle was lost
   // (retry/resume race, or a signal that didn't take), which the loop above couldn't
   // reach. Scoped to this job's session id — never touches the persistent
-  // Listen/extension server. The WSL side is covered by the pattern teardown above.
+  // Listen/extension server.
   reapOrphanedSessionWorkers(session.prepInfo?.sessionId);
 
   // Clean up any orphaned vLLM processes that escaped the process tree
@@ -9204,7 +8839,7 @@ function normalizePathForComparison(p: string): string {
  * the main thread, once per process, for a directory that does not exist.
  *
  * The key itself goes with it. A machine that genuinely still has sessions in
- * the old root moves them to the root `getWslSessionsRoot()` names, which is
+ * the old root moves them to the root `getWslSessionsRoot` names, which is
  * what the refusal told people to do.
  */
 
@@ -9832,15 +9467,6 @@ export async function listResumableSessions(): Promise<Array<{
 }
 
 /**
- * Resolve a resumable session from the durable project cache
- * (${bfpPath}/stages/03-tts/sessions/{lang}/ebook-{uuid}/). This is the authoritative
- * sentence store written by cacheSessionToProject on stop/completion, always on
- * Windows NTFS. Preferred over the persisted tmp/WSL processDir, which may have been
- * removed (completion) or be unreachable when WSL isn't running (Orpheus) — the exact
- * condition that made Orpheus resumes silently restart at 0 while native XTTS worked.
- * Returns null (caller keeps its existing resolution) when there's no usable cache.
- */
-/**
  * IS THERE A PARTIAL RENDER CACHED UNDER THIS PROJECT, and how far did it get?
  *
  * The ONE answer to that question. The queue step's auto-resume (mode 2.5) asks
@@ -10325,9 +9951,7 @@ export async function resumeParallelConversion(
 
   // A resume of a remote render goes back to the SAME server (item 2.4): the
   // first run wrote its choice into the settings session_state.json persists,
-  // so this reads a name rather than deciding again (§4.3). Asked BEFORE the
-  // GPU and the guest gates below, which read the answer (`sessionRunsInWsl`):
-  // a Crucible-venue resume mounts nothing in WSL and waits for no guest worker.
+  // so this reads a name rather than deciding again (§4.3).
   let venue: GenerationVenue;
   try {
     venue = await decideAndRememberVenue(session);
