@@ -8,7 +8,7 @@ stopped, etc. and pass it to the training agent."*
 
 The guard already says a take was the WRONG LENGTH; it cannot say what the model
 actually did with the words. This does: it reads a job's reject directory
-(`HIGGS_REJECT_DIR`, written by `engine/higgs/truncation.py::keep_reject` - one
+(`HIGGS_REJECT_DIR`, written by Crucible's `crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py::keep_reject` - one
 wav + one json per discarded take, plus an append-only `events.jsonl`),
 transcribes every wav, and aligns the transcript to the chunk's own text.
 

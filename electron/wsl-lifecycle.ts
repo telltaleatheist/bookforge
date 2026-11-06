@@ -156,8 +156,7 @@ export async function isWslAlive(): Promise<boolean> {
 }
 
 /** Synchronous read of the last cached probe result without triggering a new probe.
- *  Kicks off a background refresh when stale. For sync call sites (orpheus-models fs
- *  guards) that cannot await. */
+ *  Kicks off a background refresh when stale. For sync call sites that cannot await. */
 export function isWslAliveCached(): boolean {
   if (isWslWedged()) return false;
   if (Date.now() - lastProbeAt >= LIVENESS_TTL_MS) {

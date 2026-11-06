@@ -1,5 +1,5 @@
 /**
- * One prep, in a worker thread. The port of `route_prep`'s last half: narrator's own refusals leave as a
+ * One prep, in a worker thread. The port of the last half of narrator's prep route: narrator's own refusals leave as a
  * sentence, and anything else as the failure the door always printed.
  */
 

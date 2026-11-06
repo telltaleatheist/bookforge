@@ -425,7 +425,7 @@ export interface CrucibleStreamingEngineDeps {
  * verbatim off the row the band was built from.
  *
  * ALL THREE OR NONE is narrator's own rule for this triple
- * (`python/narrator/engine/higgs/truncation.py`, `_pace_tracker_for`: the
+ * (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py`, `_pace_tracker_for`: the
  * voice's own pace and band "when the catalog measured them — reads all three or
  * none", else the engine's default band), and it is what a Crucible enforces on
  * the manifest a row is built from (`crucible/voices.py` `_check_pace`: the

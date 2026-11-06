@@ -11,8 +11,7 @@
  * rendered its chunks on the Mac's Crucible correctly, then FAILED. The session
  * had been created inside the WSL guest — `prepareSession` asked `jobRunsInWsl`,
  * which answers for the ENGINE, and the Higgs engine's env is a guest env — so
- * the artifacts were downloaded into a `\\wsl$` path and
- * `normalizeWslSessionToWindows` then had to copy the whole session onto the
+ * the artifacts were downloaded into a `\\wsl$` path and a normaliser then had to copy the whole session onto the
  * scratch root. The scratch root was `<library>/tmp` on the NAS share (Z:) then
  * (it is machine-local since 2026-09-21), the
  * guest's `/mnt/z` was a stale root-owned mount point that `test -d` called
@@ -25,21 +24,11 @@
  *
  *  1. No venue, engine or toggle can place a render in the guest: the bridge has no branch that could.
  *  2. `newSessionDir` places the session on a host-native path under the stated scratch root.
- *  3. The prep spawn is built `onHost`: native arm, the TOOLS env's python,
- *     `-m narrator.compat.app`, never `wsl.exe`. Refused by name on any other
- *     phase and when combined with a guest env.
- *  4. `hostPrepRefusal` MEASURES the tools env before anything spawns — against
- *     the real one where this machine has it, and against a python that is not
- *     one, which must refuse naming the interpreter.
- *  5. The SHIPPED completion tail, lifted from the compiled bridge, does NOT call
- *     `normalizeWslSessionToWindows` for a Crucible-venue session, and the
- *     normaliser refuses such a session by name if anything hands it one.
- *  6. The scratch-root refusal — `narratorScratchRoot()` naming the "Narrator
- *     scratch folder" setting — is reached BEFORE a legacy WSL prep spawns, and
- *     its sentence is pinned.
+ *  3. Prep is TypeScript: `prepareSession` asks no Python.
+ *  4. The scratch-root refusal — `narratorScratchRoot()` naming the "Narrator
+ *     scratch folder" setting — has its sentence pinned.
  *
- * No GPU, no model, no WSL call: the fake tools env is a directory with an
- * empty `python.exe`, and the one real spawn (item 4) is a CPU import probe.
+ * No GPU, no model, no WSL call.
  */
 'use strict';
 const assert = require('assert');

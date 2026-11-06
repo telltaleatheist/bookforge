@@ -297,9 +297,7 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
      * The three sampling fields this preset used to carry (temperature 0.6,
      * top-p 0.9, repetition penalty 1.1) are gone with the field itself — they
      * were XTTS's controls, INERT for Orpheus, which fixes its sampling inside
-     * the engine class. deathstalker's real repetition penalty lives where the
-     * engine reads it: `backends.vllm.repPenalty` in
-     * electron/data/orpheus-models.json.
+     * the engine class.
      */
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',

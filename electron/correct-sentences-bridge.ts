@@ -330,8 +330,7 @@ export function displayTextForStoredChunk(stored: string): string {
  * user edits carries none. The markers are not decoration: `[heading]` is what
  * makes the row a chapter marker and bolds its VTT cue, `[item]` is a list-item
  * run boundary, and `[pause:X]`/`[break]` are the chunk's realized silence
- * (`python/narrator/engine/orpheus/prompt.py:_classify_gap`, and `gaps.json` for
- * an engine that does not pad). They belong to the chunk, not to the words, so a
+ * (`gaps.json`). They belong to the chunk, not to the words, so a
  * correction keeps the row's opening and closing marker runs and replaces only
  * what lies between them.
  *
@@ -764,7 +763,7 @@ export interface CommitParams {
  * the worker's own resume, and this door all read it — so committing new audio without
  * it left the audio saying one thing and the transcript another, permanently, and a
  * later re-render of that index silently restored the OLD reading. e2a had this hole
- * too (`python/narrator/render/retake.py`, "AN EDITED SENTENCE'S TEXT IS NOT WRITTEN
+ * too, and narrator's own retake said so ("AN EDITED SENTENCE'S TEXT IS NOT WRITTEN
  * BACK ANYWHERE"); it is closed here, at the one moment a take becomes the book.
  *
  * The audio is swapped FIRST and the text second: a failed text write leaves a

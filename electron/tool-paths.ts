@@ -63,10 +63,7 @@ export interface ToolPathsConfig {
   clipforgeRoot?: string;
 
   // Custom Orpheus models directory (folder-discovered voices live here). Empty =
-  // default <userData>/runtime/orpheus-models. On Windows+WSL, point this at a
-  // WSL-native location exposed as a UNC path (e.g. \\wsl$\Ubuntu\home\<user>\
-  // orpheus-models) so the worker loads the model off ext4 instead of the slow
-  // /mnt/c 9p mount — the WSL spawn translates the UNC path to a native /home/... path.
+  // default <userData>/runtime/orpheus-models. Orpheus is retired and nothing renders from here.
   orpheusModelsDir?: string;
 
   /*
@@ -122,8 +119,7 @@ export interface ToolPathsConfig {
    * `useWsl2ForAllTts` IS DELETED (2026-09-14, audit section 3.16). Its reader
    * was `shouldUseWsl2ForAllTts()`, which was a hard-wired `return false` —
    * so the key could be set and could never be true, and two call sites were
-   * spending a branch on it. Orpheus is the one engine that ever needed the
-   * guest, and `useWsl2ForOrpheus` is the toggle that says so.
+   * spending a branch on it.
    */
   wslDistro?: string;              // WSL distro name (e.g., "Ubuntu")
   wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/anaconda3/bin/conda")
@@ -154,7 +150,7 @@ export interface ToolPathsConfig {
   // which has no Windows build at all — the page-reader VLM's situation, not
   // Orpheus's. So there is no native fallback to be slower than, and the toggle
   // is what decides whether the engine can run at all rather than how fast.
-  useWsl2ForHiggs?: boolean;       // Route Higgs jobs through WSL (Windows only)
+  useWsl2ForHiggs?: boolean;       // Set by builds that rendered Higgs in WSL. Read only by the startup sweep of the guest sessions root.
   wslHiggsCondaEnv?: string;       // Conda env name for Higgs in WSL (default: "higgs3")
 
   // Page reading (Convert to EPUB) served from WSL. Same shape as the Orpheus
@@ -338,13 +334,12 @@ export function saveConfig(config: ToolPathsConfig): void {
  * send one.
  *
  * Settings' tool-path draft is a `Record<string, string>` — every checkbox in it
- * writes the STRING `'true'` or `''` (see `toggleWsl2ForOrpheus`), and
+ * writes the STRING `'true'` or `''`, and
  * `tool-paths:update-config` passes what it is given straight through. So a
- * checked box stored `"useWsl2ForOrpheus": "true"`, while every reader asks
+ * checked box stored `"useWsl2ForHiggs": "true"`, while every reader asks
  * `=== true`, and `'true' !== true`: the toggle appeared on and did nothing.
  * It has been invisible because the one machine using it has a BOOLEAN in its
- * tool-paths.json, written by some earlier path — flip that switch in the UI
- * once and Orpheus silently stops routing through WSL.
+ * tool-paths.json, written by some earlier path.
  *
  * Coerced here, at the boundary where the string actually arrives, rather than
  * by loosening the readers: `=== true` is the correct question to ask of a

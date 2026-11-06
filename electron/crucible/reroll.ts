@@ -44,7 +44,7 @@
  * enough, "because narrator's sampling is unseeded — which is what makes a
  * re-roll a re-roll". **That premise was false and the feature was broken by
  * it.** `HiggsConfig.seed` defaults to 1234
- * (`python/narrator/engine/higgs/config.py`) and `_seed_for` returns
+ * (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/config.py`) and `_seed_for` returns
  * `seed + index`, so every chunk is seeded deterministically; the only thing
  * that moves the draw is the rung, which shifts the seed by
  * `TAKE_SEED_STRIDE * take` (`engine/higgs/truncation.py:in_take_lane`).

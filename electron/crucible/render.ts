@@ -12,7 +12,7 @@
  * download, and the same directory afterwards.**
  *
  * It replaces the GENERATION step and nothing else. Prep runs before it exactly
- * as it does today, and `normalizeWslSessionToWindows`, the coverage audit, the
+ * as it does today, and the coverage audit, the
  * RVC pass, the denoise pass and assembly run after it exactly as they do
  * today — they read `<index>.flac` out of `prepInfo.chaptersDirSentences` and
  * cannot tell which machine wrote them. That is the whole design: the bytes
@@ -232,7 +232,7 @@ export class CrucibleRenderRefused extends Error {
  *    checkpoint (`higgsModelForRender` derives the id `<base>+<slug>` from
  *    `settings.higgsOverride`). Those weights are a directory on this machine;
  *    a Crucible pulls a published artifact at a pinned revision and has no way
- *    to be handed one. Publish it and add a manifest, or render it locally.
+ *    to be handed one. Publish it and add a manifest.
  *  - `crucible_voice_unmapped` — anything else, including the four
  *    `zeroshot-*` rows. **RULING OWED:** Crucible's `zeroshot` voice is
  *    `clips = "from-request"`, meaning a job naming it must carry the reference

@@ -135,19 +135,8 @@ export interface HiggsReferenceClip {
    *   ABSOLUTE — HOST-NATIVE, the form the machine BookForge is running on
    *     uses. For a clip that lives anywhere else.
    *
-   * Either way it is translated for the guest at document-write time, per
-   * spawn arm (`higgsVoicesDocument`), not stored pre-translated: a WSL-native
-   * path is right on the Windows+WSL arm by accident and meaningless on
-   * macOS/Linux, where there is no guest for it to be native to. A NAME must
-   * EXIST in the models area — `refuseMissingReferenceClip`, at document-write
-   * time, before any server is started, naming the folder to copy into. (The
-   * picker checks the SHAPE only, the same as it does for a darwin checkpoint:
-   * the catalog module imports no Electron and does not know where userData
-   * is — except through `refuseAbsentArtifact`, which the app calls WITH it.)
-   * An ABSOLUTE path is written through as given and narrator's own
-   * `load_voices` is what refuses a missing one (`os.path.isfile` on every
-   * clip, at engine load, before any server is launched) — the host has
-   * nothing to add to that refusal but a second copy of it.
+   * A NAME must EXIST in the models area: `refuseMissingReferenceClip` refuses it
+   * before the bytes are read to load the voice, naming the folder to copy into.
    */
   path: string;
   /**
@@ -163,7 +152,7 @@ export interface HiggsReferenceClip {
   /**
    * The clip's duration, DECLARED.
    *
-   * Required, and not because it is hard to measure — because narrator's
+   * Required, and not because it is hard to measure — because Crucible's
    * `v3_served.reference_seconds` refuses a clip that does not carry one rather
    * than opening the file. A missing duration is therefore not a warning: it is
    * a render that dies AFTER the server has spent five minutes coming up.
@@ -238,7 +227,7 @@ export interface HiggsVoiceRef {
    *
    * It replaced a single `checkpointDir` string on 2026-09-05 (see
    * `refuseRetiredCheckpointDir`): one string can only be one machine's path,
-   * and it was the WSL guest's, so the Mac's voice document carried a
+   * and it was the WSL guest's, so a Mac render was handed a
    * `/home/<user>/…` directory that does not exist there.
    */
   checkpoint?: HiggsCheckpointLocations;
@@ -271,8 +260,8 @@ export interface HiggsVoiceRef {
  *
  *     injectS = targetJoinS - modelSelfTailS
  *
- * Putting the target in this field lands every join long by the tail. orpheus-models.json
- * records that exact mistake as how thirdreich ended up 0.24 s long on every join.
+ * Putting the target in this field lands every join long by the tail, which is how thirdreich
+ * ended up 0.24 s long on every join.
  *
  * A NEGATIVE result is a real answer and means inject nothing: the model's tail already exceeds
  * the target, and assembly cannot subtract silence — the remedy is the corpus tail (--tail-s).
@@ -327,8 +316,7 @@ function refuseMalformedChunkGap(model: HiggsModel, gap: unknown): void {
   }
 }
 /**
- * Where a `maxChars` came from — a CLOSED SET, mirroring narrator's
- * `MAX_CHARS_SOURCES` in `engine/protocol.py`, which refuses anything else.
+ * Where a `maxChars` came from — a CLOSED SET.
  * The reasoning behind a number goes in `_maxCharsNote`, not here.
  */
 export type HiggsMaxCharsSource = 'catalog' | 'placeholder' | 'length-sweep';
@@ -426,8 +414,7 @@ export interface HiggsBackendCaps {
    * the floor. A voice declaring neither packs exactly as it did before.
    *
    * `safeMaxChars` may never exceed this arm's `maxChars`, and the floor may
-   * never reach the cap - refused on BOTH sides, here and in narrator's
-   * `engine/higgs/config.py`.
+   * never reach the cap - refused here, and by `engine/higgs/config.py` in Crucible.
    */
   safeMinChars?: number | null;
   safeMaxChars?: number | null;
@@ -443,8 +430,7 @@ export interface HiggsBackendCaps {
    *
    * `repetitionPenalty` is a SERVED-ARM-ONLY lever and belongs in a per-backend
    * block, never in the engine-level one. mlx-audio's `higgs_audio_v3` has no
-   * repetition penalty at all — `Model.generate` takes no such argument (narrator
-   * `engine/higgs/PORT_NOTES.md` 13.11) — so `HiggsV3MlxConfig.__post_init__`
+   * repetition penalty at all — `Model.generate` takes no such argument — so `HiggsV3MlxConfig.__post_init__`
    * REFUSES the key rather than accepting a lever it would silently drop. Writing
    * it at the catalog top would therefore refuse every Mac render.
    */
@@ -500,10 +486,8 @@ export interface HiggsModel {
    * who asked and why. Never written to `higgs-models.json`: an override is one
    * person at one machine, and the catalog is repo-tracked and shared by two.
    *
-   * It is load-bearing in three places, not decoration: `refuseMisshapedCheckpointPath`
-   * lets an ABSOLUTE darwin checkpoint through only for a derived model, the
-   * voice document carries it so a post-mortem can tell an override render from
-   * a catalog one, and the prep spawn logs it.
+   * It is load-bearing, not decoration: `refuseMisshapedCheckpointPath` lets an
+   * ABSOLUTE darwin checkpoint through only for a derived model, and the prep logs it.
    */
   _overrideNote?: string;
   note?: string;
@@ -544,17 +528,15 @@ export interface HiggsSampling { temperature: number; topP: number; topK: number
  * Read the catalog fresh.
  *
  * The file ships next to this module in the dist build (`build:electron` copies
- * `electron/data`), so it resolves off `__dirname` the way the Orpheus catalog
- * and the prompts data do. It is a LOCAL repo file — never a `\\wsl$` path — so
- * unlike a runtime manifest it reads even when the WSL VM is wedged, and none of
- * the main-thread-blocking precautions `orpheus-models.ts` needs apply here.
+ * `electron/data`), so it resolves off `__dirname` the way the prompts data does. It is a LOCAL repo file — never a `\\wsl$` path — so
+ * unlike a runtime manifest it reads even when the WSL VM is wedged.
  *
  * A missing or malformed catalog is a PACKAGING BUG and fails loud. There is no
  * inline default to fall back to, and inventing one would mean a build that
  * shipped without its data still offered voices.
  *
  * Read on every call (the file is a few KB) so editing tuning and re-running
- * takes effect without an app restart — the same rule the Orpheus catalog has.
+ * takes effect without an app restart.
  */
 function loadCatalog(): HiggsCatalog {
   const dataPath = path.join(__dirname, 'data', 'higgs-models.json');
@@ -604,9 +586,8 @@ export function listHiggsModels(): HiggsModel[] {
  * the length guard on 21 of 62 chunks against 4 at 0.7, silence loops to the
  * cap, and halved a render); 0.8 "the boson default" before that, with every
  * superseded reason kept in the catalog. Stated ONCE at the catalog's top
- * with its reason in `_samplingNote`, written into every voice document by
- * `higgsVoiceCapsForModel`, and applied by narrator over the checkpoint's own
- * generation_config.json (which says 1.0 and was not chosen). Refused, not
+ * with its reason in `_samplingNote`, and read through `higgsVoiceCapsForModel`.
+ * Refused, not
  * defaulted, when the catalog lacks it: the number that renders is written
  * here or nowhere.
  */
@@ -696,9 +677,8 @@ export function higgsVoiceUnavailableReason(model: HiggsModel, userDataDir: stri
  * WHAT THIS CAN SEE. The host's own filesystem: a darwin checkpoint under
  * userData, and a models-area clip (`higgsRefsDir`) on either arm. A WSL
  * checkpoint lives in the guest's ext4, which the host cannot stat without a
- * `wsl.exe` round trip — a picker is not the place for one, so that arm's
- * existence is the doctor's question and narrator's refusal at launch. Stated
- * rather than approximated.
+ * `wsl.exe` round trip — a picker is not the place for one. Stated rather than
+ * approximated.
  */
 function refuseAbsentArtifact(
   model: HiggsModel,
@@ -722,7 +702,7 @@ function refuseAbsentArtifact(
       throw new Error(
         `Higgs voice "${model.id}" is staged for the Mac at ${dir} in the catalog, but that ` +
           'directory is not there — the copy of the merged checkpoint has not landed on this ' +
-          'machine. Offering it would start a render that dies at the voice document.',
+          'machine. Offering it would start a render with no weights to load.',
       );
     }
   }
@@ -787,11 +767,9 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
  * A CATALOG STILL WRITTEN THE OLD WAY IS REFUSED, NOT READ.
  *
  * `voice.checkpointDir` was one string for one machine, and it held the WSL
- * guest's path — so on the Mac it wrote a `/home/<user>/…` directory into the
- * voice document and the MLX backend refused it (correctly, and five minutes
- * later than here). A catalog carrying the retired key would silently lose its
- * per-arm staging under `voice.checkpoint`, so it fails loud instead. The same
- * shape of guard narrator applies to `adapterDir`.
+ * guest's path, which does not exist on the Mac. A catalog carrying the retired key
+ * would silently lose its per-arm staging under `voice.checkpoint`, so it fails loud
+ * instead.
  */
 function refuseRetiredCheckpointDir(model: HiggsModel): void {
   const legacy = (model.voice as { checkpointDir?: unknown }).checkpointDir;
@@ -987,13 +965,8 @@ export function higgsReferenceClipPath(
 }
 
 /**
- * A clip NAMED in the models area must be THERE. narrator's `load_voices`
- * checks every clip (`os.path.isfile`) at engine load, before any server is
- * launched — but in the guest, against the translated path, with a message
- * that names the translated path and nothing about where the file belongs.
- * This is the host's refusal for the one spelling the host owns the location
- * of: it names the folder to copy into. An absolute path is narrator's to
- * refuse; the host would only be repeating it.
+ * A clip NAMED in the models area must be THERE. This is the host's refusal for the
+ * one spelling the host owns the location of: it names the folder to copy into.
  */
 function refuseMissingReferenceClip(model: HiggsModel, userDataDir?: string): void {
   for (const clip of model.voice.clips ?? []) {
@@ -1057,7 +1030,7 @@ function refuseMisshapedCheckpointPath(model: HiggsModel, arm: HiggsCheckpointAr
     //
     // A DRIVE PATH IS NOT AN ALTERNATIVE SPELLING — it is a different directory,
     // on the Windows disk, which the guest reads over the 9p mount. That is fine
-    // for a few hundred bytes of voice document and ruinous for 8.5 GB of
+    // for a few hundred bytes and ruinous for 8.5 GB of
     // weights, which is exactly why the merged directories live on ext4.
     const unc = /^[\\/]{2}wsl[$.](localhost)?[\\/]/i.test(value);
     if (!value.startsWith('/') && !unc) {
@@ -1177,7 +1150,7 @@ export function higgsCheckpointDirFor(
  * mismatch lands in every sentence the reference conditions. The training-text
  * doctrine's reason for refusing bare ASR in a corpus is this reason.
  *
- * SECONDS. narrator's `v3_served.reference_seconds` refuses a clip that does not
+ * SECONDS. Crucible's `v3_served.reference_seconds` refuses a clip that does not
  * declare one rather than opening the file to find out. So a missing duration is
  * not a cheap warning — it is a render that dies AFTER the server has already
  * spent five minutes coming up.
@@ -1247,7 +1220,7 @@ function refuseOversizedReference(model: HiggsModel, arm: HiggsCheckpointArm): v
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Caps and the spawn environment
+// Caps
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -1255,8 +1228,7 @@ function refuseOversizedReference(model: HiggsModel, arm: HiggsCheckpointArm): v
  *
  * `served` is the only Higgs backend BookForge has — v3 runs behind vllm-omni,
  * and v2 (the transformers/in-process one) was dropped on 2026-09-04. The
- * per-backend shape is kept anyway, exactly as `orpheusVoiceCapsForModel` has a
- * vllm/mlx split, so adding a second backend does not mean re-shaping the data
+ * per-backend shape is kept anyway, so adding a second backend does not mean re-shaping the data
  * for every voice at once.
  *
  * Absent fields stay absent. A caller can tell "this voice declares nothing"
@@ -1320,15 +1292,6 @@ export function higgsVoiceCapsForModel(
  * written. It is this: derive a model from a real catalog voice, and let every
  * door downstream keep working exactly as it does for a book.
  *
- * ── Why it travels in the VOICE DOCUMENT and not as a flag ──────────────────
- *
- * `checkpointDir` in `NARRATOR_HIGGS_VOICES` is how narrator learns a directory
- * on BOTH arms, and they use it differently: the Mac's MLX backend LOADS the
- * model from it (`mlx_backend.HiggsV3MlxConfig.model_dir`) and the PC's served
- * arm STARTS ITS SERVER on it (`v3_served.checkpoint_serve_target`,
- * `sgl_served`). So an override that lands in the document needs no per-arm code
- * here and no new narrator flag — the same mechanism a promoted voice uses.
- *
  * ── What an override does NOT buy, deliberately ─────────────────────────────
  *
  * It is DERIVED FROM A NAMED CATALOG VOICE and all of that voice's refusals
@@ -1339,15 +1302,14 @@ export function higgsVoiceCapsForModel(
  * is not comparable to the book the band was measured on. Sweep the band by
  * saying so (`safeMinChars` / `safeMaxChars`), not by accident.
  *
- * A `clips` base is refused with a checkpoint, because narrator's shapes are not
- * additive: "the checkpoint IS the voice" (`config.load_voices`), and a clips
- * entry carrying `checkpointDir` would load the fine-tune AND condition it on a
+ * A `clips` base is refused with a checkpoint, because the shapes are not additive:
+ * "the checkpoint IS the voice", and a clips entry carrying `checkpointDir` would load the fine-tune AND condition it on a
  * zero-shot reference — a mixed condition nothing has measured, and one that
  * still renders and still reports success.
  *
  * ── `note` is required ─────────────────────────────────────────────────────
  *
- * It goes into the voice document (`_overrideNote`) and into the prep log, so a
+ * It goes on the model (`_overrideNote`) and into the prep log, so a
  * post-mortem can tell an override render from a catalog one. A measurement
  * whose provenance is "someone passed a directory" is a measurement nobody can
  * repeat, and this codebase has already paid for that once: the runtime Orpheus
@@ -1414,8 +1376,7 @@ export function higgsModelForRender(
   const backend = BACKEND_FOR_ARM[arm];
   const dir = (override.checkpointDir || '').trim();
   const derived: HiggsModel = JSON.parse(JSON.stringify(base));
-  // The id NAMES BOTH HALVES, because it is what `--higgs_voice` carries, what
-  // keys the voice document, and what the session and the analytics record. A
+  // The id NAMES BOTH HALVES, because it is what the session and the analytics record. A
   // bare "override" in a log six weeks later answers nothing.
   const slug = dir ? path.basename(dir.replace(/[\\/]+$/, '')) : 'override';
   derived.id = `${base.id}+${slug}`;
@@ -1482,9 +1443,8 @@ export function higgsModelForRender(
     // engine-level sampling (the number every voice renders at), then this arm's
     // own block if it deviates (with its reason, which `higgsVoiceCapsForModel`
     // enforces), then this run's override. Starting from the engine level rather
-    // than from the block ALONE matters for a partial block: narrator's
-    // `_voice_sampling` warns that a block replaces rather than merges, so a
-    // block stating only `repetitionPenalty` would otherwise leave the override
+    // than from the block ALONE matters for a partial block: a block replaces
+    // rather than merges, so a block stating only `repetitionPenalty` would otherwise leave the override
     // with no temperature to validate and blame the override for the gap.
     const inherited = {
       ...higgsEngineSampling(),
@@ -1496,9 +1456,8 @@ export function higgsModelForRender(
       ...(override.sampling.topP !== undefined ? { topP: override.sampling.topP } : {}),
       ...(override.sampling.topK !== undefined ? { topK: override.sampling.topK } : {}),
     };
-    // REFUSED HERE, NOT AT THE SAMPLER. narrator validates the document too, but
-    // an hour into a WSL server launch is a worse place to learn that a top_p of
-    // 95 was typed where 0.95 was meant — and a temperature of 2.5 does not
+    // REFUSED HERE, NOT AT THE SAMPLER. An hour into a render is a worse place to
+    // learn that a top_p of 95 was typed where 0.95 was meant — and a temperature of 2.5 does not
     // fail, it babbles for a whole book.
     if (!Number.isFinite(merged.temperature) || (merged.temperature as number) <= 0
         || (merged.temperature as number) > 2) {
@@ -1535,14 +1494,14 @@ export function higgsModelForRender(
 }
 
 /**
- * The half of `electron/crucible/voice-band.ts`'s `CrucibleVoiceBand` that a
- * voice document carries. Structural, and declared here as well as there, so
+ * The half of `electron/crucible/voice-band.ts`'s `CrucibleVoiceBand` that packing
+ * a book reads. Structural, and declared here as well as there, so
  * this module — which imports no Electron and no SDK — stays free of both.
  * `tools/test-crucible-venue-band.js` compares the two shapes rather than
  * trusting them.
  */
 export interface CrucibleStatedBand {
-  /** The registered server the numbers came from — goes into the document's note. */
+  /** The registered server the numbers came from. */
   server: string;
   /** Crucible's voice id the row belonged to. */
   voice: string;
@@ -1568,10 +1527,8 @@ export interface CrucibleStatedBand {
 
 /**
  * The base model's placeholder chunk length — what a voice with no safe band and
- * no target is packed to. It is narrator's `v3_served.MAX_CHARS` (600), which
- * `higgs_v3_prep_budget` read through `HiggsV3Defaults.MAX_CHARS` until the rule
- * moved here; `tools/test-higgs-prep-budget.js` holds the two equal while the
- * engine half is still in this repo.
+ * no target is packed to. It was `v3_served.MAX_CHARS` (600) when the rule moved here;
+ * this constant is BookForge's only copy.
  */
 export const HIGGS_PREP_PLACEHOLDER_CHARS = 600;
 
@@ -1586,17 +1543,13 @@ export interface HiggsPrepBudget {
 /**
  * THE BAND A HIGGS PREP PACKS TO, from the rendering Crucible's numbers.
  *
- * Until 2026-11-04 this rule lived in narrator's model code
- * (`engine/higgs/v3_engine.py:higgs_v3_prep_budget`), which read the voice
- * document `higgsVoicesDocument` wrote and re-derived the band from it. Prep is
- * BookForge's text work and the engine half is leaving for Crucible
- * (docs/REORG-PLAN.md, B1), so the rule moved to the side that already holds the
- * venue's band — `CrucibleStatedBand`, from `GET /v1/voices` — and prep is
- * handed the answer as `--chunk_max_chars` / `--chunk_floor_chars`.
+ * Until 2026-11-04 this rule lived in narrator's model code. Prep is BookForge's text
+ * work and the engine half is Crucible's (docs/REORG-PLAN.md, B1), so the rule moved to
+ * the side that already holds the venue's band — `CrucibleStatedBand`, from
+ * `GET /v1/voices`.
  *
- * The rule is the old one, branch for branch, over the same numbers the
- * document carried (`safeMinChars` = `floorChars`, `safeMaxChars` =
- * `ceilingChars`, `targetChars` = `targetChars`):
+ * The rule is the old one, branch for branch (`safeMinChars` = `floorChars`,
+ * `safeMaxChars` = `ceilingChars`, `targetChars` = `targetChars`):
  *
  *  - a floor AND a ceiling → pack between them;
  *  - otherwise a FINE-TUNE is refused by name: its band is measured on its own
@@ -1616,8 +1569,7 @@ export function higgsPrepBudget(model: HiggsModel, band: CrucibleStatedBand): Hi
   let floorChars: number;
   let capChars: number;
   if (floor && ceiling) {
-    // A STATED floor at the ceiling is not a band (narrator's loader refused it
-    // as `_safe_band`): the merge rule could never end a group on the floor.
+    // A STATED floor at the ceiling is not a band (narrator's loader refused it): the merge rule could never end a group on the floor.
     // floor == cap is legitimate only as the single number below.
     if (floor >= ceiling) {
       throw new Error(
@@ -1697,16 +1649,11 @@ export function higgsNarrationVoices(userDataDir: string): {
 /**
  * THE CATALOG VOICE ONE JOB RENDERS IN — the one resolver every door shares.
  *
- * Moved here from `higgs-spawn.ts` when the local spawn layer was deleted
- * (docs/LEGACY-REMOVAL.md); it was always a CATALOG question rather than a spawn
- * one, and it sat there only because the spawn was its first caller.
- *
- * Sharing it is load-bearing. A render resolves its voice at several doors — the
- * argv, the retake ladder, the Listen path, the Crucible render — and if one of
+ *  * Sharing it is load-bearing. A render resolves its voice at several doors — the
+ * retake ladder, the Listen path, the Crucible render — and if one of
  * them resolved the catalog voice while another resolved the per-run override,
- * the two would disagree about which voice the book is in. narrator's reaction to
- * a voice it was not given is NOT a crash: `load_voices` returns a map, the
- * lookup misses, and a whole book renders in the base model's own speaker — a
+ * the two would disagree about which voice the book is in. The reaction to a voice
+ * the engine was not given is NOT a crash: a whole book renders in the base model's own speaker — a
  * different person, measured at 12% of the narrator's ECAPA ceiling.
  */
 export function higgsModelForJob(settings: {

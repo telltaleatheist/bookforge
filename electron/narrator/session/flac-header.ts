@@ -1,6 +1,6 @@
 /**
  * Exact FLAC facts from the 42 bytes at the front of the file: never a decode, never an
- * ffprobe. A port of `narrator/render/flac_header.py`.
+ * ffprobe. A port of narrator's `flac_header.py`, which step 8 deleted.
  *
  * A 20-hour book is about 2,700 files. Asking ffprobe for each was 2,700 spawns; the
  * numbers are sitting in the header, one 42-byte read each, and exact.

@@ -1,5 +1,5 @@
 /**
- * A session directory to a Manifest. A port of `narrator/render/session_v1.py`.
+ * A session directory to a Manifest. A port of narrator's `session_v1.py`, which step 8 deleted.
  *
  * THE ONE RULE ABOUT PATHS. `session-state.json` was written by whichever machine rendered
  * the book, and every path inside it is that machine's. None are trusted: everything is

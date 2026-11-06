@@ -356,8 +356,7 @@ async function main() {
     console.log(`[batch] generation runs on crucible "${settings.crucible.server}" (not this machine's narrator)`);
   }
   // Explicit model directory (CLI --model-dir): bypasses models.json resolution. Must be
-  // in the spawn target's namespace (a /home/... WSL path, or a \\wsl$ / C:\ path that
-  // buildWslBashCommand will translate).
+  // in the spawn target's namespace.
   if (args['model-dir']) {
     // Step 8 (2026-11-05): --model-dir named an ORPHEUS model directory, and Orpheus is retired. A Higgs
     // checkpoint under test borrows a catalog voice's certificate and rides --checkpoint-dir.

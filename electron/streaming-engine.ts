@@ -162,7 +162,7 @@ export interface StreamingEngine {
    *
    * THE THREE RATES TRAVEL WITH THE LENGTHS, and they are one fact in three
    * numbers: ALL THREE OR NONE. That is narrator's own rule for the same triple
-   * (`python/narrator/engine/higgs/truncation.py`, `_pace_tracker_for`: "the
+   * (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py`, `_pace_tracker_for`: "the
    * voice's own recorded pace and band when the catalog measured them — reads
    * all three or none"), and it is how a Crucible states them
    * (`crucible/voices.py` requires all three of a manifest's `[pace]` or

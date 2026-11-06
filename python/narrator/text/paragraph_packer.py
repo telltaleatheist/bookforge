@@ -139,10 +139,10 @@ tag is still emitted for a TABLE ROW, which is still a row of its own.
 
 `budget` is `text/budget.py`'s `Budget` Protocol: `max_chars(voice)`,
 `max_chars_per_sec(voice)`, `max_total_tokens(prompt_tokens, voice)`. It is
-imported under `TYPE_CHECKING` ONLY and duck-typed at runtime. It lived in
+imported under `TYPE_CHECKING` ONLY and duck-typed at runtime. It lived in narrator's
 `engine/protocol.py` until 2026-11-04 and moved down beside this module, which
-is its consumer, so nothing on the prep path imports `narrator.engine` - the
-model half that is leaving for Crucible. Every number comes from the budget;
+is its consumer, so nothing on the prep path imported the model half, which
+is Crucible's now. Every number comes from the budget;
 there is no cap constant in this file. For Higgs v3 the catalog's measured `max_chars` (600 is the zero-shot
 PLACEHOLDER; the fine-tune's value is the min of the ladder length-sweep and the
 corpus-derived cap = p1 training-clip seconds x chars/s) is simply what
@@ -1244,7 +1244,7 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     asked for and re-packing it would answer a different question than the one
     they typed. Nothing is lost silently — the engine's own truncation guard
     measures every take against the voice's band and re-renders or refuses
-    (`engine/higgs/truncation.py`), which is the right place for it: prep cannot
+    (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py`, in the Crucible repo), which is the right place for it: prep cannot
     know whether a long row will actually early-stop and the render can.
 
     `table_detect` is OFF by default and that is a deliberate reversal (review
@@ -2053,8 +2053,8 @@ class CatalogBudget:
     Implements `text/budget.py`'s `Budget` structurally; it is not a
     subclass, because a Protocol is what lets this module never import that one.
 
-    For a Higgs prep it is built by `compat/app.py:route_prep` from
-    `--chunk_max_chars` / `--chunk_floor_chars`: the band the rendering Crucible
+    For a Higgs prep it was built from `--chunk_max_chars` / `--chunk_floor_chars`
+    (prep is TypeScript now, `electron/narrator/text/`): the band the rendering Crucible
     states on `GET /v1/voices`, resolved by BookForge (`higgsPrepBudget` in
     `electron/higgs-models.ts`) - so a prep reads no voice document to size a
     chunk and imports no model code.
@@ -2064,7 +2064,7 @@ class CatalogBudget:
     audio_tokens: int = 0
     #: THE MERGE FLOOR, beside the cap in `chars`. 0 = "no band declared", and
     #: the caller falls back to the cap, which is what every voice did before
-    #: safeMinChars existed. See `engine/protocol.py`'s `safe_min_chars`.
+    #: safeMinChars existed.
     floor_chars: int = 0
 
     def max_chars(self, voice=None) -> int:
@@ -2085,9 +2085,8 @@ class CatalogBudget:
 def orpheus_budget_from_env() -> CatalogBudget:
     """The Orpheus budget as BookForge already injects it.
 
-    `ORPHEUS_MAX_CHARS` is the per-voice cap the bridge resolves from
-    `electron/data/orpheus-models.json` and exports at spawn
-    (`parallel-tts-bridge.ts:3300-3306`); `text/packer.py:orpheus_max_chars()`
+    `ORPHEUS_MAX_CHARS` is the per-voice cap the bridge exported at spawn, when
+    there was one; `text/packer.py:orpheus_max_chars()`
     reads the same variable with e2a's 350 default, and this reuses THAT function
     so the two policies can never disagree about the cap. The rate is optional
     and its absence means the Protocol's "no guard", not a guessed number.

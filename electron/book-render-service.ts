@@ -276,7 +276,7 @@ function noSentenceReason(result: { success: boolean; streamed?: boolean; error?
  * narrator's own arithmetic read backwards.
  *
  * narrator judges a take by its characters per second against the pace the
- * guard is centred on (`python/narrator/engine/higgs/truncation.py`, `check()`
+ * guard is centred on (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py`, `check()`
  * and `PaceTracker`); `chars / pace` is the duration that lands exactly on that
  * centre. There is no default pace here: an unmeasured voice is refused by the
  * caller, by name, because a guessed reading rate picks a take for reasons
@@ -957,7 +957,7 @@ class BookRenderService {
    * such number, which is a refusal and never a default.
    *
    * The expectation is `chars ÷ the voice's pace`, narrator's own arithmetic
-   * (`python/narrator/engine/higgs/truncation.py`). THE PACE HAS ONE OWNER AND
+   * (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py`). THE PACE HAS ONE OWNER AND
    * IT IS THE MACHINE THAT WILL SPEAK: a Crucible states `pace_chars_per_sec`
    * with the two band edges on its `GET /v1/voices` row, which is the ruling
    * `electron/crucible/voice-band.ts` is ("the numbers it packs to belong to the
@@ -971,7 +971,7 @@ class BookRenderService {
    * wire rather than a policy. narrator centres such a band on the geometric
    * mean of its OWN default edges (`truncation.expected_chars_per_sec` over
    * `HiggsV3Defaults.MAX_CHARS_PER_SEC` / `MIN_CHARS_PER_SEC`,
-   * `python/narrator/engine/higgs/v3_engine.py`) — and a Crucible publishes
+   * `crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/v3_engine.py`) — and a Crucible publishes
    * those two numbers on no route at all: `GET /v1/voices` carries each voice's
    * own measured rates (required of every manifest, `crucible/voices.py`
    * `_check_pace`) and `GET /v1/info` carries no band. So there is nothing to

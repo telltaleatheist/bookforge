@@ -43,8 +43,7 @@ if (!fs.existsSync(path.join(DIST, 'higgs-models.js'))) {
 
 /**
  * `electron` is not installed as a require-able module in this runner, and
- * higgs-models.js does not use it — but tool-paths.js, which higgs-spawn.js
- * pulls in, does. One stub for the whole file, rather than per-suite plumbing.
+ * higgs-models.js does not use it, but what this file loads beside it does. One stub for the whole file, rather than per-suite plumbing.
  */
 const originalResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...rest) {
@@ -359,7 +358,7 @@ check('the checkpoint dir is the PRODUCTION one, not the staging convention', ()
 
 check('deathstalker is staged on BOTH arms, each in that arm\'s own shape', () => {
   // THE GAP THIS BRANCH CLOSES. One `checkpointDir` string could only be one
-  // machine's path, and it was the guest's — so the Mac's voice document carried
+  // machine's path, and it was the guest's — so a Mac render was handed
   // /home/<user>/… and the MLX backend refused a directory that machine has
   // never had. The Mac copy was staged 2026-09-05 (same basename, sha-verified
   // against the frozen WSL dir).
@@ -535,8 +534,7 @@ check('ONE engine-level sampling - 0.8 / 0.95 / 50 - reaches EVERY Higgs voice o
   // should be .8 everywhere, as it's the boson default" — a default asserted,
   // never compared. Every superseded note is kept in the catalog.
   //
-  // ONE number for Listen streaming and book renders alike — both spawn through
-  // higgs-spawn, which writes the document this rides in. Stated ONCE at the
+  // ONE number for Listen streaming and book renders alike. Stated ONCE at the
   // catalog top with its reason; a per-block deviation must carry a reason too
   // or it is refused, so 14 copies of a number can never drift.
   const engine = higgs.higgsEngineSampling();
@@ -715,7 +713,7 @@ check('a checkpoint WITH a measured cap and its source passes', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. The voice document and the NARRATOR_* environment
+// 5. The default voice and its caps
 // ─────────────────────────────────────────────────────────────────────────────
 console.log('the default voice and its caps');
 
@@ -931,9 +929,7 @@ check("EVERY backend block states its cap — measured, or null, with a KNOWN so
       }
       assert.ok(Number.isInteger(caps.maxChars) && caps.maxChars > 0,
         `${m.id}/${backend}: maxChars is ${JSON.stringify(caps.maxChars)}`);
-      // narrator VALIDATES this vocabulary (protocol.MAX_CHARS_SOURCES) and the
-      // value travels in the voice document, so a prose provenance string here
-      // is a render refused at load_voices.
+      // A closed vocabulary, so a prose provenance string here is a mistake.
       assert.ok(KNOWN_SOURCES.includes(caps.maxCharsSource),
         `${m.id}/${backend}: maxCharsSource ${JSON.stringify(caps.maxCharsSource)} is not one of `
         + KNOWN_SOURCES.join(' | '));

@@ -57,8 +57,7 @@ import { CrucibleRenderRefused, describeCrucibleRefusal } from './render';
  * because a client that packs needs all of it (the SDK's own words about
  * `VoiceInfo.pace`).
  *
- * Structural rather than the SDK's row so the consumers — the voice document
- * writer in `higgs-models.ts` among them — can take it without importing the
+ * Structural rather than the SDK's row so the consumers — `higgs-models.ts` among them — can take it without importing the
  * SDK, and so a keeper can build one without a server.
  */
 export interface CrucibleVoiceBand {

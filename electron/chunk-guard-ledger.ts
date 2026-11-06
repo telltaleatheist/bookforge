@@ -28,7 +28,7 @@
  * ── R1: one fact, one owner ─────────────────────────────────────────────────
  *
  * The fact is "what the guard decided about chunk N". Its owner is
- * `narrator/engine/higgs/truncation.py` — `GuardPlan._build_verdict`. This
+ * `crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py` in the Crucible repo — `GuardPlan._build_verdict`. This
  * module is a LEDGER, not a judge:
  *
  *  - It never invents a verdict word. `byVerdict` is an OPEN map keyed by

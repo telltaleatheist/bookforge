@@ -5,17 +5,12 @@
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-higgs-prep-budget.js
  *
- * Until 2026-11-04 narrator's prep imported
- * `engine/higgs/v3_engine.py:higgs_v3_prep_budget`, which read the voice document
- * and re-derived the floor and the cap. The rule now has ONE owner —
- * `higgsPrepBudget` in `electron/higgs-models.ts` — and prep is handed its answer
- * as `--chunk_max_chars` / `--chunk_floor_chars`. This pins:
+ * Until 2026-11-04 narrator's prep derived the floor and the cap in its model code. The rule
+ * now has ONE owner — `higgsPrepBudget` in `electron/higgs-models.ts`. This pins:
  *
  *  1. the rule, branch for branch, as narrator ran it (a band; a fine-tune with
  *     no floor refused by name; the model's own voice and a zero-shot clone at
  *     their target, else the placeholder; a floor above the cap refused);
- *  2. the placeholder equals narrator's `v3_served.MAX_CHARS` while that file
- *     is still in this repo;
  *  3. prepareSession puts the budget on the prep argv, from the venue's band;
  *  4. the host-prep probe asks for no `narrator.engine` module, and narrator's
  *     prep route imports none.

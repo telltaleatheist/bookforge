@@ -1,6 +1,6 @@
 /**
  * Read and write `session-state.json`, and answer what is rendered and what is not. A port
- * of `narrator/render/session_store.py`.
+ * of narrator's `session_store.py`, which step 8 deleted.
  *
  * `session-state.json` is written once, by prep. A worker's progress is the filesystem,
  * which `N.flac` files exist, never this file.

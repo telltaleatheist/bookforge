@@ -26,8 +26,8 @@ The fade is asymmetric on purpose: a chunk begins on an attack the ear expects
 and ends on a decay the ear does not, so the tail needs more than twice the
 window the head does.
 
-WHERE THESE NUMBERS COME FROM, AND WHY THEY ARE HERE TWICE. `engine/protocol.py`
-declares `pads: bool` and `edge_fade: EdgeFade(in_ms, out_ms)` on the engine
+WHERE THESE NUMBERS COME FROM, AND WHY THEY ARE HERE TWICE. narrator's
+`engine/protocol.py` (Crucible's now, `crucible_higgs/engine/protocol.py`) declares `pads: bool` and `edge_fade: EdgeFade(in_ms, out_ms)` on the engine
 itself, which is the right home - they are properties of the codec's edges, and
 that type now expresses the asymmetry exactly (Higgs 10 in / 25 out; an earlier
 draft had a single float, which could not).

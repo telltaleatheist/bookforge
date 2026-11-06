@@ -299,7 +299,7 @@ check('§2 does not rest on the unseeded premise', () => {
   if (/sampling is unseeded/.test(plan)) {
     throw new Error(
       'the plan still explains differing takes by narrator\'s sampling being unseeded. It is '
-      + 'seeded — python/narrator/engine/higgs/engine.py `_seed_for` returns `seed + index` off a '
+      + 'seeded — crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/v3_engine.py `_seed_for` returns `seed + index` off a '
       + 'default of 1234 — and narrator\'s own CONTRACTS.md says two take-0 re-rolls always were '
       + 'byte-identical. That premise is what made the cycle look harmless.');
   }

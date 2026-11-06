@@ -1257,8 +1257,7 @@ export async function cacheSessionToProject(
  */
 async function removeScratchSession(sessionDir: string): Promise<void> {
   // Hard safety: a resume job's prepInfo.sessionDir IS the durable project cache
-  // (workers write into it directly), and normalizeWslSessionToWindows repoints a
-  // fresh Orpheus run's prepInfo at the cache copy. Deleting that path would
+  // (the render writes into it directly). Deleting that path would
   // destroy the only durable copy of the rendered sentences — refuse, whatever
   // the caller believes it is passing.
   if (/[\\/]stages[\\/]03-tts[\\/]sessions[\\/]/i.test(sessionDir)) {
@@ -3572,8 +3571,7 @@ export function detectRecommendedWorkerCount(): { count: number; reason: string 
 /**
  * THE CHUNK LENGTHS THIS BOOK IS PACKED TO, ASKED OF THE MACHINE THAT WILL SPEAK IT.
  *
- * Prep is the packer (`python/narrator/text/paragraph_packer.py`, driven by the
- * voice document's band), and until 2026-09-15 it packed from THIS MACHINE'S
+ * Prep is the packer (`electron/narrator/text/`), and until 2026-09-15 it packed from THIS MACHINE'S
  * catalog — on Windows from the `served` arm's block, whatever machine the render
  * was bound for. `electron/crucible/stream.ts` carried that as a RULING OWED and
  * `electron/crucible/voice-band.ts` is the ruling: the ceiling, the floor and the
@@ -4123,8 +4121,8 @@ const MAX_WORKER_RETRIES = 2;  // Maximum retry attempts per worker
 // handed a session whose prep has already run and whose sentences directory
 // already exists, and it leaves that directory holding the same `<index>.flac`
 // files a local worker would have written. Everything after it —
-// `completeAfterWorkers`, the coverage gate, `normalizeWslSessionToWindows`,
-// denoise, RVC, assembly — is untouched and cannot tell the difference.
+// `completeAfterWorkers`, the coverage gate, denoise,
+// RVC, assembly — is untouched and cannot tell the difference.
 //
 // docs/CRUCIBLE_ROLLOUT_PLAN.md item 2.4; crucible docs/PHASE6-REMOTE-RENDER.md
 // section 6.
@@ -4481,12 +4479,8 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
  * and this process installs no `unhandledRejection` handler.
  *
  * Most of the tail already reports its own failures through
- * `emitComplete(session, false, …)`. But `normalizeWslSessionToWindows` THROWS
- * by design — there is no WSL assembly fallback any more — and it sat OUTSIDE
- * every `try` in this function, as did `runPostRenderAlignment`, the project
- * cache block and `stopChapterCloser`. The assembly `catch` further down carried
- * a comment claiming it covered the normalizer; it never could, its `try` opens
- * about a hundred and eighty lines later.
+ * `emitComplete(session, false, …)`. But `runPostRenderAlignment`, the project cache block and
+ * `stopChapterCloser` sit OUTSIDE every `try` in this function.
  *
  * What that cost, every time: no completion event, the session never removed
  * from `activeSessions`, so `waitForBridgeEvent` (queue-steps/tts-conversion.ts,
@@ -4659,8 +4653,7 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
     // after successful assembly, and skipAssembly callers still need cached sessions.
     //
     // Capture the pre-caching session location NOW: cacheSessionToProject (via a
-    // cache-bound resume's prepInfo) and normalizeWslSessionToWindows (below) can
-    // leave prepInfo.sessionDir pointing INTO the durable project cache. The
+    // cache-bound resume's prepInfo) can leave prepInfo.sessionDir pointing INTO the durable project cache. The
     // post-assembly scratch cleanup must target this original location only —
     // deleting prepInfo.sessionDir at that point deleted the cache itself.
     const scratchSessionDir = session.prepInfo?.sessionDir;
@@ -4840,13 +4833,6 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
         : '';
       // ASSEMBLY, AND ONLY ASSEMBLY. This `try` opens at `runAssembly` and holds
       // nothing else, so the stage is not a guess.
-      //
-      // It used to name a second stage here — a `normalizeWslSessionToWindows`
-      // failure — on the belief that the normalizer ran inside this block. It
-      // does not: it runs far above, outside every `try` in this function, and
-      // its throw went nowhere at all. That throw is caught by
-      // `checkAllWorkersComplete`'s wrapper now, which owns the stage naming, so
-      // there is one test of that string and not two.
       emitComplete(session, false, undefined, `Assembly failed: ${err}${workerErrors}`);
     }
     activeSessions.delete(session.jobId);
@@ -4965,8 +4951,8 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   // WHAT WAS HERE. Four variables (`assembleOrpheusNative`, `asmInvocation`,
   // `asmEngineArg`, `asmRoutingEngine`) computed which of THREE routes to take:
   // native-with-the-generic-env-and-a-lie (`--tts_engine xtts`, because
-  // `pythonInvocation('orpheus')` returns the marker path `<e2a>/orpheus_wsl_env`
-  // that only resolves after buildWslBashCommand rewrites it inside WSL), native
+  // `pythonInvocation('orpheus')` returned a marker path that only resolved inside
+  // WSL), native
   // with the engine's own env, or back through WSL when normalization had failed.
   // All three are gone. The one that mattered is preserved as the DEFAULT rather
   // than as a special case.
@@ -8126,9 +8112,7 @@ export async function renderRangeHeadless(
   // seeding and the completeness check all read `prepInfo.totalSentences`, so the
   // cap has to land here or it lands nowhere.
   applyTestSentenceCap(prepInfo, settings, 'renderRangeHeadless');
-  // The ORIGINAL scratch session location (WSL-native for Orpheus-via-WSL). Captured
-  // NOW because normalizeWslSessionToWindows repoints prepInfo.sessionDir later; the
-  // caller needs both locations to clean up after a successful concat.
+  // The scratch session location: the caller cleans it up after a successful concat.
   const scratchSessionDir = prepInfo.sessionDir;
 
   // Session is on disk now (state + empty sentences dir); hand its location to the
@@ -8226,8 +8210,7 @@ export async function renderRangeHeadless(
     throw new Error(`renderRangeHeadless: ${session.completionError}`);
   }
 
-  // normalizeWslSessionToWindows has repointed prepInfo.chaptersDirSentences at the
-  // Windows-native FLAC dir. The skipAssembly path SKIPS the completeness gate, so we
+  // The skipAssembly path SKIPS the completeness gate, so we
   // enforce it here: every non-empty sentence must have a file, or we throw rather than
   // concatenate a hole-y set (NO FALLBACKS).
   const missing = await findMissingSentenceFiles(prepInfo);
@@ -9720,8 +9703,8 @@ export async function resumeParallelConversion(
    *
    * NOT WHEN IT IS ALREADY LOCAL (`renderSessionDirOf` answers for a path under
    * the scratch root) and NOT FOR A GUEST SESSION: a `\\wsl$` path has its own
-   * normalizer (`normalizeWslSessionToWindows`) and its own copy-out, and a
-   * second one here would be two owners of one move.
+   * copy-out (`copyDirOutOfWsl`), and a second one here would be two owners of
+   * one move.
    */
   if (resumeInfo.sessionDir && resumeInfo.processDir
     && renderSessionDirOf(resumeInfo.sessionDir) === null

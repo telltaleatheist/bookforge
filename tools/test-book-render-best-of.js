@@ -17,7 +17,7 @@
  *
  *   §1  THE CRITERION, and there is one: the take whose DURATION is closest to
  *       `chars ÷ the voice's pace`, measured in LOG space exactly as narrator
- *       measures it (`python/narrator/engine/higgs/truncation.py`,
+ *       measures it (`crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/truncation.py`,
  *       `_LadderTask._accept`). A plain difference in seconds is a different
  *       order and picks a different take.
  *   §2  NO SILENCE IS EVER FILED AS A SENTENCE. A sentence with no audio is not
@@ -540,7 +540,7 @@ async function main() {
     const src = fs.readFileSync(path.join(REPO, 'electron', 'book-render-service.ts'), 'utf-8');
     // narrator's default edges are 20.0 and 14.5 and their geometric mean is
     // 17.03. A literal here would be a second owner of a number measured in
-    // `python/narrator/engine/higgs/v3_engine.py` — the exact shape
+    // `crucible/jobs/tts/higgs/crucible_higgs/engine/higgs/v3_engine.py` — the exact shape
     // `electron/crucible/voice-band.ts` exists to end.
     const code = src.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
     assert.ok(!/\b(17\.0\d|20\.0|14\.5)\b/.test(code),
