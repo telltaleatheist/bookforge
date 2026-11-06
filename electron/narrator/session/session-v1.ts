@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { profileFor } from '../assemble/engine-profiles';
+import { PRE_FLIP_EDGES, profileFor, type SessionEdges } from '../assemble/engine-profiles';
 import { SML_HEADING_PATTERN, SML_ITEM_PATTERN } from '../text/sml';
 import { pyInt, pyRepr, pyTruthy } from '../py-compat';
 import { checkExpected, FlacHeaderError, readStreaminfo, type StreamInfo } from './flac-header';
@@ -183,9 +183,23 @@ function loadGaps(file: string, engineId: string, totalChunks: number): Map<numb
   return out;
 }
 
-function engineBlock(engineId: string): Engine {
-  const profile = profileFor(engineId);
-  return { id: profile.id, pads: profile.pads, edgeFadeMs: { in: profile.fadeInMs, out: profile.fadeOutMs } };
+/**
+ * The edges this session was rendered under: its own record, or for a session with none, the
+ * pre-flip record. No record is not checked against anything; see `PRE_FLIP_EDGES`.
+ */
+function sessionEdges(state: State, engineId: string, processDir: string): SessionEdges {
+  const { id } = profileFor(engineId);
+  if (!('edges' in state)) return PRE_FLIP_EDGES[id];
+  const record = state['edges'] as State | null;
+  const { pads, fade_in_ms: fadeInMs, fade_out_ms: fadeOutMs } = (record ?? {}) as { pads?: unknown; fade_in_ms?: unknown; fade_out_ms?: unknown };
+  if (typeof pads !== 'boolean' || typeof fadeInMs !== 'number' || typeof fadeOutMs !== 'number') {
+    throw new SessionError(`session-state.json 'edges' must state pads, fade_in_ms and fade_out_ms, got ${JSON.stringify(record)} (${processDir})`);
+  }
+  return { pads, fadeInMs, fadeOutMs };
+}
+
+function engineBlock(engineId: string, edges: SessionEdges): Engine {
+  return { id: engineId, pads: edges.pads, edgeFadeMs: { in: edges.fadeInMs, out: edges.fadeOutMs } };
 }
 
 function requiredStr(state: State, key: string, processDir: string): string {
@@ -351,10 +365,10 @@ export async function buildManifest(processDirIn: string, options: BuildManifest
   }
 
   const engineId = requiredStr(state, 'tts_engine', processDir);
-  const profile = profileFor(engineId);
+  const edges = sessionEdges(state, engineId, processDir);
   const gapsPath = findGapsFile(resolved, processDir);
   let gaps = new Map<number, readonly [number, number]>();
-  if (profile.pads) {
+  if (edges.pads) {
     if (gapsPath !== null) {
       throw new SessionError(`${gapsPath} exists, but ${pyRepr(engineId)} BAKES its inter-chunk silence into each chunk's own audio. Honouring this file would add that silence a second time, on top of the silence already in the FLACs.`);
     }
@@ -480,7 +494,7 @@ export async function buildManifest(processDirIn: string, options: BuildManifest
       description: pyTruthy(metadata['description']) ? metadata['description'] as string : null,
       publisher: pyTruthy(metadata['publisher']) ? metadata['publisher'] as string : null,
     },
-    engine: engineBlock(engineId),
+    engine: engineBlock(engineId, edges),
     voice: {
       engine: engineId,
       // Never defaulted: e2a's own default is the literal 'internal', which crashes three layers away.

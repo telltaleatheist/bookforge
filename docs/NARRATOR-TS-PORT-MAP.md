@@ -373,17 +373,8 @@ Anything the renderer (Listen) also needs (text core, acronyms) goes under `shar
 - `pyRepr` escapes what Python calls non-printable by Node's Unicode tables (15) where Python 3.11 has 14, so a character assigned between them escapes in Python and prints raw here. It reaches log lines and refusal messages only.
 - Known differences from the Python: a cover JPEG is sharp's rather than Pillow's (a CMYK cover comes out sRGB), a Chinese word in a TOC title gets Unidecode's `Bei Jing` rather than pypinyin's `beijing`, and Orpheus is refused by name.
 
-**For the flip: how a voice's edges reach assembly (lead's ruling, 2026-11-05). Not built yet.**
-`GET /v1/voices` carries `edges {pads, fade_in_ms, fade_out_ms}` per voice and per arm, once a real release has it.
-- Record `edges` in the session when it renders. Assembly reads the session's record and never asks a server, so a
-  voice changing later cannot change an old book, and reassembly needs no server up.
-- `electron/narrator/assemble/engine-profiles.ts` stays only as a named record of what pre-flip sessions were rendered
-  under, never as a default. A new render with no `edges` recorded refuses by name.
-- What decides today, and has to move: `session/session-v1.ts` `engineBlock()` and its `profile.pads` check, which feed
-  `assemble/chapters.ts`. `session/manifest.ts` only carries the block.
-- Drop the dead `edgeFadeMs`: `electron/data/higgs-models.json` (20 blocks), `electron/higgs-models.ts`,
-  `electron/preload.ts`, and the keeper line in `tools/test-higgs-engine.js`. Voice facts live on Crucible (Owen).
-- Move the keeper at `tools/test-narrator-session.js`, which pins the table against the Python.
+**Done at the flip: how a voice's edges reach assembly (lead's ruling, 2026-11-05).**
+`runCrucibleRender` records the row's `edges` in `session-state.json` before its first submit (`electron/crucible/session-edges.ts`), and refuses a new render whose row states none. `session/session-v1.ts` reads that record, so a voice changing later cannot change an old book and reassembly needs no server. The first record wins. A session with chunks and no record stays on `PRE_FLIP_EDGES` in `assemble/engine-profiles.ts`, a named record that validates nothing. `edgeFadeMs` is gone from the catalog; it remains only as the manifest's field.
 
 **Step 8 is done.** Orpheus is deleted and `python/narrator` is trimmed to the closure `cli/align_book_chapters.py` needs. `docs/PYTHON-REMAINING.md` lists every piece of Python left and what reaches it, and `python/README.md` names the modules.
 

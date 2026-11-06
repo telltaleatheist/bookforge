@@ -1352,7 +1352,9 @@ realScenario('real-S14', 'a Stop during a real load: what the card says afterwar
 realScenario('real-render-stop', 'a Stop mid-render of three chunks: the job ends and the card comes back', async () => {
   const render = require(path.join(H.DIST, 'crucible', 'render.js'));
   const client = await realClient();
-  const dir = fs.mkdtempSync(path.join(H.WORK, 'real-render-'));
+  const dir = path.join(fs.mkdtempSync(path.join(H.WORK, 'real-render-')), 'chapters', 'sentences');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, '..', '..', 'session-state.json'), JSON.stringify({ version: 2, total_sentences: 100 }));
   const chunks = [
     { index: 1, text: 'The queue is not the work; the queue is who may begin.' },
     { index: 2, text: 'A refusal that names a holder is a wait, not a failure.' },

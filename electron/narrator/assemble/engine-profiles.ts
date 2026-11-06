@@ -1,10 +1,6 @@
 /**
- * HOW ASSEMBLY MUST TREAT ONE ENGINE'S CHUNKS, AND WHAT COUNTS AS SAYING ITS TEXT. A port of
- * `assemble/engine_profiles.py`'s table.
- *
- * TEMPORARY OWNER of the numbers: they are a voice's facts, and Crucible is gaining them
- * as `edges: {pads, fade_in_ms, fade_out_ms}` on `GET /v1/voices`. This table and its
- * keeper stand until a real release carries that.
+ * WHAT COUNTS AS SAYING AN ENGINE'S TEXT, AND THE EDGES OLD SESSIONS WERE RENDERED UNDER. A
+ * port of `assemble/engine_profiles.py`'s table.
  *
  * `orpheus` stays as data, for a finished Orpheus session a person reassembles.
  */
@@ -35,22 +31,34 @@ const coverage = (audited: boolean): CoveragePolicy => ({
 
 export interface EngineProfile {
   readonly id: string;
+  readonly coverage: CoveragePolicy;
+}
+
+/** How a session's chunks join. */
+export interface SessionEdges {
   /** True when the engine bakes the inter-chunk silence and its own edges into the audio. */
   readonly pads: boolean;
   readonly fadeInMs: number;
   readonly fadeOutMs: number;
-  readonly coverage: CoveragePolicy;
 }
 
 export const ENGINE_PROFILES: Readonly<Record<string, EngineProfile>> = {
-  orpheus: { id: 'orpheus', pads: true, fadeInMs: 0, fadeOutMs: 0, coverage: coverage(false) },
-  'higgs-v3': { id: 'higgs-v3', pads: false, fadeInMs: 10, fadeOutMs: 25, coverage: coverage(true) },
+  orpheus: { id: 'orpheus', coverage: coverage(false) },
+  'higgs-v3': { id: 'higgs-v3', coverage: coverage(true) },
 };
 
 /**
- * Refuses an id with no edge contract. Guessing `pads` either way ships a book that clicks
- * at every join and has no gaps, or fades and re-spaces audio that was already correct.
+ * WHAT SESSIONS WITH NO RECORDED EDGES WERE RENDERED UNDER: a named record of the past, never
+ * a default and never a check. A voice's edges are Crucible's fact, and a session begun since
+ * 2.0.35 carries them (`crucible/session-edges.ts`). This table validates nothing: a session
+ * that lost its record reads as pre-flip here, and the render door's refusal is the only guard.
  */
+export const PRE_FLIP_EDGES: Readonly<Record<string, SessionEdges>> = {
+  orpheus: { pads: true, fadeInMs: 0, fadeOutMs: 0 },
+  'higgs-v3': { pads: false, fadeInMs: 10, fadeOutMs: 25 },
+};
+
+/** Refuses an id this app has no coverage policy or pre-flip record for. */
 export function profileFor(engineId: string): EngineProfile {
   const profile = Object.prototype.hasOwnProperty.call(ENGINE_PROFILES, engineId) ? ENGINE_PROFILES[engineId] : undefined;
   if (profile === undefined) {

@@ -421,11 +421,6 @@ export interface HiggsBackendCaps {
   /** Provenance of the safe band, in the style of `_maxCharsNote`. */
   _safeBandNote?: string | null;
   /**
-   * Assembly-time fades on every chunk. Higgs emits no pads of its own, so the
-   * decoded chunk ends at a hard sample boundary and joins click without these.
-   */
-  edgeFadeMs?: { in: number; out: number };
-  /**
    * Sampling, sent inside `extra_params` — NEVER at the request top level.
    *
    * `repetitionPenalty` is a SERVED-ARM-ONLY lever and belongs in a per-backend
@@ -1247,7 +1242,6 @@ export function higgsVoiceCapsForModel(
   if (served.targetCharsSource !== undefined) caps.targetCharsSource = served.targetCharsSource;
   if (served.safeMinChars !== undefined) caps.safeMinChars = served.safeMinChars;
   if (served.safeMaxChars !== undefined) caps.safeMaxChars = served.safeMaxChars;
-  if (served.edgeFadeMs !== undefined) caps.edgeFadeMs = served.edgeFadeMs;
   // SAMPLING: the engine-level one (higgsEngineSampling), for every voice on
   // every arm. A block may override it only with its reason written beside it.
   if (served.sampling !== undefined) {

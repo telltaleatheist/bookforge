@@ -731,7 +731,6 @@ export interface HiggsBackendCapsDto {
   /** null = declared UNMEASURED, which for a fine-tune is a refusal. */
   maxChars?: number | null;
   maxCharsSource?: string | null;
-  edgeFadeMs?: { in: number; out: number };
   sampling?: { temperature?: number; topP?: number; topK?: number };
   referenceSecondsCap?: number;
   allowedControls?: string[];

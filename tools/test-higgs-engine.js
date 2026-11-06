@@ -723,7 +723,6 @@ check('the measured caps come through, with their provenance', () => {
   const c = higgs.higgsVoiceCapsForModel(defaultVoice);
   assert.strictEqual(c.maxChars, 600, 'the measured zero-shot cap moved');
   assert.strictEqual(c.maxCharsSource, 'placeholder');
-  assert.deepStrictEqual(c.edgeFadeMs, { in: 10, out: 25 });
   assert.deepStrictEqual(c.sampling, higgs.higgsEngineSampling(), 'the default voice renders at the engine-level sampling');
   assert.strictEqual(c.referenceSecondsCap, 30);
   assert.deepStrictEqual(c.allowedControls, []);

@@ -29,11 +29,6 @@
           "maxChars": 600,
           "maxCharsSource": "placeholder",
           "_maxCharsNote": "600 is the ZERO-SHOT figure and it is measured, not guessed: coverage by faster-whisper/difflib alignment is 1.000 at 213/440/504 chars and holds through 600, while 898 chars fails REPRODUCIBLY (coverage 0.86 and 0.78 on two seeds; tail coverage 0.314 and 0.000 — it drops the end of the paragraph). A reference clip does NOT fix it; it is a v3 model property that v2 does not have. DURATION RATIO IS NOT A COVERAGE PROXY: at temperature 0.7 the 898-char chunk produced ratio 0.99 while actually delivering coverage 0.778 with a 26% insert rate — it dropped text and padded the duration with hallucinated words, and any cap built on duration alone would have passed it. THIS NUMBER IS VALID ONLY FOR ZERO-SHOT and must never be copied onto an adapter voice; see the deathstalker entry.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
-          "_edgeFadeNote": "WHO APPLIES THIS: narrator's assembler, and as of narrator 4854aae4 it DOES — assemble/engine_profiles.py declares higgs-v3 as pads=false with 10/25 ms fades, assemble/edges.py applies them as RAISED-COSINE windows (zero slope at both ends, so the join has no discontinuity in the first derivative either), and _plan_unpadded realizes the manifest gapBefore/gapAfter as generated silence through one FLAC writer so the concat stays homogeneous. Prep writes the gaps.json sidecar these read, and session_v1 REFUSES a pads=false session without it. An earlier draft of parallel-tts-bridge.ts justified routing Higgs assembly to narrator by claiming narrator already read this field when neither side did; it does now, and the number is here because the catalog is where per-voice tuning lives. WHY THE FADE IS NEEDED AT ALL: Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — and the patched server already trims its own sentinel tail, so what reaches the assembler ends at a hard sample boundary: a step discontinuity, i.e. a click. 25 ms out / 10 ms in removes it, taking a chunk edge from about -30 dB to -45..-48 dB. Applied at ASSEMBLY and never baked into the per-chunk wav, so the raw model output stays inspectable. This is also why the manifest gapBefore/gapAfter are LIVE for Higgs where they are inert for Orpheus.",
           "referenceSecondsCap": 30,
           "allowedControls": [],
           "_allowedControlsNote": "EMPTY ON PURPOSE, and it is a safety rule rather than a preference. An inline control token that is NOT in get_added_vocab() is split into 7-10 ordinary text pieces and READ ALOUD, which derails generation into a degenerate loop: ASR coverage 0.000, pitch std collapsing to 0.28 st, speaker cosine 0.05. A typo is not ignored — it destroys the render. v3 also has NO scene-description mechanism (<|scene_desc_start|> is a v2 chat role, absent from v3's vocabulary) and no `neutral`/`calm` emotion. At default sampling no control token beat plain text on speaker cosine, and the one candidate (<|prosody:long_pause|>) did not change measured pause density. The delivered render uses none. An empty allowlist means no engine ever has to get the validation right."
@@ -43,11 +38,6 @@
           "maxChars": 600,
           "maxCharsSource": "placeholder",
           "_maxCharsNote": "THE SAME PLACEHOLDER ON BOTH ARMS, AND THAT IS NOT AN INHERITANCE. A placeholder makes no claim about a backend — it is the zero-shot figure the v3 family was measured at on the served path, and it is labelled `placeholder` precisely so nobody reads it as a certificate. It may therefore be stated twice where a MEASURED number may not: narrator's own HiggsV3Defaults.MAX_CHARS is 600 on both arms too, so all three agree by construction rather than by copying. What must NEVER be stated twice is a length-sweep number, which is why deathstalker's mlx cap is null.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
-          "_edgeFadeNote": "SAME CODEC, SAME NUMBERS, and applied by the same code: narrator's assembler (assemble/engine_profiles.py declares higgs-v3 as pads=false with 10/25 ms raised-cosine fades) runs on whichever arm rendered. The fade is a property of the DECODED WAVEFORM's hard sample boundary, not of the sampler that produced the tokens, so unlike maxChars it genuinely does not vary by backend.",
           "referenceSecondsCap": 30,
           "_referenceSecondsCapNote": "The vllm-omni server's 30 s HTTP limit is enforced on THIS arm too. Stated rather than omitted so a clips voice auditioned on the Mac is refused at the same length the server would refuse it at.",
           "allowedControls": []
@@ -81,19 +71,11 @@
       "addedAt": "2026-09-04",
       "backends": {
         "served": {
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
         "mlx": {
-          "_comment": "THE MAC ARM: what this machine does with the audio and the reference (edge fades, the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
+          "_comment": "THE MAC ARM: what this machine does with the reference (the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -123,19 +105,11 @@
       "addedAt": "2026-09-06",
       "backends": {
         "served": {
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
         "mlx": {
-          "_comment": "THE MAC ARM: what this machine does with the audio and the reference (edge fades, the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
+          "_comment": "THE MAC ARM: what this machine does with the reference (the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -174,19 +148,11 @@
       "addedAt": "2026-09-07",
       "backends": {
         "served": {
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
         "mlx": {
-          "_comment": "THE MAC ARM: what this machine does with the audio and the reference (edge fades, the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
+          "_comment": "THE MAC ARM: what this machine does with the reference (the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -227,19 +193,11 @@
       "addedAt": "2026-09-08",
       "backends": {
         "served": {
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
         "mlx": {
-          "_comment": "THE MAC ARM: what this machine does with the audio and the reference (edge fades, the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
+          "_comment": "THE MAC ARM: what this machine does with the reference (the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy.",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -274,21 +232,13 @@
       "addedAt": "2026-09-11",
       "backends": {
         "served": {
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
         "mlx": {
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": [],
-          "_comment": "THE MAC ARM: what this machine does with the audio and the reference (edge fades, the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy."
+          "_comment": "THE MAC ARM: what this machine does with the reference (the reference cap, the allowed controls). The voice's cap, band and pace on the Mac are the Mac Crucible's, stated per server by GET /v1/voices from the pinned crucible-voice.toml (Owen 2026-09-28: single source of truth, where the models are served). This catalog keeps no copy."
         }
       },
       "note": "THE FIRST VOICE TRAINED ON RVC-CONVERTED AUDIO, and it exists because of an experiment rather than a book. The corpus is deathstalker's own build7 clips (998 train rows, the SAME rows json and cap as ds_v7) converted clip-by-clip through the Sigma Male Narrator RVC model, downsampled 48k->24k by exact 2:1 polyphase decimation, and trained with only --build-root changed. That makes sigma and ds_v7 a controlled A/B whose single variable is RVC (HIGGS_FIELD_NOTES 4n.58-4n.60).\n\nCROSS-VOICE, SO THERE IS NO GROUND TRUTH. RVC did not clean a recording here - it resynthesized a voice that never existed from deathstalker's content features. The artifacts ARE the voice, which is why no speaker-similarity check applies and Owen's ear is the whole of the quality verdict (2026-09-11: \"the render sounds great. came out well\").\n\nWHY ITS NUMBERS LOOK BETTER THAN DEATHSTALKER'S, AND WHY THAT IS NOT A COMPLIMENT: holdout 3.2513 against ds_v7's 3.8353 on identical rows, and ds_v7 EARLY-STOPPED at step 930 while sigma was still improving at 1426. Cross-entropy on audio codes falls mechanically when the target is more predictable, and RVC output is exactly that - a resynthesis that discards room tone, breath variation and level drift. The ladder rewards the same smoothness. So the lower loss and the wider band mean 'easier to model', NOT 'better voice'. Do not carry this comparison over to a same-voice cleanup, where a real narrator exists to deviate from.",
@@ -336,10 +286,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -348,10 +294,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -385,10 +327,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -397,10 +335,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -434,10 +368,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -446,10 +376,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -483,10 +409,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -495,10 +417,6 @@
           "maxCharsSource": "placeholder",
           "targetChars": 600,
           "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
-          "edgeFadeMs": {
-            "in": 10,
-            "out": 25
-          },
           "referenceSecondsCap": 30,
           "allowedControls": []
         }

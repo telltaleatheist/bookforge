@@ -156,6 +156,7 @@ function voiceRow(id, over) {
     sample_rate: 24000,
     takes: 1,
     needs_reference: false,
+    edges: { pads: false, fade_in_ms: 10, fade_out_ms: 25 },
     // `[voice.serving]` — what the server under narrator is sized by. Required
     // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
     // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
@@ -448,8 +449,9 @@ async function main() {
   await check('a chunk over the venue\'s cap is refused HERE, with nothing submitted', async () => {
     const fake = await startFakeCrucible([voiceRow('deathstalker')]);
     const server = registerFake(fake.url);
-    const sentencesDir = path.join(WORK, 'sentences');
+    const sentencesDir = path.join(WORK, 'session-over', 'chapters', 'sentences');
     fs.mkdirSync(sentencesDir, { recursive: true });
+    fs.writeFileSync(path.join(sentencesDir, '..', '..', 'session-state.json'), JSON.stringify({ version: 2, total_sentences: 100 }));
     try {
       await assert.rejects(
         () => render.runCrucibleRender({
@@ -482,8 +484,9 @@ async function main() {
   await check('a book inside the venue\'s cap is submitted unchanged', async () => {
     const fake = await startFakeCrucible([voiceRow('deathstalker')]);
     const server = registerFake(fake.url);
-    const sentencesDir = path.join(WORK, 'sentences-ok');
+    const sentencesDir = path.join(WORK, 'session-ok', 'chapters', 'sentences');
     fs.mkdirSync(sentencesDir, { recursive: true });
+    fs.writeFileSync(path.join(sentencesDir, '..', '..', 'session-state.json'), JSON.stringify({ version: 2, total_sentences: 100 }));
     const chunks = [
       { index: 0, text: `[break]${'a'.repeat(793)}` },
       { index: 1, text: 'b'.repeat(800) },
@@ -505,6 +508,30 @@ async function main() {
         'a chunk exactly AT the cap is inside it — the refusal is `>`, not `>=`');
       assert.deepStrictEqual(fake.state.submitted[0].params.chunks, chunks,
         'the chunks go up exactly as packed; nothing here re-splits or trims them');
+      assert.deepStrictEqual(
+        JSON.parse(fs.readFileSync(path.join(sentencesDir, '..', '..', 'session-state.json'), 'utf8')).edges,
+        { pads: false, fade_in_ms: 10, fade_out_ms: 25 },
+        'the session has the row\'s edges by the time the book is submitted');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  await check('a voice whose row states no edges is refused HERE, with nothing submitted', async () => {
+    const fake = await startFakeCrucible([voiceRow('deathstalker', { edges: null })]);
+    const server = registerFake(fake.url);
+    const sentencesDir = path.join(WORK, 'session-no-edges', 'chapters', 'sentences');
+    fs.mkdirSync(sentencesDir, { recursive: true });
+    fs.writeFileSync(path.join(sentencesDir, '..', '..', 'session-state.json'), JSON.stringify({ version: 2, total_sentences: 100 }));
+    try {
+      await assert.rejects(
+        () => render.runCrucibleRender({
+          server, renderId: 'venue-band-3', voice: 'deathstalker', language: 'en',
+          chunks: [{ index: 0, text: 'Short enough.' }], sentencesDir,
+        }),
+        (err) => err.code === 'crucible_voice_states_no_edges',
+      );
+      assert.strictEqual(fake.state.submitted.length, 0);
     } finally {
       await fake.close();
     }

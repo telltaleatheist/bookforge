@@ -99,6 +99,7 @@ function voiceRow(id) {
     sample_rate: 24000,
     takes: 1,
     needs_reference: false,
+    edges: { pads: false, fade_in_ms: 10, fade_out_ms: 25 },
     // `[voice.serving]` — what the server under narrator is sized by. Required
     // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
     // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
@@ -233,6 +234,7 @@ async function renderCancelChecks() {
   const server = registerFake(fake.url);
   const sentencesDir = path.join(work, 'session-render', 'chapters', 'sentences');
   fs.mkdirSync(sentencesDir, { recursive: true });
+  fs.writeFileSync(path.join(sentencesDir, '..', '..', 'session-state.json'), JSON.stringify({ version: 2, total_sentences: 100 }));
 
   const writes = [];
   let resolvedAt = null;

@@ -183,7 +183,6 @@ roster, and a voice not in it is refused by name.
       "served": {               //   wsl    -> vllm-omni behind WSL
         "maxChars": 600,        // null on an unmeasured fine-tune => REFUSED
         "maxCharsSource": "placeholder",   // catalog | placeholder | length-sweep
-        "edgeFadeMs": { "in": 10, "out": 25 },
         // no per-block "sampling": the catalog-top ENGINE-LEVEL one (0.8 / 0.95 / 50,
         // measured 2026-09-09 on gibberish and 2026-09-11 on the Mac batched path,
         // where a 0.6 trial looped into silence to the cap on 21 of 62 chunks) rides
@@ -392,8 +391,9 @@ Provenance:
   it. **Duration ratio is NOT a coverage proxy**: at temperature 0.7 the 898-char
   chunk gave ratio 0.99 while dropping 22 % of its text and padding with a 26 %
   insert rate. Any future cap must be measured by ASR alignment.
-- **`edgeFadeMs: {in:10, out:25}`** — applied at ASSEMBLY, never baked into the
-  chunk wav. Higgs emits no lead/trail silence, so a decoded chunk ends at a hard
+- **Edge fades, 10 in / 25 out** — a voice's `edges` on `GET /v1/voices`, recorded in
+  the session at render (`electron/crucible/session-edges.ts`). Applied at ASSEMBLY, never
+  baked into the chunk wav. Higgs emits no lead/trail silence, so a decoded chunk ends at a hard
   sample boundary and every join clicks without them. This is also why the
   manifest's `gapBefore`/`gapAfter` are **live** for Higgs and inert for Orpheus.
 - **`sampling: 1.0 / 0.95 / 50`** — the server's own shipped defaults
@@ -511,9 +511,9 @@ document.
 **The caps do NOT travel.** narrator's `higgs_v3_config_from_worker_kwargs`
 **raises** on a `caps` payload by name, because those are Orpheus's knobs
 (`eosBoost`, `eosFloor`, `maxCharsPerSec`) and v3 implements none of them —
-accepting them would suggest they applied. Higgs's caps are BookForge's own two
-jobs: sizing the prep packer (`maxChars`) and fading at assembly (`edgeFadeMs`).
-They stay on this side, and a keeper asserts none of them leaks into the spawn env.
+accepting them would suggest they applied. Higgs's cap is BookForge's own
+job: sizing the prep packer (`maxChars`).
+It stays on this side, and a keeper asserts none of them leaks into the spawn env.
 
 ### ⚠ TWO SERVING STACKS — `serving.stack` (2026-09-06)
 

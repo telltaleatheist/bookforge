@@ -154,6 +154,7 @@ function voiceRow(id, over) {
     // false for a checkpoint, whose voice is in its weights, true for the
     // `zeroshot` row, which is the base weights plus somebody's clip.
     needs_reference: false,
+    edges: { pads: false, fade_in_ms: 10, fade_out_ms: 25 },
     // `[voice.serving]` — what the server under narrator is sized by. Required
     // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
     // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
@@ -504,8 +505,9 @@ function registerFake(url) {
 }
 
 function freshSentencesDir() {
-  const dir = path.join(WORK, `sentences-${Math.random().toString(36).slice(2)}`);
+  const dir = path.join(WORK, `session-${Math.random().toString(36).slice(2)}`, 'chapters', 'sentences');
   fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, '..', '..', 'session-state.json'), JSON.stringify({ version: 2, total_sentences: 100 }));
   return dir;
 }
 

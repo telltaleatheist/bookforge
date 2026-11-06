@@ -31,7 +31,7 @@ const M = require(path.join(NARRATOR, 'session', 'manifest.js'));
 const S = require(path.join(NARRATOR, 'session', 'session-v1.js'));
 const ST = require(path.join(NARRATOR, 'session', 'session-store.js'));
 const FH = require(path.join(NARRATOR, 'session', 'flac-header.js'));
-const { ENGINE_PROFILES, profileFor } = require(path.join(NARRATOR, 'assemble', 'engine-profiles.js'));
+const { ENGINE_PROFILES, PRE_FLIP_EDGES, profileFor } = require(path.join(NARRATOR, 'assemble', 'engine-profiles.js'));
 
 const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'narrator-session-cases.json'), 'utf8'));
 const compat = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'narrator-py-compat.json'), 'utf8'));
@@ -124,11 +124,13 @@ function refusalWords(text) {
     );
   });
 
-  // ── The assembler's table: a wrong row is a book that clicks at every join ────────
-  await check('the engine table equals engine_profiles.py', () => {
+  // ── What pre-flip sessions were rendered under: a wrong row clicks at every join ───
+  await check('the pre-flip record equals engine_profiles.py', () => {
     assert.deepStrictEqual(Object.keys(ENGINE_PROFILES).sort(), Object.keys(fixture.profiles).sort());
+    assert.deepStrictEqual(Object.keys(PRE_FLIP_EDGES).sort(), Object.keys(fixture.profiles).sort());
     for (const [id, row] of Object.entries(fixture.profiles)) {
-      const ours = profileFor(id);
+      assert.strictEqual(profileFor(id).id, id);
+      const ours = PRE_FLIP_EDGES[id];
       assert.strictEqual(ours.pads, row.pads, id);
       assert.strictEqual(ours.fadeInMs, row.fade_in_ms, id);
       assert.strictEqual(ours.fadeOutMs, row.fade_out_ms, id);

@@ -82,6 +82,7 @@ import { installingLine, queueFullLine, watchQueueWait, type CrucibleQueuePlace 
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
 import { holdRenderAtSubmit, processDirOfSentencesDir, writeRenderHoldRecord } from './render-holds';
+import { recordSessionEdges } from './session-edges';
 import { crucibleTransientLine } from './job';
 import { transportFailureCause } from './transport-failure';
 import {
@@ -771,6 +772,7 @@ export async function runCrucibleRender(
     assertVoiceRowLoadable(row, server, voice);
     log(describeVenueBand(band));
     refuseChunksOverVenueCap(band, options.chunks);
+    await recordSessionEdges(sentencesDir, server, voice, row.edges, log);
     // A BOOK RENDER IS ALWAYS GUARDED, AND IT STATES THE BAND ITSELF (Owen,
     // 2026-09-19). `retake: true` picks narrator's guarded driver — the
     // PaceTracker, the re-roll on truncation/runaway/loop, the split ladder —
