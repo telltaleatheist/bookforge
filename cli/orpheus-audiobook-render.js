@@ -29,10 +29,7 @@
  *
  * Optional assembly passes (all default OFF except denoise, mirroring the app toggles):
  *   --no-final-denoise   skip the roformer denoise pass (default ON for this adapter)
- *   --de-ring            apply the voice's post-render notch/comb (SNAC ringing); opt-in
- *   --sentence-gap <s>   normalize the inter-sentence gap to <s> seconds at assembly
- *                        (strips e2a's artificial trailing exact-zero pad, then re-adds
- *                        <s>s of silence). Omit to use the voice's models.json default.
+ *   (--de-ring and --sentence-gap left in step 8 with Orpheus, and are refused by name.)
  *   --chapter-gap <s>    seconds of silence to leave BETWEEN chapters (never after the
  *                        last one). Omit for BookForge's default of 3s; pass 0 for the
  *                        butt-joined book this pipeline made until 2026-09-09.
@@ -119,6 +116,18 @@ async function bookIsOnTheProjectsChain(projectDir, inputPath, manifestSvc) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // --de-ring LEFT IN STEP 8 (2026-11-05). This parser keeps any flag it is given, so a retired one
+  // is refused here by name rather than silently ignored.
+  if (args['de-ring'] !== undefined) {
+    throw new Error('--de-ring is gone: it applied the Orpheus post-render filter, which left with Orpheus (retired). '
+      + 'Nothing else in BookForge applies one. Drop the flag.');
+  }
+  // --sentence-gap LEFT IN STEP 8 (2026-11-05). This parser keeps any flag it is given, so a retired one
+  // is refused here by name rather than silently ignored.
+  if (args['sentence-gap'] !== undefined) {
+    throw new Error('--sentence-gap is gone: it set the Orpheus sentence-gap pass, which left with Orpheus (retired). '
+      + 'Nothing else in BookForge applies one. Drop the flag.');
+  }
   const voice = args.voice;
   // THE VOICE IS A RENDER CHOICE. --assemble-only reads the cached sentences the
   // render already made and resolves the engine from the session itself
@@ -140,8 +149,11 @@ async function main() {
   // reassembly-bridge resolves the engine from the session it assembles.
   const engine = args.engine;
   if (!args['assemble-only']) {
-    if (engine !== 'orpheus' && engine !== 'higgs') {
-      throw new Error(`--engine <orpheus|higgs> is required for a render (got ${engine === undefined ? 'nothing' : JSON.stringify(engine)})`);
+    if (engine === 'orpheus') {
+      throw new Error('--engine orpheus: Orpheus is retired, and this build renders Higgs only. Pass --engine higgs.');
+    }
+    if (engine !== 'higgs') {
+      throw new Error(`--engine higgs is required for a render (got ${engine === undefined ? 'nothing' : JSON.stringify(engine)})`);
     }
   } else if (engine !== undefined) {
     throw new Error('--assemble-only reads the cached sentences; the engine was decided when they were rendered. Drop --engine.');
@@ -270,28 +282,6 @@ async function main() {
   // combination with an explicit --final-denoise was refused by name above.
   const finalDenoise = !args['no-final-denoise'] && !suppliedSentencesDir;
 
-  // De-ring (OPT-IN, default OFF — same as the app's assemble step): apply the voice's
-  // per-voice post-render filter chain (the notch/comb that strips SNAC tonal ringing)
-  // at e2a's final encode. startReassembly resolves the chain from session provenance
-  // ONLY when config.applyDeRing is set; --de-ring turns it on. Shares the SAME handler
-  // the app uses, so behaviour is identical.
-  const applyDeRing = !!args['de-ring'];
-
-  // Sentence-gap normalization: when --sentence-gap <seconds> is given, the gap pass
-  // strips e2a's artificial trailing exact-zero pad from each raw cached sentence and
-  // re-applies exactly this much silence. It runs wherever the pass in front of assembly
-  // runs — inside the denoise step when denoising, inside startReassembly when not —
-  // and it must precede the roformer, which turns those exact zeros into near-zeros that
-  // no longer trim. Absent → left undefined so the voice's models.json default
-  // (resolveOrpheusSentenceGap) applies; if the voice declares none either, the gap step
-  // is skipped (NO invented default).
-  let sentenceGap;
-  if (args['sentence-gap'] !== undefined && args['sentence-gap'] !== true) {
-    sentenceGap = parseFloat(args['sentence-gap']);
-    if (!Number.isFinite(sentenceGap) || sentenceGap < 0) {
-      throw new Error(`--sentence-gap must be a non-negative number, got: ${args['sentence-gap']}`);
-    }
-  }
 
   // The silence between chapters. Absent is NOT zero: it is left undefined so the
   // reassembly bridge applies BookForge's default, which is the same answer the app's
@@ -368,16 +358,10 @@ async function main() {
     enableTextSplitting: false,
   };
   if (args['model-dir']) {
-    // TWO ENGINES, TWO SPELLINGS, AND NEITHER STANDS IN FOR THE OTHER. The old
-    // message here ("a Higgs voice is a catalog checkpoint") said what --model-dir
-    // is NOT and left the operator with nowhere to go; since 2026-09-12 there IS
-    // somewhere — a Higgs checkpoint under test rides --checkpoint-dir and borrows
-    // the named voice's certificate (caps, pace, band).
-    if (engine !== 'orpheus') {
-      throw new Error('--model-dir names an Orpheus model directory; a Higgs checkpoint under '
-        + 'test is named by --checkpoint-dir (it borrows --voice\'s certificate).');
-    }
-    settings.orpheusModelDir = args['model-dir'];
+    // Step 8 (2026-11-05): --model-dir named an ORPHEUS model directory, and Orpheus is retired. A Higgs
+    // checkpoint under test borrows a catalog voice's certificate and rides --checkpoint-dir.
+    throw new Error('--model-dir named an Orpheus model directory, and Orpheus is retired. A Higgs checkpoint '
+      + 'under test is named by --checkpoint-dir (it borrows --voice\'s certificate).');
   }
   // ── THE CHECKPOINT / SAMPLING / BAND OVERRIDE (2026-09-12) ───────────────
   //
@@ -519,10 +503,9 @@ async function main() {
   // no processDir, so the denoise step resolves the project's cached session itself.
   let denoisedSentencesDir;
   if (finalDenoise) {
-    console.log('[audiobook] STEP 1b/2 runFinalDenoise — gap-normalize + roformer over the cached sentences');
+    console.log('[audiobook] STEP 1b/2 runFinalDenoise — roformer over the cached sentences');
     const dn = await denoiseJob.runFinalDenoise(`${jobId}-denoise`, {
       processDir: session.processDir,
-      ...(sentenceGap !== undefined ? { sentenceGap } : {}),
     }, null);
     if (!dn || !dn.success || !dn.outputDir) {
       throw new Error(`final denoise failed: ${dn && dn.error ? dn.error : 'unknown'}`);
@@ -553,12 +536,8 @@ async function main() {
       outputFilename: md.outputFilename,
     },
     excludedChapters: [],
-    applyDeRing,
     // The denoised set, when one was derived above — assembled via --sentences_dir
-    // and KEPT (it is the session's, not this run's). Assembly runs no gap pass on a
-    // supplied set, because the gap is already baked into it; so the gap only travels
-    // to assembly on the no-denoise path, where assembly is the pass that applies it.
-    // undefined → the voice's models.json sentenceGap default applies (or no gap step)
+    // and KEPT (it is the session's, not this run's).
     // A SET SUPPLIED BY THE CALLER WINS. `--sentences-dir` names the audio to
     // assemble outright; the denoise below it cannot have run (it is gated on the
     // same flag), so these two are alternatives and never both.
@@ -566,9 +545,9 @@ async function main() {
       ? { sentencesDir: suppliedSentencesDir }
       : denoisedSentencesDir
         ? { sentencesDir: denoisedSentencesDir }
-        : (sentenceGap !== undefined ? { sentenceGap } : {})),
-    // Unlike the sentence gap, this never rides on an upstream pass — no
-    // enhancement touches a chapter boundary — so it goes straight to assembly,
+        : {}),
+    // This never rides on an upstream pass — no enhancement touches a chapter
+    // boundary — so it goes straight to assembly,
     // and absence hands the question to the bridge's default rather than to zero.
     ...(chapterGap !== undefined ? { chapterGap } : {}),
     // BESIDE the project's audiobook rather than over it. The bridge names the

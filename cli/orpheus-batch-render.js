@@ -325,6 +325,9 @@ async function main() {
       'behalf. Pass --engine higgs (the engine this build renders).',
     );
   }
+  if (engine === 'orpheus') {
+    throw new Error('--engine orpheus: Orpheus is retired, and this build renders Higgs only. Pass --engine higgs.');
+  }
   const settings = {
     language: args.language || 'en',
     ttsEngine: engine,
@@ -356,15 +359,10 @@ async function main() {
   // in the spawn target's namespace (a /home/... WSL path, or a \\wsl$ / C:\ path that
   // buildWslBashCommand will translate).
   if (args['model-dir']) {
-    // TWO ENGINES, TWO SPELLINGS, AND NEITHER STANDS IN FOR THE OTHER. An
-    // Orpheus model dir is the weights the worker loads; a Higgs checkpoint
-    // under test borrows a CATALOG voice's certificate (caps, pace, band) and
-    // rides `higgsOverride.checkpointDir`. Name the right flag.
-    if (engine !== 'orpheus') {
-      throw new Error('--model-dir names an Orpheus model directory; a Higgs checkpoint under '
-        + 'test is named by --checkpoint-dir (it borrows --voice\'s certificate).');
-    }
-    settings.orpheusModelDir = args['model-dir'];
+    // Step 8 (2026-11-05): --model-dir named an ORPHEUS model directory, and Orpheus is retired. A Higgs
+    // checkpoint under test borrows a catalog voice's certificate and rides --checkpoint-dir.
+    throw new Error('--model-dir named an Orpheus model directory, and Orpheus is retired. A Higgs checkpoint '
+      + 'under test is named by --checkpoint-dir (it borrows --voice\'s certificate).');
   }
   // ── THE CHECKPOINT / SAMPLING / BAND OVERRIDE ────────────────────────────
   //

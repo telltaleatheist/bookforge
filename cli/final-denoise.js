@@ -18,14 +18,13 @@
  * the same session reuses it and says so.
  *
  *   node --require ./cli/electron-stub.js cli/final-denoise.js \
- *        --project "<projectDir>" [--sentence-gap 0.6]
+ *        --project "<projectDir>"
  *   node --require ./cli/electron-stub.js cli/final-denoise.js \
  *        --process-dir "<session>/<hash>" [--sentences-dir <upstream set>]
  *
  * `--sentences-dir` is the pass reading ANOTHER pass's output (the "convert
- * first, then denoise" order). The job REFUSES it alongside --sentence-gap
- * rather than ignoring one of them, and so does this door — the gap can only be
- * applied to raw audio.
+ * first, then denoise" order). `--sentence-gap` left in step 8 with Orpheus and is refused by
+ * name.
  */
 'use strict';
 const fs = require('fs');
@@ -66,12 +65,11 @@ async function main() {
     if (!fs.existsSync(dir)) throw new Error(`--sentences-dir not found: ${dir}`);
     config.sentencesDir = dir;
   }
-  if (args['sentence-gap'] !== undefined && args['sentence-gap'] !== true) {
-    const gap = parseFloat(args['sentence-gap']);
-    if (!Number.isFinite(gap) || gap < 0) {
-      throw new Error(`--sentence-gap must be a non-negative number, got: ${args['sentence-gap']}`);
-    }
-    config.sentenceGap = gap;
+  // --sentence-gap LEFT IN STEP 8 (2026-11-05). This parser keeps any flag it is given, so a retired one
+  // is refused here by name rather than silently ignored.
+  if (args['sentence-gap'] !== undefined) {
+    throw new Error('--sentence-gap is gone: it set the Orpheus sentence-gap pass, which left with Orpheus (retired). '
+      + 'Nothing else in BookForge applies one. Drop the flag.');
   }
 
   const jobId = `cli-denoise-${crypto.randomUUID()}`;

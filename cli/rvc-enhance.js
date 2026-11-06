@@ -18,11 +18,11 @@
  *
  *   node --require ./cli/electron-stub.js cli/rvc-enhance.js \
  *        --project "<projectDir>" --voice-id builtin:deathstalker-sigma \
- *        [--index-rate 0.3] [--protect-rate 0.1] [--f0-method rmvpe] [--sentence-gap 0.6]
+ *        [--index-rate 0.3] [--protect-rate 0.1] [--f0-method rmvpe]
  *
  * `--sentences-dir` is this pass reading a DENOISE's output (the "denoise
- * first, then convert" order). The job refuses it alongside --sentence-gap
- * rather than ignoring one, and so does this door.
+ * first, then convert" order). `--sentence-gap` left in step 8 with Orpheus and is refused by
+ * name.
  */
 'use strict';
 const fs = require('fs');
@@ -82,10 +82,11 @@ async function main() {
     if (!fs.existsSync(dir)) throw new Error(`--sentences-dir not found: ${dir}`);
     config.sentencesDir = dir;
   }
-  const gap = optionalNumber(args, 'sentence-gap');
-  if (gap !== undefined) {
-    if (gap < 0) throw new Error(`--sentence-gap must be a non-negative number, got: ${gap}`);
-    config.sentenceGap = gap;
+  // --sentence-gap LEFT IN STEP 8 (2026-11-05). This parser keeps any flag it is given, so a retired one
+  // is refused here by name rather than silently ignored.
+  if (args['sentence-gap'] !== undefined) {
+    throw new Error('--sentence-gap is gone: it set the Orpheus sentence-gap pass, which left with Orpheus (retired). '
+      + 'Nothing else in BookForge applies one. Drop the flag.');
   }
 
   const jobId = `cli-rvc-${crypto.randomUUID()}`;
