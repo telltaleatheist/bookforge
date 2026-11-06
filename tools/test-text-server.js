@@ -614,9 +614,8 @@ test('every door that spawns a text pass brackets it, and asserts the model', ()
    * true. The whole bracket came out.
    *
    * THE SERVER ITSELF STAYS, and that is the distinction this block exists to
-   * hold: the two CLI doors above still drive it, `stopTextServer` is still what
-   * main calls on quit, and `TEXT_SERVER_PROTECT_RE` is still read by the TTS
-   * bridge. What died is one door's bracket, not `electron/text-server.ts`.
+   * hold: the CLI still drives it and `stopTextServer` is still what main calls on
+   * quit. What died is one door's bracket, not `electron/text-server.ts`.
    *
    * Pinned as an ABSENCE for the same reason as the block below: what is relied
    * on is that nothing calls these again, and the thing that would undo it is a

@@ -634,11 +634,10 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
    * bracketed around the run) was DELETED on 2026-09-15 rather than left as a
    * branch nothing can reach.
    *
-   * `electron/text-server.ts` itself STAYS. The two CLI clean doors
-   * (`cli/clean-step.js`, `cli/clean-lines-step.js`) drive it directly rather than
-   * through here, `stopTextServer` is what main calls on quit, and
-   * `TEXT_SERVER_PROTECT_RE` is read by the TTS bridge. What died is this door's
-   * bracket, not the server.
+   * `electron/text-server.ts` itself STAYS. The CLI's clean-lines door
+   * (`cli/clean-lines-step.js`) drives it directly rather than through here, and
+   * `stopTextServer` is what main calls on quit. What died is this door's bracket,
+   * not the server.
    */
   const {
     decideWhereTextActRuns, resolveCrucibleTextEngine, processTextVenueHost, withCrucibleTextActLease,
