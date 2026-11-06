@@ -6,8 +6,8 @@
  * and assembly joins the audio that came back over HTTP (TypeScript again).
  */
 
-import { onBridgeEvent, publishBridgeEvent } from './bridge-events';
-import { spawn, ChildProcess, execSync, exec } from 'child_process';
+import { publishBridgeEvent } from './bridge-events';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import { BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -417,7 +417,6 @@ export async function copyToFinalDestination(
   let vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
 
   // VTT may have been moved to vtt/ subfolder during rename step
-  let vttSubdir = false;
   if (!vttFile) {
     try {
       const vttDir = path.join(tempDir, 'vtt');
@@ -425,7 +424,6 @@ export async function copyToFinalDestination(
       const found = vttFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
       if (found) {
         vttFile = path.join('vtt', found);
-        vttSubdir = true;
       }
     } catch {
       // No vtt subfolder
@@ -3471,8 +3469,6 @@ export async function killAllWorkers(
 
   for (const [jobId, session] of activeSessions) {
     console.log(`[PARALLEL-TTS] Killing workers for job ${jobId}`);
-    const ttsEngine = session.config?.settings?.ttsEngine;
-
     // Clear watchdog timer
     if (session.watchdogTimer) {
       clearInterval(session.watchdogTimer);
@@ -4031,16 +4027,6 @@ function calculateChapterRanges(
   return ranges;
 }
 
-interface WorkerRange {
-  sentenceStart?: number;
-  sentenceEnd?: number;
-  chapterStart?: number;  // 1-indexed
-  chapterEnd?: number;    // 1-indexed
-}
-
-/**
- * Start a single worker process
- */
 // ─────────────────────────────────────────────────────────────────────────────
 // Discrete-index regeneration (BookForge "Correct Sentences")
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4542,7 +4528,6 @@ function reportWorkerCompletionCrash(session: ConversionSession, err: unknown): 
 async function completeAfterWorkers(session: ConversionSession): Promise<void> {
   if (session.cancelled) return;
 
-  const allComplete = session.workers.every(w => w.status === 'complete');
   const failedWorkers = session.workers.filter(w => w.status === 'error');
 
   /*
@@ -7970,12 +7955,6 @@ export async function startParallelConversion(
     return { success: false, error: 'Cancelled' };
   }
 
-  // Start workers - stagger on Windows to avoid conda temp file race condition
-  // On Windows, conda uses temp files that conflict when multiple processes start simultaneously
-  // On Mac/Linux, we can start all workers immediately
-  const isWindows = process.platform === 'win32';
-  const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
-
   try {
     // The venue was decided before prep (it placed the session); this is the
     // launch it decided.
@@ -8299,8 +8278,6 @@ export async function stopParallelConversion(
   // a child of this job until 2026-09-19 and this line reached it; it is the
   // `align` queue row behind this one now, and the queue stops it through that
   // module's own `cancel` (`queue-steps/align.ts` → `stopCoverageAlign`).
-  const ttsEngine = session.config?.settings?.ttsEngine;
-
   // A REMOTE RENDER IS CANCELLED ON THE SERVER, not by hanging up.
   //
   // There is no child process here for the teardown below to kill. Dropping the
@@ -9959,10 +9936,6 @@ export async function resumeParallelConversion(
     console.log(`[PARALLEL-TTS] Resume job ${jobId} cancelled while waiting for the GPU`);
     return { success: false, error: 'Cancelled' };
   }
-
-  // Start workers for missing ranges - stagger on Windows to avoid conda temp file race condition
-  const isWindows = process.platform === 'win32';
-  const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
 
   try {
     // `crucibleChunksForSession` reads the workers' `assignedIndices`, so the
