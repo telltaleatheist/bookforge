@@ -72,9 +72,9 @@ function check(name, fn) {
  */
 const bridgeJs = fs.readFileSync(path.join(DIST, 'reassembly-bridge.js'), 'utf-8');
 const fnSrc = bridgeJs.match(/async function narratorEngineForSession[\s\S]*?\n}\n/);
-const provSrc = bridgeJs.match(/async function parseSessionProvenance[\s\S]*?\n}\n/);
+const provSrc = bridgeJs.match(/async function sessionProvenance[\s\S]*?\n}\n/);
 if (!fnSrc || !provSrc) {
-  console.error('narratorEngineForSession / parseSessionProvenance are not in the compiled bridge');
+  console.error('narratorEngineForSession / sessionProvenance are not in the compiled bridge');
   process.exit(1);
 }
 // eslint-disable-next-line no-eval

@@ -477,17 +477,6 @@ export interface ReassemblyJobConfig {
    *  When `sentencesDir` is set, the upstream rvc-enhancement job (which receives
    *  the same flag) already applied it. false/absent = zero behavioral change. */
   finalDenoise?: boolean;
-  /** De-ring (OPT-IN): apply the session voice's per-voice post-render ffmpeg filter
-   *  chain (the notch/comb that removes SNAC tonal ringing) at e2a's final encode. The
-   *  backend resolves the actual chain from session provenance ONLY when this is true.
-   *  Absent/false → no filter is passed. Per-job choice from the wizard (default OFF). */
-  applyDeRing?: boolean;
-  /** Assembly-time inter-sentence gap in seconds. Normalizes the silence between
-   *  sentences on the RAW cached set before assembly (strips e2a's artificial trailing
-   *  exact-zero pad and re-applies this much silence). When set, this value wins; when
-   *  absent, the backend resolves the session voice's models.json default from
-   *  provenance, and skips the step if that is unset too (no invented default). */
-  sentenceGap?: number;
   /** Seconds of silence to leave BETWEEN CHAPTERS in the finished audiobook, so a
    *  listener hears the book move from one to the next. Realized by narrator's
    *  assembler, which also puts it into the chapter markers and both transcripts.
@@ -543,10 +532,6 @@ export interface RvcEnhancementJobConfig {
    * by name (electron/rvc-job.ts) rather than silently converting raw audio.
    */
   finalDenoise?: boolean;
-  /** Inter-sentence gap, baked in HERE when this pass reads the RAW sentences,
-   *  i.e. when it is the first enhancement pass. Absent when a denoise runs in
-   *  front of it — that pass owns the gap. See electron/sentence-gap.ts. */
-  sentenceGap?: number;
 }
 
 /**
@@ -633,10 +618,6 @@ export interface FinalDenoiseJobConfig {
   /** The set this pass denoises, when a voice conversion produced it and no
    *  parent step hands it over. Absent = the session's raw cached sentences. */
   sentencesDir?: string;
-  /** Inter-sentence gap in seconds, baked in by the gap pass that runs in front
-   *  of the roformer — and ONLY when this pass reads the raw sentences. Absent =
-   *  the session's provenance decides. */
-  sentenceGap?: number;
 }
 
 // Bilingual Cleanup job configuration - AI cleanup of extracted text

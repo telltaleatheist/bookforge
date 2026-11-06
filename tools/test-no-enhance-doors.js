@@ -254,7 +254,8 @@ const DENOISE_KEPT = {
   'electron/crucible/denoise.ts': 'the job, through Crucible',
   'electron/denoise-bridge.ts': 'the local separator spawn',
   'electron/denoise-job.ts': 'the queue row',
-  'electron/chapter-closer.ts': 'consumer',
+  // 'electron/chapter-closer.ts' left in step 8 (2026-11-05): it was Orpheus's chapter closer, and it
+  // consumed the gap normalizer, not the separator.
   'electron/clipforge-chain.ts': 'consumer (roformer_denoise)',
   'electron/coverage-align-job.ts': 'consumer',
 };

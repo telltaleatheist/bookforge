@@ -72,9 +72,6 @@ interface RvcConfig {
    * hands it over. Ordinarily absent: the parent's output says it.
    */
   sentencesDir?: string;
-  /** Baked in HERE when this pass reads the RAW sentences — it is then the first
-   *  thing that touches them. See electron/sentence-gap.ts. */
-  sentenceGap?: number;
 }
 
 export const rvcEnhancementStep: StepModule = {
@@ -179,7 +176,6 @@ export const rvcEnhancementStep: StepModule = {
         // Carried so the job can REFUSE it by name. See the field's note above.
         finalDenoise: config.finalDenoise,
         ...(upstreamSentences === undefined ? {} : { sentencesDir: upstreamSentences }),
-        ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
         // THE RUN'S VENUE, NOT A NEW DECISION. The job cross-checks it against
         // the session's own record and refuses a disagreement by name — §4.4,
         // one book, one GPU.

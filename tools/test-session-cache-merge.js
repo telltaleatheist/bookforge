@@ -651,14 +651,8 @@ const caseDir = (tag) => {
     }
   });
 
-  await check('the chapter closer finishes BEFORE the session is published', () => {
-    const closer = BRIDGE_TS.indexOf('const closerManifest = await stopChapterCloser');
-    const publish = BRIDGE_TS.indexOf('// Cache TTS session to project BEFORE assembly');
-    assert.ok(closer > 0 && publish > 0, 'both landmarks are present');
-    assert.ok(closer < publish,
-      'a chapter closed after the publish never reaches the cache the assembly reads — '
-      + 'and with the publish MOVING the session, it would be closing into a directory that had gone');
-  });
+  // "the chapter closer finishes BEFORE the session is published" LEFT IN STEP 8 (2026-11-05) with
+  // `electron/chapter-closer.ts`: it was Orpheus's, and nothing closes chapters during a render now.
 
   await check('tts-conversion throws on a publish that did not succeed', () => {
     const arm = TTS_STEP_TS.slice(TTS_STEP_TS.indexOf('const cached = await cacheSessionToProject('));

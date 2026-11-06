@@ -1,59 +1,40 @@
 /**
- * THE INTER-SENTENCE GAP PASS — one authority, because two passes can now be the
- * one that runs it.
+ * THE INTER-SENTENCE GAP IN A DERIVED SET'S IDENTITY — and nothing that applies one any more.
  *
- * ── What the pass is ────────────────────────────────────────────────────────
+ * ── What the gap pass was ───────────────────────────────────────────────────
  *
- * e2a leaves an artificial trailing pad on every rendered sentence, and this
- * strips it and re-applies a chosen amount of silence. It detects that pad by its
- * EXACTLY-zero samples, which means it can only ever run on the RAW cached
- * sentences: a roformer turns those zeros into dithered near-zeros and an RVC
- * pass re-synthesises them, and after either the pad is no longer findable. The
- * gap is therefore BAKED IN by whichever pass reads the raw sentences first, and
- * is part of that set's identity (see derived-sentences.ts).
+ * Orpheus left an artificial trailing pad on every rendered sentence, and a gap pass
+ * (`normalize_gaps.py`) stripped it by its exactly-zero samples and re-applied a chosen
+ * silence. It had to run on the RAW sentences, so whichever of the denoise or the
+ * conversion read them first baked it in, and the gap was part of that set's identity.
  *
- * ── Why it left denoise-job.ts ──────────────────────────────────────────────
+ * ── Step 8 (2026-11-05): Orpheus is retired, and its gap pass went with it ──
  *
- * It lived inside `planDenoisedSentences`, because the denoise was always the
- * first pass: a conversion that wanted a gap got it by denoising first. Owen's
- * ruling of 2026-08-29 made the ORDER the user's choice, so a conversion can now
- * be the first thing that touches the raw sentences — and then IT is the pass
- * that must bake the gap. Leaving the machinery inside the denoise would have
- * meant either an RVC-first run silently losing the gap (which is what the code
- * did before this split: the flag was threaded but no gap pass ever ran when
- * `finalDenoise` was off) or a second copy of the resolution rules in rvc-job.
+ * Owen: "orpheus is done, yes. deprecated". No other engine's sentences carry that pad,
+ * and the app never offered the gap for a non-Orpheus session. So:
  *
- * The rule this file states, once, for both callers: THE GAP IS APPLIED EXACTLY
- * ONCE, ON RAW SENTENCES, BY WHICHEVER PASS TOUCHES THEM FIRST.
+ *  - A non-Orpheus session plans exactly what it always got: no gap pass, and the params
+ *    `{gapSeconds: null, minGapSeconds: 0}` with no voice. Its derived sets keep their
+ *    identity byte for byte (`tools/test-sentence-gap-identity.js`).
+ *  - An Orpheus session is REFUSED by name. Its denoise or conversion depended on a pass
+ *    that is not ported, and running it without one would be a quietly different output.
+ *
+ * The params stay in the shape they had, because they are part of the name every
+ * existing derived set was filed under.
  */
 
-import * as fs from 'fs';
-
-import { normalizeSentenceGaps } from './denoise-bridge';
-import { resolveSessionSentenceGap } from './reassembly-bridge';
-import { resolveOrpheusMinChunkGap } from './orpheus-assembly-tuning';
+import { sessionProvenance } from './reassembly-bridge';
 
 export interface SentenceGapPlan {
-  /**
-   * The gap to leave between sentences, in seconds — or UNDEFINED for "no gap
-   * pass at all", which is a real answer and the ordinary one for a non-Orpheus
-   * session: the pad this strips is one only Orpheus bakes.
-   */
-  readonly gapSeconds: number | undefined;
-  /** The per-voice floor a chunk's own trailing silence may not fall below. */
-  readonly minGapSeconds: number;
-  /** The session's rendering voice, as its provenance recorded it. */
-  readonly voice: string | null;
+  /** Always undefined now: no pass applies a gap. Kept for the identity's shape. */
+  readonly gapSeconds: undefined;
+  /** Always 0 now, for the same reason. */
+  readonly minGapSeconds: 0;
+  /** Always null now: only an Orpheus session ever recorded one here. */
+  readonly voice: null;
 }
 
-/**
- * The plan for a pass that does NOT read the raw sentences.
- *
- * A second pass in a chain never runs a gap pass — the first one already baked
- * it in, and the pad it would look for is gone. Stated as a value rather than as
- * an `if` at each call site, so "this pass applies no gap" is one thing said in
- * one way and lands in the manifest params identically both times.
- */
+/** The only plan there is. */
 export const NO_SENTENCE_GAP: SentenceGapPlan = {
   gapSeconds: undefined,
   minGapSeconds: 0,
@@ -61,74 +42,28 @@ export const NO_SENTENCE_GAP: SentenceGapPlan = {
 };
 
 /**
- * What gap this session's raw sentences should be normalized to.
- *
- * `explicit` is the number the user moved a control to. Absent leaves the
- * session's own provenance in charge — an Orpheus session normalizes to its
- * voice's tuned value, and a non-Orpheus session normalizes not at all.
+ * The plan for a pass that reads this session's raw sentences, or a refusal for an
+ * Orpheus session (see the header).
  */
-export async function planSentenceGap(
-  processDir: string,
-  explicit?: number,
-): Promise<SentenceGapPlan> {
-  // Assembly is ENGINE-AGNOSTIC — it combines audio and never consults the
-  // engine name — so the Orpheus voice, and every per-voice value keyed off it,
-  // can only come from the session's own provenance. (Until 2026-09-05 this
-  // said "assembly always runs --tts_engine xtts"; that literal is gone from
-  // both assembly doors, and `tools/test-no-e2a-doors.js` keeps it gone.)
-  const provenance = await resolveSessionSentenceGap(processDir);
-  const gapSeconds = typeof explicit === 'number'
-    ? explicit
-    : (provenance.isOrpheus ? provenance.gap : undefined);
-  return {
-    gapSeconds,
-    minGapSeconds: resolveOrpheusMinChunkGap(provenance.voice) ?? 0,
-    voice: provenance.voice ?? null,
-  };
+export async function planSentenceGap(processDir: string): Promise<SentenceGapPlan> {
+  const provenance = await sessionProvenance(processDir);
+  if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
+    throw new Error(
+      'This session was rendered by Orpheus, which is retired. Its denoise or voice conversion '
+      + 'depended on a sentence-gap pass that is not ported, so it is refused rather than run '
+      + 'without it. Its finished audiobook is untouched.',
+    );
+  }
+  return NO_SENTENCE_GAP;
 }
 
 /**
- * The gap's contribution to a derived set's identity.
- *
- * `null` rather than absent for "no gap pass ran": it is an ANSWER, and it must
- * be distinguishable from a set derived before the field existed. Every set
- * derived from the raw sentences carries these, so moving the gap slider
- * re-derives whichever pass baked it — the denoise or the conversion.
+ * The gap's contribution to a derived set's identity: `null` rather than absent for "no gap
+ * pass ran", as every set derived since the field existed records it.
  */
 export function sentenceGapParams(plan: SentenceGapPlan): Record<string, unknown> {
   return {
     gapSeconds: plan.gapSeconds ?? null,
     minGapSeconds: plan.minGapSeconds,
   };
-}
-
-/**
- * Run the gap pass from `sourceDir` into `outDir`. CPU-only (soundfile/numpy
- * array work, no torch device) — the caller's GPU lease covers it, and it takes
- * no lease of its own.
- *
- * Refuses a plan with no gap in it rather than quietly copying the directory:
- * "should this run at all" is the caller's question and it is answered by
- * `gapSeconds === undefined`, so reaching here without one is a composition bug.
- */
-export async function applySentenceGap(
-  plan: SentenceGapPlan,
-  sourceDir: string,
-  outDir: string,
-  opts: { signal?: AbortSignal } = {},
-): Promise<void> {
-  if (plan.gapSeconds === undefined) {
-    throw new Error(
-      'The sentence-gap pass was started for a session that normalizes no gap, so there is no '
-      + 'value for it to apply. This is a bug in the job that called it.',
-    );
-  }
-  fs.rmSync(outDir, { recursive: true, force: true });
-  await normalizeSentenceGaps({
-    sentencesDir: sourceDir,
-    outputDir: outDir,
-    gapSeconds: plan.gapSeconds,
-    minGapSeconds: plan.minGapSeconds,
-    signal: opts.signal,
-  });
 }

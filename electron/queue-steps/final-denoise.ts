@@ -57,9 +57,6 @@ interface FinalDenoiseStepConfig {
    * hands it over. Ordinarily absent: the parent's output says it.
    */
   sentencesDir?: string;
-  /** The inter-sentence gap, baked in HERE when this pass reads the RAW
-   *  sentences — see sentence-gap.ts. */
-  sentenceGap?: number;
 }
 
 export const finalDenoiseStep: StepModule = {
@@ -160,7 +157,6 @@ export const finalDenoiseStep: StepModule = {
       const result = await runFinalDenoise(ctx.stepId, {
         processDir,
         ...(upstreamSentences === undefined ? {} : { sentencesDir: upstreamSentences }),
-        ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
         // THE RUN'S VENUE, NOT A NEW DECISION. The job cross-checks it against
         // the session's own record and refuses a disagreement by name.
         ...(runVenue === undefined ? {} : { runVenue }),

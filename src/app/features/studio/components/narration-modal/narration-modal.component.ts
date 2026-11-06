@@ -651,15 +651,8 @@ function fileName(fullPath: string): string {
                    hour of GPU over the book, which is not the kind of thing an
                    assembly checkbox should look like. It lives on the Enhance
                    tab beside the conversion, where both GPU passes are chosen and
-                   ordered together. What is left here is de-ring, which is an
-                   ffmpeg filter at the final encode and belongs to the encode. -->
-              <div class="nm-field">
-                <label class="nm-check">
-                  <input type="checkbox" [checked]="applyDeRing()" [disabled]="!assemble()"
-                         (change)="applyDeRing.set($any($event.target).checked)" />
-                  <span>Remove ringing</span>
-                </label>
-              </div>
+                   ordered together. De-ring left in step 8 (2026-11-05): it was an
+                   Orpheus voice's filter, and Orpheus is retired. -->
 
               <!-- THE VIDEO, made FROM the m4b this tab produces.
                    The one capability the Process wizard had that lives nowhere
@@ -714,26 +707,6 @@ function fileName(fullPath: string): string {
                 </span>
               </div>
 
-              <!-- Only drawn when the session's provenance resolves one: the pad
-                   this normalizes is one only Orpheus bakes, so a non-Orpheus
-                   session gets no field and no normalization. -->
-              @if (showGap()) {
-                <div class="nm-field">
-                  <label class="nm-label">Gap between sentences: {{ sentenceGap() }}s</label>
-                  <input type="range" class="nm-slider" min="0" max="2" step="0.05"
-                         [disabled]="!assemble()"
-                         [value]="sentenceGap()"
-                         (input)="onSentenceGapInput(+$any($event.target).value)" />
-                  <span class="nm-hint">
-                    @if (gapHasModel()) {
-                      Pre-filled with the tuned value for {{ gapVoice() }}.
-                    } @else {
-                      {{ gapVoice() }} has no measured gap yet, so this starts at the
-                      house default.
-                    }
-                  </span>
-                </div>
-              }
             }
           </div>
 
@@ -1108,7 +1081,6 @@ export class NarrationModalComponent {
    * no order — and it opens on the recommendation.
    */
   readonly enhancementOrder = signal<NarrationEnhancementOrder>('denoise-first');
-  readonly applyDeRing = signal(false);
 
   /**
    * A video beside the M4B — seeded from Pipeline Defaults, as the wizard's
@@ -1182,13 +1154,6 @@ export class NarrationModalComponent {
   readonly chapterGap = signal(DEFAULT_CHAPTER_GAP);
   readonly maxChapterGap = MAX_CHAPTER_GAP;
 
-  // ── The assembly gap, resolved from the session's own provenance ──────────
-  readonly showGap = signal(false);
-  readonly sentenceGap = signal(0.6);
-  readonly gapHasModel = signal(false);
-  readonly gapVoice = signal('This voice');
-  /** True once the user has moved the gap slider — see `onSubmit`. */
-  private readonly gapTouched = signal(false);
 
   constructor() {
     // The catalog is the machine's, loaded once per app; asking again is free.
@@ -1243,25 +1208,9 @@ export class NarrationModalComponent {
       // A new book is a new question about the voice, so the pre-fill is armed
       // again — see `voiceChosen`.
       this.voiceChosen.set(false);
-      this.showGap.set(false);
-      this.gapTouched.set(false);
       if (!dir) return;
       void this.loadCachedSentences(dir);
     });
-  }
-
-  /**
-   * MOVING THE SLIDER IS WHAT STATES A GAP.
-   *
-   * The field opens pre-filled from the session's provenance, and that pre-fill
-   * is a display of the answer the assembler would reach on its own. Sending it
-   * back would freeze a living value into a copy of what it was when the dialog
-   * opened — so the run carries a gap only once somebody has actually chosen
-   * one, and this is the gesture that says they did.
-   */
-  onSentenceGapInput(value: number): void {
-    this.sentenceGap.set(value);
-    this.gapTouched.set(true);
   }
 
   onChapterGapInput(value: number): void {
@@ -1379,23 +1328,7 @@ export class NarrationModalComponent {
         && !this.voiceChosen()) {
         this.voice.set(renderedIn);
       }
-      await this.loadSentenceGap(data.processDir, dir);
     } catch { /* silent: an offer that cannot be made is simply not made */ }
-  }
-
-  /** The session's own inter-sentence gap, when its provenance names one. */
-  private async loadSentenceGap(processDir: string, dir: string): Promise<void> {
-    try {
-      const res = await this.electron.resolveSentenceGap(processDir);
-      if (this.projectDir() !== dir) return;
-      if (!res.success || !res.data || !res.data.isOrpheus) return;
-      this.sentenceGap.set(res.data.gap);
-      this.gapHasModel.set(res.data.hasModelValue);
-      this.gapVoice.set(res.data.voice ?? 'This voice');
-      this.showGap.set(true);
-      // Setting the field is not the user stating a value.
-      this.gapTouched.set(false);
-    } catch { /* the field is simply not drawn */ }
   }
 
   readonly fileLabel = computed(() => fileName(this.epubPath()));
@@ -2096,14 +2029,6 @@ export class NarrationModalComponent {
         // Only read when both passes run; stated always, because the run
         // description refuses a two-pass run that cannot say which order it is.
         enhancementOrder: this.enhancementOrder(),
-        applyDeRing: this.applyDeRing(),
-        /*
-         * SENT ONLY WHEN THE USER MOVED IT. Absent means the session's own
-         * provenance decides the gap — the voice's tuned value — and sending the
-         * number the field was PRE-FILLED with would turn that living answer
-         * into a frozen copy of what it happened to be when the dialog opened.
-         */
-        ...(this.showGap() && this.gapTouched() ? { sentenceGap: this.sentenceGap() } : {}),
         // Stated always — see `chapterGap`. Zero is a real answer here and must
         // survive the trip, so it is not spread behind a truthiness check.
         chapterGap: this.chapterGap(),

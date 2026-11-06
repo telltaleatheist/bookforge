@@ -97,7 +97,6 @@ import {
   type DerivedRequest,
 } from './derived-sentences';
 import {
-  applySentenceGap,
   planSentenceGap,
   sentenceGapParams,
   NO_SENTENCE_GAP,
@@ -134,16 +133,6 @@ export interface RvcEnhancementConfig {
    * from the source set's own manifest.
    */
   sentencesDir?: string;
-  /**
-   * The inter-sentence gap to bake in, or absent to let the session's own
-   * provenance decide.
-   *
-   * ONLY MEANINGFUL WHEN THIS PASS READS THE RAW SENTENCES — it is then the pass
-   * that runs the gap normalization, because the gap can only be detected on raw
-   * audio (sentence-gap.ts). Sent alongside `sentencesDir` it is refused rather
-   * than ignored.
-   */
-  sentenceGap?: number;
   /**
    * NOT A PASS THIS JOB RUNS ANY MORE — read only so a row queued before the
    * ordering ruling is refused BY NAME. See the header and `runRvcEnhancement`.
@@ -325,18 +314,10 @@ export async function runRvcEnhancement(
   let gap: SentenceGapPlan;
   try {
     if (config.sentencesDir === undefined) {
-      gap = await planSentenceGap(config.processDir, config.sentenceGap);
+      gap = await planSentenceGap(config.processDir);
       chain = [{ kind: 'rvc', key: config.voiceId }];
       upstream = null;
     } else {
-      if (config.sentenceGap !== undefined) {
-        throw new Error(
-          'This conversion was given both a sentence gap and a set to convert that another pass '
-          + 'produced. The gap can only be applied to the raw sentences, so it belongs to '
-          + 'whichever pass reads them first — never to this one. This is a bug in the run that '
-          + 'composed it.',
-        );
-      }
       const sourceManifest = readDerivedManifest(config.sentencesDir);
       if (sourceManifest === null) {
         throw new Error(
@@ -432,24 +413,12 @@ export async function runRvcEnhancement(
    * REFUSED by number if it is not there — never routed back onto the share,
    * which would silently restore the slow path forever.
    */
-  const gapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-gap-'));
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-out-'));
   try {
     const sourceFiles = await fingerprintSentences(source);
     await assertStagingSpace(os.tmpdir(), sentenceSetBytes(sourceFiles) * 2, 'The voice conversion');
 
-    let enhanceSource = source;
-    if (gap.gapSeconds !== undefined) {
-      // THIS pass reads the raw sentences, so THIS pass bakes the gap in — see
-      // sentence-gap.ts. CPU work, covered by the lease already held.
-      sendProgress(mainWindow, jobId, {
-        phase: 'preparing', percentage: 0, message: 'Normalizing sentence gaps…',
-      });
-      log(`Sentence-gap normalization starting (gap ${gap.gapSeconds}s, floor ${gap.minGapSeconds}s).`);
-      await applySentenceGap(gap, source, gapDir, { signal: abort.signal });
-      enhanceSource = gapDir;
-      log('Sentence-gap normalization complete.');
-    }
+    const enhanceSource = source;
 
     sendProgress(mainWindow, jobId, {
       phase: 'preparing',
@@ -491,10 +460,6 @@ export async function runRvcEnhancement(
       log(`voice conversion ran on crucible "${at.venue.server}" `
         + `(${at.venue.origin}: ${at.venue.because}).`);
 
-      // The conversion has read the gap set for the last time; drop it before the
-      // copy so the two full sets never coexist with a third on the way out.
-      try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-
       // THE ONE BULK WRITE. urvc has already verified that every input produced
       // an output, and `commitDerivedSentences` re-counts what actually landed
       // against the source before it writes a manifest — so a copy that fails
@@ -528,7 +493,6 @@ export async function runRvcEnhancement(
     // field's own note. One rule reads it, for every door in the app.
     return { success: false, error, wasStopped, ...waitFieldsOf(err) };
   } finally {
-    try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     releaseGpu(gpuOwner);
   }

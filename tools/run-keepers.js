@@ -872,6 +872,7 @@ const SUITES = [
   'test-assembly-transcript-seal',
   'test-assembly-prepare-progress',
   'test-narration-chain',
+  'test-sentence-gap-identity',
   'test-chapter-gap',
   'test-alignable-text',
   'test-sentence-abbreviations',

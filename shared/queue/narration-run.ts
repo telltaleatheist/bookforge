@@ -243,29 +243,14 @@ export interface NarrationRunSettings {
    * user's name on it.
    */
   readonly enhancementOrder: NarrationEnhancementOrder;
-  readonly applyDeRing: boolean;
-  /**
-   * Seconds of silence to normalize BETWEEN sentences at assembly, or absent to
-   * let the session's own provenance decide.
-   *
-   * Absent is a real answer and the ordinary one: an Orpheus session normalizes
-   * to its voice's tuned value (or the visible 0.6 s default for an untested
-   * model), and a non-Orpheus session normalizes not at all, because the pad
-   * this strips is one only Orpheus bakes. A number here OVERRIDES that, which
-   * is why it is only ever set from a control the user actually moved.
-   */
-  readonly sentenceGap?: number;
   /**
    * Seconds of silence to leave BETWEEN CHAPTERS in the finished audiobook, or
    * absent to take BookForge's default (`DEFAULT_CHAPTER_GAP`,
    * shared/audio/chapter-gap.ts). It is realized by narrator's assembler, which
    * also puts it into the chapter markers and both transcripts.
    *
-   * NOT THE SAME KIND OF ABSENCE AS `sentenceGap`. That one hands the question
-   * to the session's provenance, because the pad it normalizes is a property of
-   * the VOICE. This one is a property of the BOOK and no provenance has an
-   * opinion about it, so absent simply means "the user did not move the control"
-   * and the default applies. Set it to 0 for the butt-joined book this pipeline
+   * A property of the BOOK, and no provenance has an opinion about it, so absent simply means
+   * "the user did not move the control" and the default applies. Set it to 0 for the butt-joined book this pipeline
    * made until 2026-09-09.
    */
   readonly chapterGap?: number;
@@ -457,17 +442,6 @@ export interface NarrationRvcConfig {
    * by the job (electron/rvc-job.ts) rather than ignored — so it must not be
    * set, not merely left false.
    */
-  /**
-   * The inter-sentence gap, when the user moved the control — SET ONLY WHEN THIS
-   * PASS READS THE RAW SENTENCES, i.e. when the conversion is the first
-   * enhancement pass of the run.
-   *
-   * The gap pass must see the raw sentences and their exactly-zero trailing pad,
-   * which both a roformer and a conversion destroy, so it is baked in by
-   * whichever pass touches them first. When a denoise runs in front of this one,
-   * that denoise owns the gap and this config carries none.
-   */
-  readonly sentenceGap?: number;
 }
 
 /**
@@ -493,12 +467,6 @@ export interface NarrationDenoiseConfig {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly processDir: string;
-  /**
-   * Absent = the session's provenance decides — and absent ALWAYS when a
-   * conversion runs in front of this pass, because by then the gap is baked in
-   * and the pad it is detected by is gone. See `NarrationRvcConfig`.
-   */
-  readonly sentenceGap?: number;
 }
 
 /** Combine the rendered sentences into the M4B. */
@@ -522,21 +490,10 @@ export interface NarrationReassemblyConfig {
    * ignored (electron/reassembly-bridge.ts) — so it must not be set, not merely
    * left false.
    */
-  readonly applyDeRing: boolean;
-  /**
-   * Absent = the session's provenance decides. See `NarrationRunSettings`.
-   *
-   * Set only when NOTHING UPSTREAM bakes the gap in. A denoise or a conversion in
-   * front of this assembly hands it a set the gap is already applied to, and the
-   * assembly skips its own gap pass on a supplied set — so carrying the number
-   * here as well would state a knob twice and answer it in only one place.
-   */
-  readonly sentenceGap?: number;
   /**
    * Seconds of silence between chapters, or absent for BookForge's default.
-   * Unlike `sentenceGap` this is NEVER baked in upstream — no enhancement pass
-   * touches a chapter boundary — so it rides on the assembly every time the run
-   * states one. See `NarrationRunSettings.chapterGap`.
+   * No enhancement pass touches a chapter boundary, so it rides on the assembly every time the
+   * run states one. See `NarrationRunSettings.chapterGap`.
    */
   readonly chapterGap?: number;
   /**
@@ -868,16 +825,12 @@ export function narrationTtsStep(
  * or after this one as the user chose, and this step is a clean transform of
  * whatever its parent wrote.
  *
- * `readsRawSentences` says whether this pass is the FIRST enhancement of the run,
- * which is the only thing that decides whether it carries the gap: the gap is
- * baked in by whichever pass touches the raw sentences, and touching them is what
- * being first means. A parameter rather than something read off the settings,
- * because only the whole-run builder knows the shape of the run.
+ * No pass carries an inter-sentence gap since step 8 (`electron/sentence-gap.ts`): it was
+ * Orpheus's, and Orpheus is retired.
  */
 export function narrationRvcStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
-  readsRawSentences: boolean,
 ): NarrationStepPlan | null {
   if (settings.rvc === null) return null;
   requireNarrationRun(book, settings);
@@ -906,12 +859,6 @@ export function narrationRvcStep(
       // config that a later reader has to guess the meaning of.
       ...(settings.rvc.f0Method === undefined ? {} : { f0Method: settings.rvc.f0Method }),
       ...(settings.rvc.hopLength === undefined ? {} : { hopLength: settings.rvc.hopLength }),
-      // The gap rides with whichever pass reads the RAW sentences, which is this
-      // one exactly when it is first. Absent leaves the session's provenance in
-      // charge, as everywhere else — and absent is the ONLY legal answer when a
-      // denoise runs in front, which the job refuses rather than ignores.
-      ...(readsRawSentences && settings.sentenceGap !== undefined
-        ? { sentenceGap: settings.sentenceGap } : {}),
     },
   };
 }
@@ -928,13 +875,11 @@ export function narrationRvcStep(
  * more: the two are separate passes in a user-chosen order, and the one that
  * runs second reads the other's output.
  *
- * `readsRawSentences` carries the same meaning as it does on `narrationRvcStep`.
- * The session fields are empty on purpose — same reason, same place.
+ * The session fields are empty on purpose, for the same reason as `narrationRvcStep`'s.
  */
 export function narrationDenoiseStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
-  readsRawSentences: boolean,
 ): NarrationStepPlan | null {
   if (!settings.finalDenoise) return null;
   requireNarrationRun(book, settings);
@@ -947,8 +892,6 @@ export function narrationDenoiseStep(
       type: 'final-denoise',
       // Filled at run time by session discovery — see `narrationRvcStep`.
       sessionId: '', sessionDir: '', processDir: '',
-      ...(readsRawSentences && settings.sentenceGap !== undefined
-        ? { sentenceGap: settings.sentenceGap } : {}),
     },
   };
 }
@@ -996,15 +939,6 @@ export function narrationReassemblyStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
   registerAsNewVariant: boolean,
-  /**
-   * A step in front of this one already baked the inter-sentence gap in — a
-   * denoise or a conversion. A PARAMETER for the same reason as the flag above:
-   * it is a fact about the shape of the run, and only the whole-run builder sees
-   * the shape. When true the assembly is handed a finished sentence set and runs
-   * no gap pass of its own, so stating the number here would be a knob with no
-   * hand on it.
-   */
-  gapBakedUpstream: boolean,
 ): NarrationStepPlan {
   requireNarrationRun(book, settings);
   if (registerAsNewVariant && settings.rvc === null) {
@@ -1032,14 +966,8 @@ export function narrationReassemblyStep(
         outputFilename: book.outputFilename,
       },
       excludedChapters: [],
-      // The one opt-in pass assembly still performs itself: de-ring is an ffmpeg
-      // filter at the final encode, not a model, so it belongs to the encode.
-      applyDeRing: settings.applyDeRing,
-      // Absent stays absent: that is what leaves provenance in charge of the gap.
-      ...(gapBakedUpstream || settings.sentenceGap === undefined
-        ? {} : { sentenceGap: settings.sentenceGap }),
-      // No `gapBakedUpstream` equivalent: nothing before the assembly can bake a
-      // chapter boundary, so this rides whenever the run states one.
+      // Nothing before the assembly can touch a chapter boundary, so this rides whenever the run
+      // states one.
       ...(settings.chapterGap === undefined ? {} : { chapterGap: settings.chapterGap }),
       registerAsNewVariant,
       // Carried only when it names something: the voice is what the second
@@ -1186,18 +1114,12 @@ export function buildNarrationSteps(
    * the first reads the session, the second reads the first's sentence set — and
    * the assembly behind them reads the last one's, which is what it has always
    * done with an enhanced set.
-   *
-   * THE GAP GOES ON THE FIRST PASS AND NOWHERE ELSE. It has to be applied to the
-   * raw sentences (it detects e2a's pad by its exactly-zero samples), so it
-   * belongs to whichever pass touches them first. `readsRawSentences` is that
-   * fact, and it is the index being zero.
    */
   const passes = narrationEnhancementPasses(settings, stages);
-  for (const [index, pass] of passes.entries()) {
-    const readsRaw = index === 0;
+  for (const pass of passes) {
     const step = pass === 'denoise'
-      ? narrationDenoiseStep(book, settings, readsRaw)
-      : narrationRvcStep(book, settings, readsRaw);
+      ? narrationDenoiseStep(book, settings)
+      : narrationRvcStep(book, settings);
     if (step === null) {
       // Unreachable: `narrationEnhancementPasses` names a pass only when its
       // settings are there, and null is exactly the case where they are not.
@@ -1215,9 +1137,6 @@ export function buildNarrationSteps(
       book,
       settings,
       stages.enhance && settings.rvc !== null && !stages.narrate,
-      // Any enhancement pass in front of the assembly has already baked the gap
-      // in — the first of them did, and the assembly is handed its output.
-      passes.length > 0,
     ));
   }
   /*

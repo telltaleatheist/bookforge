@@ -17,12 +17,9 @@ import { renameWithRetry, unlinkWithRetry, isTransientFsError, renameSyncWithRet
 import { uniqueOutputStem, uniqueOutputPath } from './output-naming';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
-import { normalizeSentenceGaps } from './denoise-bridge';
 import { renderBesideRecordingFilename, registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
 import { sumFlacDurationsSeconds } from './flac-duration';
-import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { regenerateBoundSidecars } from './sidecar-migration';
-import { resolveClosedSession } from './chapter-closer';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 import { seedSessionAuthorship } from './session-authorship';
@@ -300,21 +297,6 @@ export interface ReassemblyConfig {
    * tell was un-denoised. `startReassembly` fails immediately when it is true.
    */
   finalDenoise?: boolean;
-  /** De-ring: apply the session voice's per-voice post-render ffmpeg filter chain
-   *  (the notch/comb that removes SNAC tonal ringing) at e2a's final encode. OPT-IN
-   *  — resolved from session provenance ONLY when this is true. Absent/false → no
-   *  filter is passed and assembly encodes the raw sentences unchanged. (Was
-   *  previously auto-applied from provenance for every Orpheus session; now gated.) */
-  applyDeRing?: boolean;
-  /** Assembly-time inter-sentence gap in seconds. Normalizes the silence between
-   *  sentences on the RAW cached set BEFORE denoise: strips e2a's artificial trailing
-   *  exact-zero pad and re-applies exactly this much silence. When set, this value wins.
-   *  When absent, provenance decides: an ORPHEUS session always normalizes — using the
-   *  voice's tuned model value (resolveOrpheusSentenceGap) or, when the model is untested,
-   *  the visible DEFAULT_SENTENCE_GAP (0.6s, which reproduces the historical baked gap).
-   *  A NON-Orpheus session yields no value → the gap step is skipped (raw sentences
-   *  unchanged; gap normalization is Orpheus-specific and strips a pad only Orpheus bakes). */
-  sentenceGap?: number;
   /**
    * Seconds of silence to leave BETWEEN chapters in the finished audiobook, so a
    * listener hears the book move from one to the next. It is realized by
@@ -385,7 +367,6 @@ export interface ReassemblyProgress {
  * pre-passes are only declared when the run actually performs them, so a plain
  * assembly shows four bars and an RVC+denoise assembly shows seven.
  */
-const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 7 };
 /* There is no denoise stage here any more: the roformer pass is its own queue
  * step (`final-denoise`) with its own row and its own progress. */
 /** H:MM for progress messages — "0:41 of 34:29" reads as movement even between ticks. */
@@ -528,9 +509,6 @@ export async function copyIntoLibrary(
  * they outlive their assembly on purpose.
  */
 const activeRvcDirs = new Map<string, string>();
-/** jobId → the `closed-<sessionId>` dir this assembly is consuming, for cleanup. */
-const activeClosedDirs = new Map<string, string>();
-
 /**
  * A recorded `tts_engine` as narrator spells it, or a refusal naming what was
  * found.
@@ -612,7 +590,7 @@ async function narratorEngineForSession(processDir: string): Promise<string> {
   // Read ONCE. The disagreement path used to re-read the sidecar to build its own
   // error message, so the value being reported was a second read of a file that had
   // already been read — and on a race could name something the comparison never saw.
-  const provenance = await parseSessionProvenance(processDir);
+  const provenance = await sessionProvenance(processDir);
   const sidecar = normalise(provenance?.ttsEngine);
   if (sidecar && sidecar !== engine) {
     throw new Error(
@@ -656,25 +634,6 @@ function cleanupStagingDir(jobId: string): void {
       }
     } catch (err) {
       console.warn('[REASSEMBLY] Failed to clean up RVC scratch dir (non-fatal):', err);
-    }
-  }
-
-  // What the chapter closer produced for this session: a full normalized sentence
-  // set plus every encoded chapter, ~2.9 GB on a 20-hour book. It is consumed by
-  // exactly one assembly, so it goes when that assembly ends — on ANY terminal path,
-  // success or not. A retry re-does the work rather than inheriting a set nobody
-  // re-verified. Cleaning it here rather than at each exit means it cannot be missed
-  // by whichever return an error happens to take.
-  const closedDir = activeClosedDirs.get(jobId);
-  if (closedDir) {
-    activeClosedDirs.delete(jobId);
-    try {
-      if (fs.existsSync(closedDir)) {
-        fs.rmSync(closedDir, { recursive: true, force: true });
-        console.log(`[REASSEMBLY] Cleaned up pre-closed chapter dir: ${closedDir}`);
-      }
-    } catch (err) {
-      console.warn('[REASSEMBLY] Failed to clean up pre-closed chapter dir (non-fatal):', err);
     }
   }
 }
@@ -744,7 +703,7 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<Narr
     parseChapterSentences(processDir),
     fs.promises.readdir(sentencesDir).catch(() => [] as string[]),
     fs.promises.stat(sessionDir),
-    parseSessionProvenance(processDir)
+    sessionProvenance(processDir)
   ]);
 
   // Single pass over sentence files: count completed, estimate total, build sets for chapters
@@ -867,7 +826,7 @@ async function parseSessionState(processDir: string): Promise<any | null> {
  * engine + voice that produced the cached sentences, or null when absent (older
  * sessions, or e2a-only). `fineTuned` is e2a's term for the voice.
  */
-async function parseSessionProvenance(
+export async function sessionProvenance(
   processDir: string
 ): Promise<{ ttsEngine?: string; voice?: string } | null> {
   const statePath = path.join(processDir, 'session_state.json');
@@ -884,30 +843,6 @@ async function parseSessionProvenance(
   }
 }
 
-/**
- * Resolve the assembly-page inter-sentence gap for a session from its provenance.
- * Used by the `reassembly:resolve-sentence-gap` IPC to pre-fill (and gate) the gap field:
- *  - Orpheus session → field is shown, pre-filled with the voice's tuned model value or,
- *    when the model is untested (no manifest value), the visible DEFAULT_SENTENCE_GAP.
- *    `hasModelValue` lets the UI say "tuned for X" vs "untested — using the 0.6s default".
- *  - Non-Orpheus session → field is hidden (gap normalization is Orpheus-specific); `gap`
- *    is returned as DEFAULT_SENTENCE_GAP but the caller ignores it when `isOrpheus` is false.
- */
-export async function resolveSessionSentenceGap(
-  processDir: string
-): Promise<{ isOrpheus: boolean; voice?: string; gap: number; hasModelValue: boolean }> {
-  const provenance = await parseSessionProvenance(processDir);
-  if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
-    const model = resolveOrpheusSentenceGap(provenance.voice);
-    return {
-      isOrpheus: true,
-      voice: provenance.voice,
-      hasModelValue: model !== undefined,
-      gap: model ?? DEFAULT_SENTENCE_GAP,
-    };
-  }
-  return { isOrpheus: false, gap: DEFAULT_SENTENCE_GAP, hasModelValue: false };
-}
 
 /**
  * Find cover image in processDir
@@ -1346,38 +1281,6 @@ export async function startReassembly(
   //   3. the gap pass — likewise anonymous, likewise deleted.
   let rvcSentencesDir: string | null = null;
 
-  // ── Optional assembly-time sentence-gap normalization (RAW cache, BEFORE denoise) ──
-  // e2a bakes an artificial trailing pad of EXACTLY-zero samples onto every rendered
-  // sentence (orpheus.py trail_gap). The model's own trained tail is never exactly 0, so
-  // we can losslessly strip just that pad (trailing exact-zero frames) and re-apply a
-  // chosen amount of silence — making the effective inter-sentence gap match the human
-  // source. This MUST run on the RAW cached sentences and BEFORE denoise: denoise turns
-  // those exact zeros into tiny non-zero values that no longer trim cleanly. The
-  // gap-normalized set becomes the BASE source for the rest of the chain (denoise reads
-  // it, else inline-RVC reads it, else assembly reads it). Skipped when an upstream
-  // rvc-enhancement job already supplied the final set (`config.sentencesDir`).
-  // Resolved FIRST — before anything reports progress — because whether this run
-  // normalizes gaps decides whether the stage plan below declares a gap bar.
-  // Assembly is ENGINE-AGNOSTIC — it combines audio and never consults the engine name —
-  // so the Orpheus voice, and every per-voice value keyed off it (the gap default, the
-  // min-chunk-gap floor), can only come from provenance. (This used to say "assembly always
-  // runs --tts_engine xtts"; that literal left both assembly doors on 2026-09-05.) Read ONCE at function scope: an explicit config.sentenceGap skips the gap
-  // resolution below but the normalization step still needs the voice, so making this read
-  // conditional on that branch would leave the voice unknown exactly when it's asked for.
-  const provenance = config.sentencesDir ? null : await parseSessionProvenance(config.processDir);
-
-  let resolvedGap: number | undefined;
-  if (!config.sentencesDir) {
-    if (typeof config.sentenceGap === 'number') {
-      resolvedGap = config.sentenceGap;
-    } else if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
-      // Orpheus sessions ALWAYS normalize: a tuned model value (e.g. 0 → tight gap) when
-      // the manifest declares one, else the visible DEFAULT_SENTENCE_GAP (untested model →
-      // 0.6s, reproducing today's baked ~0.6 behavior). Non-orpheus stays undefined below.
-      resolvedGap = resolveOrpheusSentenceGap(provenance.voice) ?? DEFAULT_SENTENCE_GAP;
-    }
-  }
-
   // ── Stage plan for THIS run ─────────────────────────────────────────────────
   // Declared before the first progress event so the bars never appear mid-flight.
   // The optional pre-passes each cost real minutes and used to report a flat 0%,
@@ -1385,7 +1288,6 @@ export async function startReassembly(
   // No denoise bar: the denoise is its own step now, with its own row and its own
   // bar, and declaring one here would be an assembly claiming work it never does.
   const stages = new StageTracker([
-    ...(resolvedGap !== undefined ? [STAGE_GAP] : []),
     ...STAGE_ALWAYS,
   ]);
 
@@ -1460,92 +1362,8 @@ export async function startReassembly(
     });
   };
 
-  let gapDir: string | null = null;
-  // Chapters the TTS job already normalized AND encoded while the GPU was busy (see
-  // chapter-closer). Accepting them skips this whole gap pass and, further down,
-  // hands e2a the finished chapters so it re-encodes nothing.
-  let encodedChaptersDir: string | null = null;
-  if (resolvedGap !== undefined) {
-    const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
-    if (!fs.existsSync(srcSentences)) {
-      return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
-    }
-    const minChunkGapForCloser = resolveOrpheusMinChunkGap(provenance?.voice) ?? 0;
-    // NO CAPABILITY PROBE. `e2aSupportsEncodedChapters()` used to grep
-    // `<e2a>/bookforge_ext/parallel/args.py` for the flag, because BookForge and
-    // ebook2audiobook were separate repos at separate commits — three checkouts
-    // (Windows, the WSL one, the Mac one) that routinely disagreed — and app.py's
-    // parse_args() turns an unknown flag into exit 2 with the whole assembly lost.
-    //
-    // narrator ships INSIDE this repo, at this commit, and ACCEPTs the flag
-    // unconditionally (compat/FLAGS.md). The probe could only be wrong now, and it
-    // was wrong in the silent direction: its `catch { return false }` meant a
-    // machine with no e2a checkout at all — which is every machine after Phase 6 —
-    // quietly stopped using pre-closed chapters and re-encoded every chapter of
-    // every book, logged as a reason nobody would read as a defect.
-    const closed = await resolveClosedSession({
-      tmpRoot: narratorScratchRoot(),
-      sessionId: config.sessionId,
-      sentencesDir: srcSentences,
-      gapSeconds: resolvedGap,
-      minGapSeconds: minChunkGapForCloser,
-      // Every rejection is worth a line: it costs only the time the closer saved,
-      // but a rejection nobody sees looks exactly like the feature not working.
-      onReject: (reason) => reassemblyLog.info('Pre-closed chapters not used', { jobId, reason }),
-    });
-    if (closed) {
-      gapDir = closed.gapDir;
-      encodedChaptersDir = closed.encodedDir;
-      rvcSentencesDir = closed.gapDir;
-      activeClosedDirs.set(jobId, path.dirname(closed.gapDir));
-      reassemblyLog.info('Using pre-closed chapters from the TTS job', {
-        jobId, chapters: closed.chapters.length, gapDir: closed.gapDir, encodedDir: closed.encodedDir,
-      });
-      emitStage('gap', 100, 'Sentence gaps already normalized during rendering');
-    }
-  }
-  if (resolvedGap !== undefined && !gapDir) {
-    const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
-    /*
-     * BESIDE THE STAGING DIR, not in the shared scratch.
-     *
-     * This used to be `<e2a tmp>/gap-<jobId>` — the same directory the startup
-     * sweep empties wholesale. On 2026-08-19 that sweep deleted a live
-     * assembly's gap-normalised sentences 90 seconds after they were written,
-     * and e2a answered "Sentences directory not found" for a path we had just
-     * built. The sweep now spares work the queue still wants, but the deeper
-     * point stands: this set belongs to ONE step of ONE assembly, is consumed
-     * by that assembly alone, and is cleaned with it at every terminal point —
-     * which is exactly the discipline the staging dir already has. Shared
-     * scratch was never the right shelf for it.
-     */
-    gapDir = path.join(config.outputDir, `.gap-${jobId}`);
-    // Track for merge-and-delete NOW; a later stage that consumes it re-points the
-    // tracker and deletes this dir itself (mirrors the denoise scratch handling).
-    activeRvcDirs.set(jobId, gapDir);
-    try {
-      // The voice's FLOOR on chunk trailing silence. With sentenceGap 0 the join IS
-      // the model's own trained tail, and that tail varies enough that some joins
-      // collide (measured min 0.00 s over 1151 chunks); the floor lifts only those.
-      const minChunkGap = resolveOrpheusMinChunkGap(provenance?.voice);
-      reassemblyLog.info('Sentence-gap normalization starting',
-        { jobId, gapSeconds: resolvedGap, minChunkGap: minChunkGap ?? 0, src: srcSentences });
-      emitStage('gap', null, 'Normalizing sentence gaps…');
-      // CPU-only (soundfile/numpy array work, no torch device) — no GPU lease.
-      await normalizeSentenceGaps({
-        sentencesDir: srcSentences, outputDir: gapDir,
-        gapSeconds: resolvedGap, minGapSeconds: minChunkGap,
-      });
-      rvcSentencesDir = gapDir;
-      emitStage('gap', 100, 'Sentence gaps normalized');
-      reassemblyLog.info('Sentence-gap normalization complete', { jobId, dir: gapDir });
-    } catch (err) {
-      // Delete the partial scratch set — this early return skips the assembly
-      // completion handler where cleanupStagingDir normally runs.
-      cleanupStagingDir(jobId);
-      return { success: false, error: `Sentence-gap normalization failed: ${(err as Error).message || err}` };
-    }
-  }
+  // The Orpheus sentence-gap pass and the chapter closer's pre-closed chapters stood here until step 8
+  // (2026-11-05). Orpheus is retired; the TypeScript assembler refuses its sessions by name.
 
   /*
    * THE DENOISE USED TO BE HERE, and is not any more.
@@ -1607,24 +1425,6 @@ export async function startReassembly(
 
   // Send initial progress
   emitStage('prepare', null, 'Preparing reassembly...');
-
-  // De-ring (OPT-IN): the per-voice post-render ffmpeg filter chain (notch/comb that
-  // strips SNAC tonal ringing), resolved from the session's PROVENANCE (the engine +
-  // voice that produced these cached sentences, recorded in session_state.json).
-  // Assembly is engine-agnostic — it never consults the engine name — so the original
-  // Orpheus voice, and thus its filter, can only come from provenance and not from the
-  // assembly args. (This door sends the session's OWN engine now; the `--tts_engine xtts`
-  // literal it used to name left on 2026-09-05.)
-  // Resolved ONLY when the caller ticked de-ring (config.applyDeRing); absent/false →
-  // arg omitted → assembly encodes the raw sentences unchanged. (Previously auto-applied
-  // for every Orpheus session; that silent-apply is now the explicit opt-in below.)
-  let postRenderFilter: string | undefined;
-  if (config.applyDeRing) {
-    const provenance = await parseSessionProvenance(config.processDir);
-    if (provenance?.ttsEngine?.toLowerCase() === 'orpheus') {
-      postRenderFilter = resolveOrpheusPostRenderFilter(provenance.voice);
-    }
-  }
 
   // The silence between chapters. Resolved HERE, once, so the number that goes
   // on the command line is the number the log names — a caller's explicit value,

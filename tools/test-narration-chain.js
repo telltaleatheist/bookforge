@@ -88,7 +88,6 @@ function settings(over = {}) {
     outputDir: 'E:/audiobooks',
     finalDenoise: false,
     enhancementOrder: 'denoise-first',
-    applyDeRing: false,
     rvc: null,
     startFresh: false,
     // STATED, because the description refuses a run that cannot say it — and it
@@ -136,84 +135,50 @@ const find = (steps, type) => steps.find((s) => s.type === type);
 
 // ── the four shapes ─────────────────────────────────────────────────────────
 
-test('NEITHER PASS: narrate → assemble, and the assembly owns the gap', () => {
-  const steps = buildNarrationSteps(BOOK, settings({ sentenceGap: 0.4 }), stages());
+test('NEITHER PASS: narrate → assemble', () => {
+  const steps = buildNarrationSteps(BOOK, settings(), stages());
   assert.deepStrictEqual(afterNarration(steps), ['reassembly']);
-  assert.strictEqual(find(steps, 'reassembly').config.sentenceGap, 0.4,
-    'nothing upstream bakes it, so the assembly states it');
 });
 
-test('DENOISE ONLY: narrate → denoise → assemble, gap on the denoise', () => {
-  const steps = buildNarrationSteps(
-    BOOK, settings({ finalDenoise: true, sentenceGap: 0.4 }), stages({ enhance: true }));
+test('DENOISE ONLY: narrate → denoise → assemble', () => {
+  const steps = buildNarrationSteps(BOOK, settings({ finalDenoise: true }), stages({ enhance: true }));
   assert.deepStrictEqual(afterNarration(steps), ['final-denoise', 'reassembly']);
-  assert.strictEqual(find(steps, 'final-denoise').config.sentenceGap, 0.4);
-  assert.strictEqual('sentenceGap' in find(steps, 'reassembly').config, false,
-    'the assembly is handed a set the gap is already in');
 });
 
-test('RVC ONLY: narrate → convert → assemble, and THE CONVERSION owns the gap', () => {
-  const steps = buildNarrationSteps(
-    BOOK, settings({ rvc: RVC, sentenceGap: 0.4 }), stages({ enhance: true }));
+test('RVC ONLY: narrate → convert → assemble', () => {
+  const steps = buildNarrationSteps(BOOK, settings({ rvc: RVC }), stages({ enhance: true }));
   assert.deepStrictEqual(afterNarration(steps), ['rvc-enhancement', 'reassembly']);
-  // The case the split fixed: with no denoise in the run, nothing used to apply
-  // the gap at all — the assembly skipped it because "rvc bakes it" and the rvc
-  // job only ran a gap pass as part of a denoise it was no longer doing.
-  assert.strictEqual(find(steps, 'rvc-enhancement').config.sentenceGap, 0.4);
-  assert.strictEqual('sentenceGap' in find(steps, 'reassembly').config, false);
 });
 
 test('BOTH, default order: narrate → denoise → convert → assemble', () => {
   const steps = buildNarrationSteps(
-    BOOK,
-    settings({ finalDenoise: true, rvc: RVC, sentenceGap: 0.4 }),
-    stages({ enhance: true }));
-  assert.deepStrictEqual(afterNarration(steps),
-    ['final-denoise', 'rvc-enhancement', 'reassembly']);
-  assert.strictEqual(find(steps, 'final-denoise').config.sentenceGap, 0.4,
-    'the denoise is first, so it reads the raw sentences and bakes the gap');
-  assert.strictEqual('sentenceGap' in find(steps, 'rvc-enhancement').config, false,
-    'the second pass must NOT restate it — the pad it needs is already gone');
+    BOOK, settings({ finalDenoise: true, rvc: RVC }), stages({ enhance: true }));
+  assert.deepStrictEqual(afterNarration(steps), ['final-denoise', 'rvc-enhancement', 'reassembly']);
 });
 
-test('BOTH, reversed: narrate → convert → denoise → assemble, gap moves with it', () => {
+test('BOTH, reversed: narrate → convert → denoise → assemble', () => {
   const steps = buildNarrationSteps(
-    BOOK,
-    settings({
-      finalDenoise: true, rvc: RVC, sentenceGap: 0.4, enhancementOrder: 'rvc-first',
-    }),
-    stages({ enhance: true }));
-  assert.deepStrictEqual(afterNarration(steps),
-    ['rvc-enhancement', 'final-denoise', 'reassembly']);
-  assert.strictEqual(find(steps, 'rvc-enhancement').config.sentenceGap, 0.4,
-    'the conversion is first now, so the gap is its job');
-  assert.strictEqual('sentenceGap' in find(steps, 'final-denoise').config, false);
-  assert.strictEqual('sentenceGap' in find(steps, 'reassembly').config, false);
+    BOOK, settings({ finalDenoise: true, rvc: RVC, enhancementOrder: 'rvc-first' }), stages({ enhance: true }));
+  assert.deepStrictEqual(afterNarration(steps), ['rvc-enhancement', 'final-denoise', 'reassembly']);
 });
 
-test('the gap is stated EXACTLY ONCE in every shape', () => {
+test('NO STEP STATES A SENTENCE GAP, in any shape, even from a stale saved setting', () => {
+  // Step 8 (2026-11-05): the gap pass was Orpheus's, and it is gone. A run saved before then may
+  // still carry `sentenceGap` and `applyDeRing`; neither reaches a step.
   for (const order of ['denoise-first', 'rvc-first']) {
     for (const finalDenoise of [false, true]) {
       for (const rvc of [null, RVC]) {
         const enhance = finalDenoise || rvc !== null;
         const steps = buildNarrationSteps(
           BOOK,
-          settings({ finalDenoise, rvc, sentenceGap: 0.4, enhancementOrder: order }),
+          settings({ finalDenoise, rvc, sentenceGap: 0.4, applyDeRing: true, enhancementOrder: order }),
           stages({ enhance }));
-        const stated = steps.filter(
-          (s) => s.type !== 'tts-conversion' && s.config.sentenceGap !== undefined);
-        assert.strictEqual(stated.length, 1,
-          `${order}/denoise=${finalDenoise}/rvc=${rvc !== null}: ${stated.length} steps state a gap`);
+        for (const step of steps) {
+          assert.ok(!('sentenceGap' in step.config), `${order}/${step.type} states a gap`);
+          assert.ok(!('applyDeRing' in step.config), `${order}/${step.type} states de-ring`);
+        }
       }
     }
-  }
-});
-
-test('an untouched gap is stated NOWHERE — provenance stays in charge', () => {
-  const steps = buildNarrationSteps(
-    BOOK, settings({ finalDenoise: true, rvc: RVC }), stages({ enhance: true }));
-  for (const step of steps) {
-    assert.strictEqual(step.config.sentenceGap, undefined, step.type);
   }
 });
 

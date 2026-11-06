@@ -71,7 +71,8 @@ function copiedSources(line) {
 check('build:electron exists and copies things', () => {
   assert.ok(typeof buildLine === 'string' && buildLine.length > 0,
     'package.json has no build:electron script');
-  assert.ok(copiedSources(buildLine).length >= 5,
+  // Four since step 8 (2026-11-05): `normalize_gaps.py` left with Orpheus's gap pass.
+  assert.ok(copiedSources(buildLine).length >= 4,
     'the copy steps have moved out of this script — this suite reads the wrong thing now');
 });
 

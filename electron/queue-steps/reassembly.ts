@@ -65,8 +65,6 @@ interface ReassemblyStepConfig {
    * split is refused BY NAME. The bridge fails immediately on `true`.
    */
   finalDenoise?: boolean;
-  applyDeRing?: boolean;
-  sentenceGap?: number;
   /** Seconds of silence between chapters. Absent = BookForge's default
    *  (`DEFAULT_CHAPTER_GAP`, shared/audio/chapter-gap.ts), not zero. */
   chapterGap?: number;
@@ -193,8 +191,6 @@ export const reassemblyStep: StepModule = {
         // Passed through so a stale row still carrying it is REFUSED by the
         // bridge, by name, rather than assembling un-denoised audio in silence.
         finalDenoise: config.finalDenoise,
-        applyDeRing: config.applyDeRing,
-        sentenceGap: config.sentenceGap,
         chapterGap: config.chapterGap,
         registerAsNewVariant: config.registerAsNewVariant,
         rvcVoiceId: config.rvcVoiceId,

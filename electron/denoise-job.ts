@@ -110,7 +110,6 @@ import {
   type DerivedVerdict,
 } from './derived-sentences';
 import {
-  applySentenceGap,
   planSentenceGap,
   sentenceGapParams,
   NO_SENTENCE_GAP,
@@ -136,17 +135,6 @@ export interface FinalDenoiseConfig {
    * invalidates this set too.
    */
   sentencesDir?: string;
-  /**
-   * The inter-sentence gap to bake in, in seconds, or absent to let the
-   * session's own provenance decide (an Orpheus voice's tuned value, else the
-   * visible default; a non-Orpheus session normalizes not at all).
-   *
-   * ONLY MEANINGFUL WHEN THIS PASS READS THE RAW SENTENCES. Sent alongside
-   * `sentencesDir` it is refused rather than ignored: the gap can only be applied
-   * to raw audio, so a config that states both is a composition bug, and
-   * swallowing it would silently drop a value the user moved a slider to.
-   */
-  sentenceGap?: number;
   /**
    * RUN THIS DENOISE'S BLOCKS ON A NAMED CRUCIBLE SERVER.
    *
@@ -230,14 +218,12 @@ export interface DenoisePlan {
   dir: string;
   request: DerivedRequest;
   verdict: DerivedVerdict;
-  /** How the gap is handled by THIS pass. `gapSeconds` undefined = no gap pass
-   *  at all — a non-Orpheus session, or a denoise that runs second. */
+  /** The gap's place in the identity. No pass applies a gap since step 8 (`sentence-gap.ts`). */
   gap: SentenceGapPlan;
 }
 
 export async function planDenoisedSentences(
   processDir: string,
-  sentenceGap?: number,
   /** The set to denoise, when a conversion produced it. See `FinalDenoiseConfig`. */
   sentencesDir?: string,
 ): Promise<DenoisePlan> {
@@ -262,17 +248,10 @@ export async function planDenoisedSentences(
   let upstream: DerivedRequest['upstream'];
   let gap: SentenceGapPlan;
   if (sentencesDir === undefined) {
-    gap = await planSentenceGap(processDir, sentenceGap);
+    gap = await planSentenceGap(processDir);
     chain = [{ kind: 'denoise' }];
     upstream = null;
   } else {
-    if (sentenceGap !== undefined) {
-      throw new Error(
-        'This denoise was given both a sentence gap and a set to denoise that another pass '
-        + 'produced. The gap can only be applied to the raw sentences, so it belongs to whichever '
-        + 'pass reads them first — never to this one. This is a bug in the run that composed it.',
-      );
-    }
     const sourceManifest = readDerivedManifest(sentencesDir);
     if (sourceManifest === null) {
       throw new Error(
@@ -310,7 +289,6 @@ export async function planDenoisedSentences(
 export interface DeriveHooks {
   /** Job-log line. Every reuse and every staleness reason goes through it. */
   log: (message: string) => void;
-  onGapStart?: () => void;
   onDenoiseProgress?: (done: number, total: number) => void;
   signal?: AbortSignal;
   /**
@@ -378,18 +356,10 @@ export async function deriveDenoisedSentences(
    * purpose: it is one mkdir, and it proves the session is writable before an
    * hour of GPU goes into a set that could not be published.
    */
-  const gapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-gap-'));
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-dn-out-'));
   const partial = beginDerivedSentences(plan.dir);
   try {
-    let denoiseSource = plan.request.sourceDir;
-    if (plan.gap.gapSeconds !== undefined) {
-      hooks.onGapStart?.();
-      hooks.log(`Sentence-gap normalization starting (gap ${plan.gap.gapSeconds}s, floor ${plan.gap.minGapSeconds}s).`);
-      await applySentenceGap(plan.gap, plan.request.sourceDir, gapDir, { signal: hooks.signal });
-      denoiseSource = gapDir;
-      hooks.log('Sentence-gap normalization complete.');
-    }
+    const denoiseSource = plan.request.sourceDir;
 
     await denoiseSentences({
       sentencesDir: denoiseSource,
@@ -399,10 +369,6 @@ export async function deriveDenoisedSentences(
       onLog: hooks.log,
       crucible: hooks.crucible,
     });
-
-    // The denoise has read the gap set for the last time; drop it before the copy
-    // so the two full sets never coexist with a third on the way out.
-    try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
 
     // THE ONE BULK WRITE. Every invariant `denoiseSentences` enforces has already
     // held on the staged set, and `commitDerivedSentences` re-counts what actually
@@ -421,7 +387,6 @@ export async function deriveDenoisedSentences(
     abandonDerivedSentences(plan.dir);
     throw err;
   } finally {
-    try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 }
@@ -437,7 +402,7 @@ export async function runFinalDenoise(
 ): Promise<FinalDenoiseResult> {
   let plan: DenoisePlan;
   try {
-    plan = await planDenoisedSentences(config.processDir, config.sentenceGap, config.sentencesDir);
+    plan = await planDenoisedSentences(config.processDir, config.sentencesDir);
   } catch (err) {
     const error = (err as Error).message || String(err);
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
@@ -472,9 +437,6 @@ export async function runFinalDenoise(
     const hooks: Omit<DeriveHooks, 'crucible'> = {
       signal: abort.signal,
       log,
-      onGapStart: () => sendProgress(mainWindow, jobId, {
-        phase: 'preparing', percentage: 0, message: 'Normalizing sentence gaps…',
-      }),
       onDenoiseProgress: (done, total) => sendProgress(mainWindow, jobId, {
         phase: 'denoising',
         percentage: total ? Math.round((done / total) * 100) : 0,

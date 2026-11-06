@@ -154,12 +154,10 @@ import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './
  * — which is what prep actually is — so omitting it records the truth instead
  * of a word this process made up about somebody else's card.
  */
-import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { listResumableSessions as listSessionsUnder, resumeSession } from './narrator/session/session-store';
 import { startAssembly } from './narrator/assemble/assemble-door';
 import { startPrep } from './narrator/text/prep-door';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
-import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu, gpuOwnerForTts, gpuHolder, unloadOllamaModels } from './gpu-arbiter';
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
@@ -3007,85 +3005,6 @@ function toReadablePath(p: string): string {
  * Throws if the sentences dir (when it should exist) or session-state.json is
  * unreadable — the caller must treat "can't verify" as a failure, not proceed.
  */
-/**
- * Start closing chapters in the background, if this job's shape allows it.
- *
- * A chapter can only be finished early when nothing downstream is still going to
- * rewrite its sentences, so this deliberately declines more often than it accepts:
- *
- *  - Orpheus only. The closer has to reproduce assembly's gap normalization exactly,
- *    and the gap plus the min-chunk floor are per-voice Orpheus values; for other
- *    engines assembly may not normalize at all, and guessing wrong changes the audio.
- *  - No final-denoise and no RVC pass. Both re-render the WHOLE sentence set after
- *    generation, which would make every pre-encoded chapter stale by definition.
- *  - MP4-family output only, matching e2a's parallel-export gate — an m4a chunk's
- *    edit list is what makes the concatenation gapless.
- *
- * Failing to start is never fatal: assembly just does the work itself, as today.
- */
-function maybeStartChapterCloser(session: ConversionSession): void {
-  const { config, prepInfo } = session;
-  const settings = config.settings;
-
-  // Every reason to decline is REPORTED. The first version of this returned bare,
-  // and when the closer then did not run on its first real book there was no way to
-  // tell which condition had rejected it — the feature and a silently-skipped
-  // feature look identical from the outside. Declining is fine; declining without
-  // saying so is not.
-  const decline = (reason: string): void => {
-    writeWorkerLog(`[CLOSER] not started: ${reason}`);
-    logger.log('INFO', session.jobId, `Chapter closer not started: ${reason}`).catch(() => {});
-  };
-
-  if (!prepInfo) return decline('prep info is not available');
-  if (settings.ttsEngine?.toLowerCase() !== 'orpheus') {
-    return decline(`engine is ${settings.ttsEngine ?? 'unset'}, not orpheus`);
-  }
-  if (config.finalDenoise) return decline('a final-denoise pass is scheduled, which re-renders every sentence afterwards');
-  if (config.rvcEnhancement?.enabled) return decline('an RVC pass is scheduled, which re-renders every sentence afterwards');
-  if (config.skipAssembly) return decline('skipAssembly is set — the caller concatenates the sentences itself');
-  if (!prepInfo.chapters?.length) return decline('prep reported no chapter ranges');
-  // The output format is deliberately NOT checked here: BookForge never passes one,
-  // so e2a's own default governs, and e2a is the authority anyway — its
-  // parallel_export_supported() gate ignores the pre-encoded chapters outright on
-  // any mode where they are not equivalent (non-MP4 container, active pre-loudnorm
-  // filter, or a book short enough that loudnorm must measure it whole). Guessing
-  // that here would only add a second, less-informed copy of the same rule.
-
-  // The same per-voice values reassembly-bridge resolves from provenance. They are
-  // part of the AUDIO — a different floor means different trailing silence — so the
-  // closer records them and assembly refuses the output if they no longer match.
-  const voice = settings.fineTuned;
-  const gapSeconds = resolveOrpheusSentenceGap(voice) ?? DEFAULT_SENTENCE_GAP;
-  const minGapSeconds = resolveOrpheusMinChunkGap(voice) ?? 0;
-
-  startChapterCloser({
-    jobId: session.jobId,
-    sessionId: prepInfo.sessionId,
-    sentencesDir: toReadablePath(prepInfo.chaptersDirSentences),
-    chapters: prepInfo.chapters.map((c) => ({
-      chapterNum: c.chapterNum,
-      sentenceStart: c.sentenceStart,
-      sentenceEnd: c.sentenceEnd,
-    })),
-    tmpRoot: narratorScratchRoot(),
-    gapSeconds,
-    minGapSeconds,
-    // Mono, because e2a's default_output_channel is 'mono' and BookForge never
-    // overrides it — grep confirms no output_channel arg is passed from here. The
-    // chunks must match what export_audio_parallel would have produced; if that
-    // setting ever becomes configurable, this has to follow it.
-    outputChannels: 1,
-    onLog: (message) => {
-      writeWorkerLog(`[CLOSER] ${message}`);
-      logger.log('INFO', session.jobId, `Chapter closer: ${message}`).catch(() => {});
-    },
-  }).catch((err) => {
-    writeWorkerLog(`[CLOSER] failed to start: ${err}`);
-    logger.log('WARN', session.jobId, `Chapter closer failed to start: ${err}`).catch(() => {});
-  });
-}
-
 async function findMissingSentenceFiles(prepInfo: PrepInfo): Promise<number[]> {
   const sentencesDir = toReadablePath(prepInfo.chaptersDirSentences);
   const present = new Set<number>();
@@ -5101,14 +5020,6 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
      * MOVING the session, running it after would be reading a directory that
      * had gone.
      */
-    const closerManifest = await stopChapterCloser(session.jobId);
-    if (closerManifest) {
-      await logger.log('INFO', session.jobId, 'Chapter closer finished', {
-        complete: closerManifest.complete,
-        closed: closerManifest.closedChapters.length,
-        totalChapters: closerManifest.totalChapters,
-      });
-    }
 
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
     // because e2a's headless mode deletes the process dir (sentence files)
@@ -8478,11 +8389,6 @@ export async function startParallelConversion(
   const isWindows = process.platform === 'win32';
   const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
 
-  // Chapters finish long before the render does; start closing them now so the gap
-  // normalization and the AAC encode happen on idle cores instead of after the GPU
-  // is done. Declines quietly when the job's shape makes it unsafe.
-  maybeStartChapterCloser(session);
-
   try {
     // The venue was decided before prep (it placed the session); this is the
     // launch it decided.
@@ -8835,12 +8741,6 @@ export async function stopParallelConversion(
   // a child of this job until 2026-09-19 and this line reached it; it is the
   // `align` queue row behind this one now, and the queue stops it through that
   // module's own `cancel` (`queue-steps/align.ts` → `stopCoverageAlign`).
-  // The closer polls on a timer of its own; without this it would outlive the
-  // cancelled job and keep reading a session that is being torn down. Its partial
-  // output stays on disk and is simply never marked complete, so assembly ignores it.
-  stopChapterCloser(jobId).catch((err) => {
-    logger.log('WARN', jobId, `Chapter closer stop failed during cancel: ${err}`).catch(() => {});
-  });
   const ttsEngine = session.config?.settings?.ttsEngine;
 
   // A REMOTE RENDER IS CANCELLED ON THE SERVER, not by hanging up.
@@ -10550,11 +10450,6 @@ export async function resumeParallelConversion(
   // Start workers for missing ranges - stagger on Windows to avoid conda temp file race condition
   const isWindows = process.platform === 'win32';
   const WINDOWS_WORKER_STAGGER_MS = 2000; // 2 seconds between worker starts on Windows
-
-  // Same as the fresh path. On a resume the already-rendered chapters close almost
-  // immediately, and the ones being re-rendered close as their sentences land — the
-  // stamp is what keeps a re-rendered sentence from being served from an old close.
-  maybeStartChapterCloser(session);
 
   try {
     // `crucibleChunksForSession` reads the workers' `assignedIndices`, so the
