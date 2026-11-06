@@ -160,24 +160,6 @@ export interface StreamWorkerConfig {
   voiceError?: string;
 }
 
-/** Per-machine Orpheus max batch size (Settings → Streaming engine). Processing
- *  uses it directly; streaming ramps up to it. Mirrors electron/orpheus-batch.ts. */
-export interface OrpheusBatchConfig {
-  /** Effective max in use right now. */
-  value: number;
-  /** User-set max, or null when using the platform default. */
-  userMax: number | null;
-  /** Per-platform default (reset target / placeholder). */
-  platformDefault: number;
-  /** 'mac' (MLX) or 'nvidia' (vLLM). */
-  platform: 'mac' | 'nvidia';
-  /** True when an ORPHEUS_BATCH_SIZE env var is forcing the value. */
-  envOverride: boolean;
-  /** Clamp bounds for the input. */
-  min: number;
-  max: number;
-}
-
 // Chapter structure for TOC extraction and chapter marking
 export interface Chapter {
   id: string;
@@ -3189,27 +3171,6 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async wslCheckOrpheusSetup(config: {
-    distro?: string;
-    condaPath?: string;
-    sessionsRoot?: string;
-  }): Promise<{
-    success: boolean;
-    data?: {
-      valid: boolean;
-      condaFound: boolean;
-      sessionsRootFound: boolean;
-      orpheusEnvFound: boolean;
-      errors: string[];
-    };
-    error?: string;
-  }> {
-    if (this.isElectron) {
-      return (window as any).electron.wsl.checkOrpheusSetup(config);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Reassembly - Browse and reassemble incomplete e2a sessions
   // ─────────────────────────────────────────────────────────────────────────────
@@ -3443,54 +3404,6 @@ export class ElectronService {
       }
     }
     return false;
-  }
-
-  /** Read the current Orpheus max batch config (Settings → Streaming engine). */
-  async getOrpheusBatchConfig(): Promise<OrpheusBatchConfig | null> {
-    if (this.isElectron && (window as any).electron?.orpheus) {
-      try {
-        return await (window as any).electron.orpheus.getBatchConfig();
-      } catch (err) {
-        console.error('[ElectronService] Failed to read Orpheus batch config:', err);
-      }
-    }
-    return null;
-  }
-
-  /** Set (or reset, with null) the Orpheus max batch. Returns the updated config. */
-  async setOrpheusMaxBatch(value: number | null): Promise<OrpheusBatchConfig | null> {
-    if (this.isElectron && (window as any).electron?.orpheus) {
-      try {
-        return await (window as any).electron.orpheus.setBatchMax(value);
-      } catch (err) {
-        console.error('[ElectronService] Failed to set Orpheus batch max:', err);
-      }
-    }
-    return null;
-  }
-
-  /** Read the current Orpheus memory tier (how much memory Orpheus may claim). */
-  async getOrpheusMemoryTier(): Promise<{ tier: string; platform: 'mac' | 'nvidia' } | null> {
-    if (this.isElectron && (window as any).electron?.orpheus?.getMemoryTier) {
-      try {
-        return await (window as any).electron.orpheus.getMemoryTier();
-      } catch (err) {
-        console.error('[ElectronService] Failed to read Orpheus memory tier:', err);
-      }
-    }
-    return null;
-  }
-
-  /** Set the Orpheus memory tier. Returns the updated tier. */
-  async setOrpheusMemoryTier(tier: string): Promise<{ tier: string; platform: 'mac' | 'nvidia' } | null> {
-    if (this.isElectron && (window as any).electron?.orpheus?.setMemoryTier) {
-      try {
-        return await (window as any).electron.orpheus.setMemoryTier(tier);
-      } catch (err) {
-        console.error('[ElectronService] Failed to set Orpheus memory tier:', err);
-      }
-    }
-    return null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

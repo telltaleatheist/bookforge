@@ -658,15 +658,6 @@ export interface WslDetectionResult {
   error?: string;
 }
 
-export interface WslOrpheusSetupResult {
-  valid: boolean;
-  condaFound: boolean;
-  /** The GUEST sessions root exists (or its parent does, so it can be created). */
-  sessionsRootFound: boolean;
-  orpheusEnvFound: boolean;
-  errors: string[];
-}
-
 /**
  * Detect if WSL2 is available on this Windows machine
  * Returns info about available distros
@@ -735,102 +726,6 @@ export function detectWslAvailability(): WslDetectionResult {
 
     return { available: false, distros: [], error: errorMessage };
   }
-}
-
-/**
- * Check if Orpheus setup exists in WSL
- * Verifies conda, e2a, and orpheus_tts conda environment are present
- */
-export function checkWslOrpheusSetup(config: {
-  distro?: string;
-  condaPath?: string;
-  sessionsRoot?: string;
-  orpheusCondaEnv?: string;
-}): WslOrpheusSetupResult {
-  // Only works on Windows
-  if (os.platform() !== 'win32') {
-    return {
-      valid: false,
-      condaFound: false,
-      sessionsRootFound: false,
-      orpheusEnvFound: false,
-      errors: ['WSL is only available on Windows'],
-    };
-  }
-
-  const errors: string[] = [];
-  // The execSync string form of the ONE argv builder — see wslScriptArgs. These
-  // probes carry no `$` of their own, but their default paths do ($USER), and a
-  // probe that silently loses a `$` is exactly what broke the Higgs doctor, so
-  // they take the same route rather than being the three that still do not.
-  const wslPrefix = wslScriptArgs(config.distro, '').slice(0, -1).join(' ');
-  const wslLoginPrefix = wslPrefix.replace(/ -c$/, ' -lc');
-
-  // Default paths if not specified
-  const condaPath = config.condaPath || '/home/$USER/anaconda3/bin/conda';
-  // The sessions root is CREATED by a render, so the question the doctor asks is
-  // whether its PARENT exists — a guest home that is there means the derived root
-  // is writable, and demanding the directory itself would report a machine that
-  // has simply not rendered yet as broken.
-  const sessionsRoot = config.sessionsRoot || getWslSessionsRoot();
-  const orpheusCondaEnv = config.orpheusCondaEnv || getWslOrpheusCondaEnv();
-
-  let condaFound = false;
-  let sessionsRootFound = false;
-  let orpheusEnvFound = false;
-
-  try {
-    // Check conda exists
-    const condaCheck = execSync(
-      `wsl.exe ${wslPrefix} "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
-      { encoding: 'utf8', timeout: 10000, windowsHide: true }
-    ).trim();
-    condaFound = condaCheck.includes('found');
-    if (!condaFound) {
-      errors.push(`Conda not found at ${condaPath}`);
-    }
-  } catch (err) {
-    errors.push(`Failed to check conda: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  try {
-    // The sessions root, or the directory it will be created in.
-    const parent = sessionsRoot.replace(/\/+[^/]+\/*$/, '') || '/';
-    const rootCheck = execSync(
-      `wsl.exe ${wslPrefix} "test -d ${sessionsRoot} -o -d ${parent} && echo 'found' || echo 'not found'"`,
-      { encoding: 'utf8', timeout: 10000, windowsHide: true }
-    ).trim();
-    sessionsRootFound = rootCheck.includes('found');
-    if (!sessionsRootFound) {
-      errors.push(`The WSL sessions root ${sessionsRoot} cannot be created (${parent} does not exist)`);
-    }
-  } catch (err) {
-    errors.push(`Failed to check the WSL sessions root: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  try {
-    // Check orpheus_tts conda environment exists
-    // Use conda env list to check if the environment exists
-    const condaBase = condaPath.replace(/\/bin\/conda$/, '');
-    const orpheusCheck = execSync(
-      `wsl.exe ${wslLoginPrefix} "source ${condaBase}/etc/profile.d/conda.sh && conda env list | grep -q '^${orpheusCondaEnv} ' && echo 'found' || echo 'not found'"`,
-      { encoding: 'utf8', timeout: 15000, windowsHide: true }
-    ).trim();
-    orpheusEnvFound = orpheusCheck.includes('found');
-    if (!orpheusEnvFound) {
-      errors.push(`Orpheus conda environment '${orpheusCondaEnv}' not found`);
-    }
-  } catch (err) {
-    errors.push(`Failed to check orpheus conda env: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  return {
-    valid: condaFound && sessionsRootFound && orpheusEnvFound,
-    condaFound,
-    sessionsRootFound,
-    orpheusEnvFound,
-    errors,
-  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2056,7 +1951,6 @@ export const toolPaths = {
   getToolStatus,
   // WSL2 functions
   detectWslAvailability,
-  checkWslOrpheusSetup,
   checkWslHiggsSetup,
   shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,

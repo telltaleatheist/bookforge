@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, ActivatedRoute } from '@angular/router';
 import { SettingsService, SettingsSection, SettingField } from '../../core/services/settings.service';
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
-import { ElectronService, OrpheusBatchConfig } from '../../core/services/electron.service';
+import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { DoctorPanelComponent } from './components/doctor-panel.component';
@@ -1764,14 +1764,6 @@ export class SettingsComponent implements OnInit {
     distros: string[];
     defaultDistro?: string;
   } | null>(null);
-  readonly wslSetupStatus = signal<{
-    valid: boolean;
-    condaFound: boolean;
-    sessionsRootFound: boolean;
-    orpheusEnvFound: boolean;
-    errors: string[];
-  } | null>(null);
-  readonly wslVerifying = signal(false);
   readonly wslSaving = signal(false);
   readonly isWindows = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'));
   // Parallel streaming workers only help on macOS (CPU/MPS). On CUDA/NVIDIA the engine
@@ -2404,46 +2396,11 @@ export class SettingsComponent implements OnInit {
     }
   }
 
-  async verifyWslSetup(): Promise<void> {
-    if (!this.isWindows()) return;
-
-    this.wslVerifying.set(true);
-    this.wslSetupStatus.set(null);
-
-    try {
-      // Verify against what's shown (draft overlay), not just the saved config
-      const result = await this.electronService.wslCheckOrpheusSetup({
-        distro: this.getToolPathValue('wslDistro') || undefined,
-        condaPath: this.getToolPathValue('wslCondaPath') || undefined,
-        sessionsRoot: this.getToolPathValue('wslSessionsRoot') || undefined,
-      });
-
-      if (result.success && result.data) {
-        this.wslSetupStatus.set(result.data);
-      }
-    } catch (err) {
-      console.error('Failed to verify WSL setup:', err);
-      this.wslSetupStatus.set({
-        valid: false,
-        condaFound: false,
-        sessionsRootFound: false,
-        orpheusEnvFound: false,
-        errors: [err instanceof Error ? err.message : 'Unknown error'],
-      });
-    } finally {
-      this.wslVerifying.set(false);
-    }
-  }
-
   /** Route Higgs jobs through WSL. Separate from the Orpheus toggle on purpose:
    *  the two envs are independent, and folding them together would make enabling
    *  Orpheus silently promise a Higgs env that is not there. */
   toggleWsl2ForHiggs(enabled: boolean): void {
     this.updateToolPath('useWsl2ForHiggs', enabled ? 'true' : '');
-  }
-
-  toggleWsl2ForOrpheus(enabled: boolean): void {
-    this.updateToolPath('useWsl2ForOrpheus', enabled ? 'true' : '');
   }
 
   selectWslDistro(distro: string): void {

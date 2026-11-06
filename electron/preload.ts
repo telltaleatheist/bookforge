@@ -10,7 +10,6 @@ import type { DoctorReport } from './doctor';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StartupUpgradeReport } from './components/startup-upgrade-check';
 import type { StarterStatus } from './update/starter-library';
-import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type { JobStageProgress } from './job-stages';
@@ -1119,12 +1118,6 @@ export interface ElectronAPI {
   narrator: {
     configurePaths: (config: { condaPath?: string; narratorScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
   };
-  orpheus: {
-    getBatchConfig: () => Promise<OrpheusBatchConfig>;
-    setBatchMax: (value: number | null) => Promise<OrpheusBatchConfig>;
-    getMemoryTier: () => Promise<{ tier: string; resolvedTier: string; autoCeiling: string | null; profile: { tier: string; capMB: number; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia'; viable: boolean; steppedDown?: boolean; freeMB: number | null; usedMB: number | null; totalMB: number | null; reserveMB: number | null }>;
-    setMemoryTier: (tier: string) => Promise<{ tier: string; resolvedTier: string; autoCeiling: string | null; profile: { tier: string; capMB: number; marginMB: number; ceiling: number; batchSize: number }; platform: 'mac' | 'nvidia'; viable: boolean; steppedDown?: boolean; freeMB: number | null; usedMB: number | null; totalMB: number | null; reserveMB: number | null }>;
-  };
   runtime: {
     getStatus: () => Promise<{ success: boolean; data?: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }; error?: string }>;
     onStatus: (callback: (status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => void) => () => void;
@@ -1164,11 +1157,6 @@ export interface ElectronAPI {
   };
   wsl: {
     detect: () => Promise<{ success: boolean; data?: { available: boolean; version?: number; distros: string[]; defaultDistro?: string; error?: string }; error?: string }>;
-    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; sessionsRoot?: string }) => Promise<{
-      success: boolean;
-      data?: { valid: boolean; condaFound: boolean; sessionsRootFound: boolean; orpheusEnvFound: boolean; errors: string[] };
-      error?: string;
-    }>;
   };
   /**
    * The Crucible inference servers this machine can reach (Settings → Crucible
@@ -2825,12 +2813,6 @@ const electronAPI: ElectronAPI = {
     configurePaths: (config: { condaPath?: string; narratorScratchPath?: string }) =>
       ipcRenderer.invoke('narrator:configure-paths', config),
   },
-  orpheus: {
-    getBatchConfig: () => ipcRenderer.invoke('orpheus-batch:get'),
-    setBatchMax: (value: number | null) => ipcRenderer.invoke('orpheus-batch:set', value),
-    getMemoryTier: () => ipcRenderer.invoke('orpheus-memory:get'),
-    setMemoryTier: (tier: string) => ipcRenderer.invoke('orpheus-memory:set', tier),
-  },
   runtime: {
     getStatus: () =>
       ipcRenderer.invoke('runtime:get-status'),
@@ -2902,8 +2884,6 @@ const electronAPI: ElectronAPI = {
   wsl: {
     detect: () =>
       ipcRenderer.invoke('wsl:detect'),
-    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; sessionsRoot?: string }) =>
-      ipcRenderer.invoke('wsl:check-orpheus-setup', config),
   },
   crucible: {
     servers: () => ipcRenderer.invoke('crucible:servers'),

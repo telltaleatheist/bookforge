@@ -166,9 +166,6 @@ import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
 import {
   setNarratorScratchRoot, narratorScratchRoot, defaultNarratorScratchRoot, mintImpliedExportPath,
 } from './narrator-paths';
-import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
-import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
-import { getGpuMemMB } from './gpu-arbiter';
 import { loadConfig as loadToolPathsConfig } from './tool-paths';
 import { getRenderCacheBaseDir } from './render-cache';
 import { mergeEpubParagraphs } from './epub-paragraph-merger';
@@ -7613,50 +7610,6 @@ function setupIpcHandlers(): void {
   // E2A Path Configuration
   // ─────────────────────────────────────────────────────────────────────────────
 
-  // Orpheus max batch size (per-machine, user-configurable in Settings → Streaming
-  // engine). Processing uses it directly; streaming ramps up to it. Read live by
-  // both pipelines, so a change applies without restart.
-  ipcMain.handle('orpheus-batch:get', () => getOrpheusBatchConfig());
-  ipcMain.handle('orpheus-batch:set', (_event, value: number | null) => {
-    setOrpheusMaxBatch(value);
-    return getOrpheusBatchConfig();
-  });
-
-  // Orpheus memory tier (how much GPU/unified memory Orpheus may claim vs leave free).
-  // 'auto' resolves to a concrete tier from live free VRAM (clamped by a learned
-  // ceiling); the reply includes the resolved tier + its profile for display.
-  const memoryTierReply = async () => {
-    const tier = getOrpheusMemoryTier();
-    const mem = await getGpuMemMB();
-    const freeMB = mem?.freeMB ?? null;
-    const totalMB = mem?.totalMB ?? null;
-    // What the job will ACTUALLY run at: resolve the wanted tier, then step down to the
-    // highest one the free VRAM can manage (same logic the spawn uses). So the UI shows
-    // the real level + reserve, and `viable:false` only when even the lowest can't hold
-    // the floor (it will still run, at the lowest, and might run out of memory).
-    const wanted = resolveConcreteOrpheusTier(freeMB, totalMB);
-    const fit = fitOrpheusTier(wanted, freeMB, totalMB);
-    return {
-      tier,
-      resolvedTier: fit.tier,
-      autoCeiling: getOrpheusAutoCeiling() ?? null,
-      profile: orpheusMemoryProfile(fit.tier),
-      platform: process.platform === 'darwin' ? 'mac' : 'nvidia',
-      // Live GPU picture for the UI's level + low-memory note.
-      viable: fit.fits,
-      steppedDown: fit.steppedDown,
-      freeMB,
-      usedMB: mem ? Math.max(0, mem.totalMB - mem.freeMB) : null,
-      totalMB,
-      reserveMB: fit.reserveMB,
-    };
-  };
-  ipcMain.handle('orpheus-memory:get', () => memoryTierReply());
-  ipcMain.handle('orpheus-memory:set', (_event, tier: OrpheusMemoryTier) => {
-    setOrpheusMemoryTier(tier);
-    return memoryTierReply();
-  });
-
   ipcMain.handle('narrator:configure-paths', async (_event, config: { condaPath?: string; narratorScratchPath?: string }) => {
     try {
       const { setCondaPath } = await import('./narrator-paths.js');
@@ -7791,19 +7744,6 @@ function setupIpcHandlers(): void {
     try {
       const { detectWslAvailability } = await import('./tool-paths.js');
       return { success: true, data: detectWslAvailability() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('wsl:check-orpheus-setup', async (_event, config: {
-    distro?: string;
-    condaPath?: string;
-    sessionsRoot?: string;
-  }) => {
-    try {
-      const { checkWslOrpheusSetup } = await import('./tool-paths.js');
-      return { success: true, data: checkWslOrpheusSetup(config) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
