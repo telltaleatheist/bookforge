@@ -2962,12 +2962,12 @@ const electronAPI: ElectronAPI = {
     // Foundry's retry is `crucible:install-retry`; ours is `-start`, and it
     // never collided.
     installStatus: () => ipcRenderer.invoke('crucible:host-install-status'),
-    repairStop: (name: string, taskId: string) => ipcRenderer.invoke('crucible:repair-stop', name, taskId),
-    repair: (name: string, options: { verifyOnly: boolean }) => ipcRenderer.invoke('crucible:repair', name, options),
+    repairStop: (name: string, taskId: string) => ipcRenderer.invoke('crucible:server-repair-stop', name, taskId),
+    repair: (name: string, options: { verifyOnly: boolean }) => ipcRenderer.invoke('crucible:server-repair', name, options),
     onRepairEvent: (callback: (event: CrucibleRepairEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, repairEvent: CrucibleRepairEvent) => callback(repairEvent);
-      ipcRenderer.on('crucible:repair-event', listener);
-      return () => { ipcRenderer.removeListener('crucible:repair-event', listener); };
+      ipcRenderer.on('crucible:server-repair-event', listener);
+      return () => { ipcRenderer.removeListener('crucible:server-repair-event', listener); };
     },
     onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, doorEvent: CrucibleInstallDoorEvent) =>

@@ -8989,18 +8989,18 @@ function setupIpcHandlers(): void {
 
   /**
    * CHECK OR REPAIR ONE SERVER (`crucible/repair.ts`). Answers at once; every step comes
-   * on `crucible:repair-event`, to every window, because a repair that hashes hundreds
+   * on `crucible:server-repair-event`, to every window, because a repair that hashes hundreds
    * of gigabytes outlives whichever page started it. One per server at a time.
    */
   const repairsRunning = new Set<string>();
-  ipcMain.handle('crucible:repair', async (_event, name: string, options: { verifyOnly: boolean }) => {
+  ipcMain.handle('crucible:server-repair', async (_event, name: string, options: { verifyOnly: boolean }) => {
     if (repairsRunning.has(name)) {
       return { success: false, error: `A check or repair of crucible "${name}" is already running.` };
     }
     repairsRunning.add(name);
     const { processRepairDeps, repairCrucibleHere, repairCrucibleServer } = await import('./crucible/repair.js');
     const { CRUCIBLE_REPAIR_HERE } = await import('../shared/crucible/repair-wire.js');
-    const emit = (repairEvent: unknown) => broadcastToAllWindows('crucible:repair-event', repairEvent);
+    const emit = (repairEvent: unknown) => broadcastToAllWindows('crucible:server-repair-event', repairEvent);
     const run = name === CRUCIBLE_REPAIR_HERE
       ? repairCrucibleHere(emit, processRepairDeps())
       : repairCrucibleServer(name, { verifyOnly: options.verifyOnly === true }, emit, processRepairDeps());
@@ -9008,7 +9008,7 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
-  ipcMain.handle('crucible:repair-stop', async (_event, name: string, taskId: string) => {
+  ipcMain.handle('crucible:server-repair-stop', async (_event, name: string, taskId: string) => {
     try {
       const { processRepairDeps, stopCrucibleRepair } = await import('./crucible/repair.js');
       await stopCrucibleRepair(name, taskId, processRepairDeps());
