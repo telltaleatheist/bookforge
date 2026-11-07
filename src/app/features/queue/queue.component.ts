@@ -162,6 +162,7 @@ import { CdkScrollable } from '@angular/cdk/scrolling';
 import { prepFraction, prepLabel, runLadder } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun, LadderRung, PlannedStep, StillReason } from '@shared/queue/bench';
 import type { JobType, ServerReach, ServerShadow, StepStatus } from '@shared/queue/engine-types';
+import { foldOpen, pressFold, type FoldPresses } from '@shared/queue/fold';
 import { runElapsedSeconds } from '@shared/queue/job-timing';
 import { BRIEF_STEP_TYPES } from '@shared/queue/job-words';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
@@ -4682,30 +4683,25 @@ export class QueueComponent {
   }
 
   /**
-   * THE BOOKS WHOSE FOLD IS FLIPPED FROM THE DEFAULT — not the ones that are
-   * open.
+   * THE CHEVRON PRESSES, each with whether its book was running when pressed —
+   * not the books that are open.
    *
    * The default is not the same on every card (`planOpen`): a book that is
    * running opens, because its ladder is the live progress; every other book
-   * is one small rectangle. A set of "open" keys would have made the chevron
-   * mean *open* on one card and *close* on the next, and a running book would
-   * have snapped shut under the reader's hand the moment its last step
-   * settled. Holding the FLIP instead, one press always means "the other way",
-   * and the card follows the book's own state when nobody has pressed it.
+   * is one small rectangle. A press turns the default the other way, and only
+   * while the book is still in the state it was pressed in
+   * (shared/queue/fold.ts): a waiting card opened to look at its steps must not
+   * read as CLOSED once that book is on a card (Owen, 2026-11-07).
    */
-  readonly expandedPlans = signal<ReadonlySet<string>>(new Set());
+  readonly foldPresses = signal<FoldPresses>(new Map());
 
   /** Open by default while something is on a card; folded otherwise. */
   planOpen(plan: BookPlan): boolean {
-    const flipped = this.expandedPlans().has(plan.key);
-    return this.runningSteps(plan) > 0 ? !flipped : flipped;
+    return foldOpen(this.foldPresses(), plan.key, this.runningSteps(plan) > 0);
   }
 
   togglePlanChain(plan: BookPlan): void {
-    const next = new Set(this.expandedPlans());
-    if (next.has(plan.key)) next.delete(plan.key);
-    else next.add(plan.key);
-    this.expandedPlans.set(next);
+    this.foldPresses.set(pressFold(this.foldPresses(), plan.key, this.runningSteps(plan) > 0));
   }
 
   /**

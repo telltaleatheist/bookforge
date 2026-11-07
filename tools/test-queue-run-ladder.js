@@ -139,5 +139,54 @@ check('the tray and the page draw the ladder, and the tray opens a running book'
   assert.ok(page.includes('<div class="cdoing" [title]="doing">{{ doing }}</div>'), 'the book card no longer says what the step is doing');
 });
 
+/*
+ * THE FOLD (Owen, 2026-11-07): a run dragged onto the PC's lane showed its lane chevron
+ * CLOSED through triage and the cleanup, with main holding the step running. The press
+ * that opened the waiting book's card had been kept as a bare flip, which read as closed
+ * once the book ran. The run here sits on its cleanup, still in the server's line.
+ */
+const fold = require(path.join(D, 'fold.js'));
+const IN_LINE = { message: `Waiting for ${SERVER}: #1 of 1 in its line`, foundryPhase: 'clean' };
+
+check('a run sitting on its cleanup, in the server\'s line: on its lane, ladder open, the step named', () => {
+  const snapshot = snap([run(1, IN_LINE)]);
+  const [plan] = bench.bookPlans(snapshot);
+  const lane = bench.benchLanes(snapshot).find((l) => l.occupant !== null && l.occupant.stepId === 'step_1');
+  assert.ok(lane !== undefined && lane.setId === SERVER, 'the cleanup is not on its server\'s lane');
+  assert.strictEqual(lane.occupant.label, 'Clean text');
+  assert.strictEqual(fold.foldOpen(new Map(), plan.key, true), true, 'a running book with no press is folded');
+  const now = plan.ladder.find((r) => r.status === 'running');
+  assert.strictEqual(now.label, 'Clean text', 'the running rung is not the cleanup');
+  assert.strictEqual(now.percent, null, 'a step that measured nothing shows a percent');
+  assert.strictEqual(now.doing, IN_LINE.message, 'the cleanup\'s own words are not on its rung');
+  assert.deepStrictEqual(plan.ladder.map((r) => r.status),
+    ['done', 'running', 'waiting', 'waiting', 'waiting', 'waiting', 'waiting']);
+});
+
+check('a card opened while the book waited is still open once it runs; a press while running folds it', () => {
+  const waiting = run(-1, {});
+  waiting.steps[0].status = 'queued';
+  const [queued] = bench.bookPlans(snap([waiting]));
+  assert.ok(!queued.steps.some((s) => s.status === 'running'), 'the fixture is running before it was sent');
+  const key = queued.key;
+  assert.strictEqual(fold.foldOpen(new Map(), key, false), false, 'a waiting book is open with no press');
+  const opened = fold.pressFold(new Map(), key, false);
+  assert.strictEqual(fold.foldOpen(opened, key, false), true, 'the press did not open the waiting card');
+  assert.strictEqual(fold.foldOpen(opened, key, true), true,
+    'the book started and its ladder folded: the waiting card\'s press read as a close');
+  const closed = fold.pressFold(opened, key, true);
+  assert.strictEqual(fold.foldOpen(closed, key, true), false, 'a press on the running card did not fold it');
+  assert.strictEqual(fold.foldOpen(fold.pressFold(closed, key, true), key, true), true, 'a second press did not reopen it');
+});
+
+check('the page folds through shared/queue/fold, and the lane\'s fold is the book\'s', () => {
+  const page = read('src/app/features/queue/queue.component.ts');
+  assert.ok(page.includes('return foldOpen(this.foldPresses(), plan.key, this.runningSteps(plan) > 0);'), 'planOpen does not ask foldOpen');
+  assert.ok(page.includes('this.foldPresses.set(pressFold(this.foldPresses(), plan.key, this.runningSteps(plan) > 0));'),
+    'a press is not recorded through pressFold');
+  assert.ok(page.includes('return plan === null ? true : this.planOpen(plan);'), 'the lane\'s fold is not the book\'s');
+  assert.ok(!page.includes('expandedPlans'), 'the bare flip set is back');
+});
+
 console.log(failed === 0 ? '\nqueue run ladder: all checks passed' : `\nqueue run ladder: ${failed} check(s) failed`);
 process.exit(failed === 0 ? 0 : 1);
