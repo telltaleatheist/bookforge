@@ -418,18 +418,36 @@ export function hostNodeSets(
 
 /**
  * WHERE ONE STEP'S ROW HANGS: its run's lineage — except a pronunciation guide,
- * which hangs under the step its own config names. A guide may be chained into a
- * run that is not ours to draw (a cleanup that lands the greyed step it was pressed
- * on), and the step it names is the id that step keeps once it lands. Null: on
- * nobody's tree.
+ * which hangs under the step its own config names, and a narration's audio step,
+ * which hangs under the node Narrate was pressed on (`treeParent`, stamped by
+ * shared/queue/narration-run.ts). Both may be chained into a run that is not ours
+ * to draw (a cleanup that lands the greyed step it was pressed on), or queued in a
+ * run of their own that carries no lineage. Null: on nobody's tree.
  */
-function lineageOf(job: QueueJob, step: QueueStep): { projectDir: string; parentStepId: string } | null {
+export function lineageOf(job: QueueJob, step: QueueStep): FoundryJobLineage | null {
   if (step.type === 'narration-guide') {
     const projectDir = textConfig(step, 'projectDir');
     const at = textConfig(step, 'at');
     return projectDir === null || at === null ? null : { projectDir, parentStepId: at };
   }
-  return job.foundry ?? null;
+  const tree = treeParentOf(step);
+  return tree ?? job.foundry ?? null;
+}
+
+/**
+ * The `treeParent` a narration step carries, or null when it carries none. A value
+ * that is there and is not a project and a node id is refused by name: it was
+ * written by this app and nothing else, so a bad one is a bug to see.
+ */
+export function treeParentOf(step: QueueStep): FoundryJobLineage | null {
+  const tree = step.config['treeParent'];
+  if (tree === undefined) return null;
+  const t = tree as { projectDir?: unknown; parentStepId?: unknown } | null;
+  if (t === null || typeof t.projectDir !== 'string' || t.projectDir === ''
+      || typeof t.parentStepId !== 'string' || t.parentStepId === '') {
+    throw new Error(`Step ${step.id} carries a treeParent that is not a project and a node id: ${JSON.stringify(tree)}.`);
+  }
+  return { projectDir: t.projectDir, parentStepId: t.parentStepId };
 }
 
 /**
@@ -565,8 +583,42 @@ export function withDiskGuides(sets: Map<string, HostNode[]>): Map<string, HostN
  * a run that survived a restart draws immediately rather than at the next
  * progress line.
  */
+/**
+ * THE FINISHED AUDIOBOOKS ON DISK, per project — one row each under the node it was
+ * rendered from (Owen, 2026-11-07: *"add the rendered book as a line item in the
+ * worktree … so the user can see that an audiobook was rendered from a specific
+ * item"*). Read by main from the record the assembly writes
+ * (electron/audiobook-render-nodes.ts) and merged into every push, like the guides.
+ */
+const diskAudiobookNodes = new Map<string, readonly HostNode[]>();
+
+/** Replace one project's audiobook rows; the next `publishHostNodes` draws them. */
+export function setDiskAudiobookNodes(projectDir: string, nodes: readonly HostNode[]): void {
+  if (nodes.length === 0) diskAudiobookNodes.delete(projectDir);
+  else diskAudiobookNodes.set(projectDir, nodes);
+}
+
+/** The queue's audio acts, whose live rows say more than a finished audiobook's. */
+const AUDIO_KINDS: ReadonlySet<HostOperationKind> = new Set(['narrate', 'enhance', 'assemble']);
+
+/**
+ * The set with the finished audiobooks added — except one whose node has a run of
+ * ours in the queue right now. That run's own rows are drawn there (and say how far
+ * it has got, or that it finished), so the audiobook is not drawn twice; once the
+ * run is cleared, the record's row takes its place.
+ */
+export function withDiskAudiobooks(sets: Map<string, HostNode[]>): Map<string, HostNode[]> {
+  const out = new Map(sets);
+  for (const [projectDir, books] of diskAudiobookNodes) {
+    const nodes = out.get(projectDir) ?? [];
+    const live = new Set(nodes.filter((n) => AUDIO_KINDS.has(n.kind) && decodeNodeId(n.id) !== null).map((n) => n.parentStepId));
+    out.set(projectDir, [...nodes, ...books.filter((b) => !live.has(b.parentStepId))]);
+  }
+  return out;
+}
+
 export function publishHostNodes(snapshot: QueueSnapshot, push: PushHostNodes): void {
-  const sets = withDiskGuides(hostNodeSets(snapshot));
+  const sets = withDiskAudiobooks(withDiskGuides(hostNodeSets(snapshot)));
   for (const [projectDir, nodes] of sets) {
     push(projectDir, nodes);
     if (nodes.length === 0) pushedProjects.delete(projectDir);
@@ -583,4 +635,5 @@ export function publishHostNodes(snapshot: QueueSnapshot, push: PushHostNodes): 
 export function resetPushedProjects(): void {
   pushedProjects.clear();
   diskGuideNodes.clear();
+  diskAudiobookNodes.clear();
 }

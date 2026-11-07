@@ -125,7 +125,9 @@ import {
   isChainable,
   planNodeAction,
   publishHostNodes,
+  setDiskAudiobookNodes,
   setDiskGuideNodes,
+  treeParentOf,
   type HostNode,
   type HostNodeAction,
 } from './foundry-host-nodes';
@@ -2117,6 +2119,8 @@ async function narrateFromFoundry(
     // the manifest says which this is rather than this side assuming.
     isArticle: got.manifest.projectType === 'article',
     ...(pending === undefined ? {} : { pending }),
+    // The node the press was made on: the run's rows, and its finished audiobook, hang there.
+    treeParent: { projectDir, parentStepId: target.exportNodeId },
   };
 
   /*
@@ -2843,6 +2847,56 @@ async function refreshGuideNodes(projectDir: string): Promise<void> {
   }
 }
 
+/**
+ * THE FINISHED AUDIOBOOKS ON FOUNDRY'S TREE, from disk (electron/audiobook-render-nodes.ts):
+ * one project's record read again — dropping any whose m4b is gone — and the tree
+ * re-pushed. A read that fails is said in the log and leaves the tree as it was.
+ */
+async function refreshAudiobookNodes(projectDir: string): Promise<void> {
+  try {
+    const { audiobookNodesOf } = await import('./audiobook-render-nodes.js');
+    setDiskAudiobookNodes(projectDir, audiobookNodesOf(projectDir, manifestService.getLibraryBasePath()));
+    publishHostNodes(queueEngine.snapshot(), (dir, nodes) => foundryMount.setHostNodes(dir, nodes));
+  } catch (err) {
+    console.error(`[audiobook-rows] the audiobooks of ${projectDir} could not be read for the tree: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * AN ASSEMBLY FINISHED: write its audiobook down under the node Narrate was pressed on,
+ * so it stays on the tree after the run is cleared. A run with no `treeParent` was not
+ * started from the tree and is not drawn there. The voice is the reading's, else the
+ * conversion's, as the run named them. A record that cannot be written is said in the
+ * log: the audiobook itself is made and filed either way.
+ */
+async function recordFinishedAudiobook(job: QueueJob, step: QueueStep, outputPath: string | undefined): Promise<void> {
+  try {
+    const tree = treeParentOf(step);
+    if (tree === null) return;
+    if (outputPath === undefined) {
+      throw new Error(`the assembly ${step.id} finished and named no file`);
+    }
+    const named = (type: string, keys: readonly string[]): string | null => {
+      for (const s of job.steps) {
+        if (s.type !== type) continue;
+        for (const key of keys) {
+          const value = s.config[key];
+          if (typeof value === 'string' && value.trim() !== '') return value.trim();
+        }
+      }
+      return null;
+    };
+    const voice = named('tts-conversion', ['voice', 'fineTuned']) ?? named('rvc-enhancement', ['rvcModel', 'modelName']);
+    const { recordAudiobookRender } = await import('./audiobook-render-nodes.js');
+    await recordAudiobookRender(tree.projectDir, tree.parentStepId, outputPath, manifestService.getLibraryBasePath(), {
+      voice, finishedAt: step.finishedAt ?? new Date().toISOString(), jobId: job.id, stepId: step.id,
+    });
+    await refreshAudiobookNodes(tree.projectDir);
+  } catch (err) {
+    console.error(`[audiobook-rows] the audiobook from ${step.id} could not be written down for the tree: ${(err as Error).message}`);
+  }
+}
+
 /** One guide window per step, raised rather than opened twice. */
 const pronunciationWindows = new Map<string, BrowserWindow>();
 
@@ -3007,6 +3061,8 @@ async function openFoundryWindowAndReconcileOnClose(
    * the list is static and this is a synchronous call that cannot lose that race.
    */
   publishFoundryHostOperations();
+  // The book's finished audiobooks read again, so one whose m4b was deleted leaves the tree.
+  if (projectDir !== undefined) void refreshAudiobookNodes(projectDir);
   const created: BrowserWindow[] = [];
   const capture = (_event: unknown, win: BrowserWindow): void => { created.push(win); };
   app.once('browser-window-created', capture);
@@ -13951,12 +14007,16 @@ app.whenReady().then(async () => {
     if (!fsSync.existsSync(root)) return;
     for (const name of await fs.readdir(root)) {
       const dir = path.join(root, name);
-      if (fsSync.existsSync(path.join(dir, 'readings'))) await refreshGuideNodes(dir);
+      if (!fsSync.existsSync(path.join(dir, 'readings'))) continue;
+      await refreshGuideNodes(dir);
+      await refreshAudiobookNodes(dir);
     }
   })().catch((err) => console.error(`[pronunciation] the guides on the tree could not be read: ${(err as Error).message}`));
   queueEngine.onStepFinished((event) => {
-    const step = queueEngine.snapshot().jobs.flatMap((j) => j.steps).find((s) => s.id === event.stepId);
-    if (step === undefined) return;
+    const job = queueEngine.snapshot().jobs.find((j) => j.id === event.jobId);
+    const step = job?.steps.find((s) => s.id === event.stepId);
+    if (job === undefined || step === undefined) return;
+    if (step.type === 'reassembly' && event.status === 'done') void recordFinishedAudiobook(job, step, event.outputPath);
     const request = step.config['request'] as Record<string, unknown> | undefined;
     const guideWork = step.type === 'narration-guide' || (step.type === 'foundry-job' && request?.['readingsOnly'] !== undefined);
     const dir = step.config['projectDir'];

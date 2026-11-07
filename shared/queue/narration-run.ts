@@ -50,7 +50,7 @@
  * when they run, and that is a run about a BOOK like any other here.
  */
 
-import type { ArtifactRef } from './engine-types';
+import type { ArtifactRef, FoundryJobLineage } from './engine-types';
 import { assertRunnableTtsEngine } from '../tts/engine-caps';
 
 /** The RVC pass, when the user asked for one. */
@@ -207,6 +207,13 @@ export interface NarrationRunBook {
    * will be, named for the row and never opened by this description.
    */
   readonly landing?: { readonly jobId: string; readonly stepId: string };
+  /**
+   * WHERE THE RUN HANGS ON FOUNDRY'S TREE, when Narrate was pressed there: stamped on
+   * the steps that draw a row (the reading, the conversion, the assembly) as
+   * `treeParent`, which is where electron/foundry-host-nodes.ts hangs them and where the
+   * finished audiobook's own row is recorded (electron/audiobook-render-nodes.ts).
+   */
+  readonly treeParent?: FoundryJobLineage;
 }
 
 /** Everything the user chose about HOW it is read and assembled. */
@@ -390,6 +397,8 @@ export interface NarrationAlignConfig {
 /** What e2a is told to do with the book. */
 export interface NarrationTtsConfig {
   readonly type: 'tts-conversion';
+  /** Where this step's row hangs on Foundry's tree. See `NarrationRunBook.treeParent`. */
+  readonly treeParent?: FoundryJobLineage;
   /*
    * NO `device` SINCE 2026-09-19 — see `NarrationRunSettings`. A queue.json
    * restored from before that date still carries the key on its step configs
@@ -423,6 +432,8 @@ export interface NarrationTtsConfig {
 /** Re-render the sentences through an RVC model. */
 export interface NarrationRvcConfig {
   readonly type: 'rvc-enhancement';
+  /** Where this step's row hangs on Foundry's tree. See `NarrationRunBook.treeParent`. */
+  readonly treeParent?: FoundryJobLineage;
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly processDir: string;
@@ -472,6 +483,8 @@ export interface NarrationDenoiseConfig {
 /** Combine the rendered sentences into the M4B. */
 export interface NarrationReassemblyConfig {
   readonly type: 'reassembly';
+  /** Where this step's row hangs on Foundry's tree. See `NarrationRunBook.treeParent`. */
+  readonly treeParent?: FoundryJobLineage;
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly processDir: string;
@@ -1045,6 +1058,9 @@ export function requireNarrationStages(
  * Computed here rather than in the assembly builder because it is a fact about
  * the SHAPE OF THE RUN, and this is the only function that sees the whole shape.
  */
+/** The steps that draw a row on Foundry's tree (foundry-host-nodes.ts `NODE_KIND_OF`). */
+const TREE_ROW_STEPS: ReadonlySet<NarrationStepPlan['type']> = new Set(['tts-conversion', 'rvc-enhancement', 'reassembly']);
+
 export function buildNarrationSteps(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
@@ -1161,6 +1177,11 @@ export function buildNarrationSteps(
   if (head !== undefined && head.sourceRef === undefined) {
     steps[0] = { ...head, sourceRef: { kind: 'audio-session' } };
   }
-  return steps;
+  // The rows a run draws on Foundry's tree hang under the node Narrate was pressed on.
+  const treeParent = book.treeParent;
+  if (treeParent === undefined) return steps;
+  return steps.map((step) => (TREE_ROW_STEPS.has(step.type)
+    ? { ...step, config: { ...step.config, treeParent } as NarrationStepPlan['config'] }
+    : step));
 }
 

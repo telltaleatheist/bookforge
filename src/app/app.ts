@@ -165,6 +165,7 @@ import { NoticeService } from './core/services/notice.service';
         [outputFilename]="r.target.outputFilename"
         [isArticle]="r.target.isArticle"
         [pending]="r.target.pending"
+        [treeParent]="r.target.treeParent"
         (cancelled)="onNarrationCancelled()"
         (queued)="onNarrationQueued()"
       />

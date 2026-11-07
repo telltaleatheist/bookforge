@@ -917,6 +917,8 @@ export class NarrationModalComponent {
    * cleanup answer is Foundry's for the position.
    */
   readonly pending = input<{ jobId: string; stepId: string; cleaned: boolean } | undefined>(undefined);
+  /** Where the run hangs on Foundry's tree, from a Foundry press (shared/queue/narrate-target.ts). */
+  readonly treeParent = input<{ projectDir: string; parentStepId: string } | undefined>(undefined);
   /**
    * WHICH DOOR opened this — see `NarrationEntryContext`.
    *
@@ -1910,6 +1912,7 @@ export class NarrationModalComponent {
         ...(this.pending() === undefined
           ? {}
           : { landing: { jobId: this.pending()!.jobId, stepId: this.pending()!.stepId } }),
+        ...(this.treeParent() === undefined ? {} : { treeParent: this.treeParent()! }),
       };
 
       /*

@@ -929,6 +929,8 @@ const SUITES = [
   'test-foundry-host',
   'test-book-tile-gates',
   'test-queue-run-ladder',
+  // A finished audiobook stays on Foundry's tree under the node it came from (Owen, 2026-11-07).
+  'test-audiobook-tree-rows',
   'test-foundry-host-nodes',
   'test-foundry-host-status',
   'test-foundry-host-queue',

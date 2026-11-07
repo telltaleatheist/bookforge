@@ -64,4 +64,15 @@ export interface NarrateTarget {
     readonly stepId: string;
     readonly cleaned: boolean;
   };
+  /**
+   * WHERE THE RUN HANGS ON FOUNDRY'S TREE — the Foundry project and the node Narrate
+   * was pressed on (a ledger step, or an export row's `export:<file>`), verbatim.
+   * Every Foundry press sends it; a press from BookForge's own pages has no tree.
+   * The run's audio rows are drawn under it while it is queued, and its finished
+   * audiobook after (electron/audiobook-render-nodes.ts).
+   */
+  readonly treeParent?: {
+    readonly projectDir: string;
+    readonly parentStepId: string;
+  };
 }
