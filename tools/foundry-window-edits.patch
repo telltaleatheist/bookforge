@@ -11,6 +11,26 @@ index 8d70d002..06658d34 100644
              "browser": "src/main.ts",
              "index": "src/index.html",
              "tsConfig": "tsconfig.app.json",
+diff --git a/foundry-app/electron/mount.ts b/foundry-app/electron/mount.ts
+index 4786e387..02f6be21 100644
+--- a/foundry-app/electron/mount.ts
++++ b/foundry-app/electron/mount.ts
+@@ -134,6 +134,15 @@ export { hostedLibraryDir } from '@owen/foundry-core/node/host';
+  * which every caller already has an answer for.
+  */
+ export { foundryWindow } from './window';
++/**
++ * THE WINDOW'S QUIT GATE, for the host that owns the process. Its `close` asks the
++ * open documents once and closes on a yes — and a close prevented during
++ * `app.quit()` cancels the quit, so a host that let the window be asked THEN
++ * quit only closed the window (Owen, 2026-11-07: "i have to … hit quit bookforge
++ * twice"). The host asks first (`letTheWindowGo`), quits from the yes, and reads
++ * `windowLetGo` so the second pass goes straight through.
++ */
++export { letTheWindowGo, windowLetGo } from './window';
+ /*
+  * THE HOST-OPERATIONS SOCKET, re-exported through the seam a host actually
+  * imports. `setHostNodes` is the push door — see electron/host-ops.ts — and the
 diff --git a/foundry-app/electron/preload.ts b/foundry-app/electron/preload.ts
 index 379afedf..f8b09d0e 100644
 --- a/foundry-app/electron/preload.ts
