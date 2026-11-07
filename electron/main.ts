@@ -135,6 +135,8 @@ import {
 // the top corner of the hosted window. The reading of a snapshot is pure and
 // lives beside the rows' one, for the same reason.
 import { hostStatusOf, type HostStatus } from './foundry-host-status';
+// A quit asks the book window's documents before it shuts anything down.
+import { quitWaitsForBookWindow } from './quit-gate';
 // The book's pronunciation guide: its own step, and BookForge's window over it.
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
 import { APPLIED_LABEL, GUIDE_CHOICE, type GuideReviewSave } from '../shared/pronunciation-guide';
@@ -14455,6 +14457,21 @@ async function restartLibraryTrashRemover(): Promise<void> {
 }
 
 app.on('before-quit', async (event) => {
+  /*
+   * THE BOOK WINDOW IS ASKED FIRST, and the quit carries on from its yes (Owen,
+   * 2026-11-07: "i have to right-click bookforge's tray icon and hit quit bookforge
+   * twice"). Its `close` asks its open documents once and closes on the answer, and a
+   * close prevented during `app.quit()` CANCELS the quit: the first Quit ran the
+   * whole cleanup below, closed the book window, and left the app in the tray with
+   * its queue already shut down. Asked here, before anything is shut down, a "keep it
+   * open" stops the quit with everything still running, and a yes quits once.
+   */
+  if (quitWaitsForBookWindow(foundryMount.foundryWindow(), foundryMount.windowLetGo())) {
+    event.preventDefault();
+    isQuitting = false;
+    foundryMount.letTheWindowGo(() => { isQuitting = true; app.quit(); });
+    return;
+  }
   isQuitting = true;
   if (cleanupDone) return;
 
