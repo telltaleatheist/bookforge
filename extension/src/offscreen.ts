@@ -1329,7 +1329,7 @@ const crucibleGenerator: ListenGeneratorPort<Uint8Array, ReadSettings> = {
       };
     }
     rowCounter += 1;
-    const id = `r${rowCounter}`;
+    const id = `r-${ROW_TAG}-${rowCounter}`;
     let outcome;
     try {
       outcome = await open.rows.say(text, {
@@ -1370,8 +1370,18 @@ const crucibleGenerator: ListenGeneratorPort<Uint8Array, ReadSettings> = {
   },
 };
 
-/** Row ids are unique per session; the counter simply never repeats one. */
+/**
+ * Row ids are unique per session; the counter simply never repeats one.
+ *
+ * AND UNIQUE PER DOCUMENT. The counter restarts with every load of this page,
+ * and a session orphaned by the last load (an extension reload mid-read) is
+ * evicted at the next open — whose cancelled rows' `done` frames were seen
+ * arriving on the NEW session (2026-11-08, r15–r22 dropped). With bare `rN`
+ * ids a late one could settle this page's own `rN` as cancelled and skip a
+ * sentence; the per-load tag makes the old page's ids unmistakably not ours.
+ */
 let rowCounter = 0;
+const ROW_TAG = Math.random().toString(36).slice(2, 8);
 
 /**
  * THE SAME READ-AHEAD POLICY THE APP RUNS — read-ahead window, background
