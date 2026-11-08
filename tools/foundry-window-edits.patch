@@ -12,7 +12,7 @@ index 8d70d002..06658d34 100644
              "index": "src/index.html",
              "tsConfig": "tsconfig.app.json",
 diff --git a/foundry-app/electron/mount.ts b/foundry-app/electron/mount.ts
-index 4786e387..02f6be21 100644
+index 4786e387..e3260cdd 100644
 --- a/foundry-app/electron/mount.ts
 +++ b/foundry-app/electron/mount.ts
 @@ -134,6 +134,15 @@ export { hostedLibraryDir } from '@owen/foundry-core/node/host';
@@ -31,6 +31,20 @@ index 4786e387..02f6be21 100644
  /*
   * THE HOST-OPERATIONS SOCKET, re-exported through the seam a host actually
   * imports. `setHostNodes` is the push door — see electron/host-ops.ts — and the
+@@ -206,6 +215,13 @@ export { deleteLedgerStep } from '@owen/foundry-core/node/doors-delete';
+  * The windows re-read on the `projects:changed` the delete announces.
+  */
+ export { deleteExport } from '@owen/foundry-core/node/doors-delete';
++/*
++ * DELETING A WHOLE PROJECT, FOR A HOST WHOSE BOOK IS BEING DELETED (BookForge's
++ * electron/book-delete.ts, 2026-11-08). Hand it the project's absolute folder.
++ * A job writing into it, or a file held open, is a thrown sentence; on success
++ * the folder is gone and every recents row under it with it.
++ */
++export { deleteProjectFolder } from '@owen/foundry-core/node/doors-delete';
+ export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '@owen/foundry-core/shared/types';
+ /*
+  * HOW A HOST SAYS ITS STOP IS NOT ITS CANCEL — re-exported here because this file
 diff --git a/foundry-app/electron/preload.ts b/foundry-app/electron/preload.ts
 index b88b8743..eee82b7e 100644
 --- a/foundry-app/electron/preload.ts
