@@ -423,6 +423,7 @@ const api: FoundryApi = {
   onDocumentOpened: (listener) => subscribe<string>('document:opened', listener),
   onDocumentRelocated: (listener) =>
     subscribe<{ from: string; to: string }>('document:relocated', listener),
+  onDocumentNotice: (listener) => subscribe<string>('document:notice', listener),
   onNavigate: (listener) => subscribe<string>('app:navigate', listener),
   onProjectOpen: (listener) =>
     subscribe<{ dir: string; originalPath: string | null; managed: boolean }>('project:open', listener),

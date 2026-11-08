@@ -12,6 +12,7 @@ import { exportInTray } from '@owen/foundry-core/node/projects';
 import { answerLetGo, foundryWindow } from './window';
 import { confirmClose, confirmReRead } from '@owen/foundry-core/node/doors-questions';
 import { readDocumentBytes } from '@owen/foundry-core/node/doors-library';
+import { onPdfNotice } from '@owen/foundry-core/node/pdf-repair';
 import type { ReReadPrompt } from '@owen/foundry-core/shared/reread';
 import type { Asked, CloseAnswer, CloseWarning, ReReadAnswer } from '@owen/foundry-core/shared/types';
 
@@ -39,6 +40,14 @@ export function registerDocumentDoors(): void {
    * a second copy.
    */
   ipcMain.handle('document:read-bytes', (_event, target: string) => readDocumentBytes(target));
+
+  // A working PDF rebuilt (or found past rebuilding) on import or on open is told
+  // to every window's notice strip, the way a person hears it (pdf-repair.ts).
+  onPdfNotice((sentence) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('document:notice', sentence);
+    }
+  });
 
   /**
    * Save a copy of an open document where the user says — the PDF tab's Save.

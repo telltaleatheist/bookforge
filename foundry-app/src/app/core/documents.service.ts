@@ -143,6 +143,7 @@ export class OpenDocumentsService {
   constructor() {
     api?.onDocumentOpened((absolutePath) => { this.adopt(absolutePath); });
     api?.onDocumentRelocated(({ from, to }) => { this.relocate(from, to); });
+    api?.onDocumentNotice((sentence) => { this.notices.notice.set(sentence); });
 
     /**
      * A finished conversion opens itself.
