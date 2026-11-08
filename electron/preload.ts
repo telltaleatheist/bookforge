@@ -2247,6 +2247,12 @@ export interface ElectronAPI {
     delete: (projectId: string) => Promise<{
       success: boolean;
       error?: string;
+      note?: string;
+    }>;
+    describeDelete: (projectId: string) => Promise<{
+      success: boolean;
+      foundryDir?: string | null;
+      error?: string;
     }>;
     importSource: (projectId: string, sourcePath: string, targetFilename?: string) => Promise<{
       success: boolean;
@@ -3817,7 +3823,15 @@ const electronAPI: ElectronAPI = {
     delete: (projectId: string): Promise<{
       success: boolean;
       error?: string;
+      note?: string;
     }> => ipcRenderer.invoke('manifest:delete', projectId),
+
+    // What a delete takes beyond the book's own folder: its Foundry project, if any
+    describeDelete: (projectId: string): Promise<{
+      success: boolean;
+      foundryDir?: string | null;
+      error?: string;
+    }> => ipcRenderer.invoke('manifest:describe-delete', projectId),
 
     // Import a source file into a project
     importSource: (projectId: string, sourcePath: string, targetFilename?: string): Promise<{

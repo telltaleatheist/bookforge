@@ -41,6 +41,7 @@ import { setQueueMainWindow } from './queue-steps';
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
 import * as manifestService from './manifest-service';
+import { deleteBook, describeBookDelete, setBookDeleteDoors } from './book-delete';
 import { discardLibraryTree, startLibraryTrashRemover, type TrashRemoverHandle }
   from './library-trash';
 import { appendJobAnalytics } from './job-analytics';
@@ -12251,8 +12252,24 @@ ipcMain.handle('narration:text-readiness', async (
   });
 
   // Delete a project
+  // A book delete takes its Foundry project and the caches under both with it
+  // (electron/book-delete.ts). The Bookshelf's DELETE /api/project comes the same way.
+  setBookDeleteDoors({
+    foundryProjectsDir,
+    deleteFoundryProject: (dir) => foundryMount.deleteProjectFolder(dir),
+    forgetDurationsUnder: (dirs) => bookshelfServer.forgetDurationsUnder(dirs),
+  });
   ipcMain.handle('manifest:delete', async (_event, projectId: string) => {
-    return manifestService.deleteProject(projectId);
+    return deleteBook(projectId);
+  });
+
+  // What the confirmation names beyond the book's own folder.
+  ipcMain.handle('manifest:describe-delete', async (_event, projectId: string) => {
+    try {
+      return { success: true, ...(await describeBookDelete(projectId)) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // Import a source file into a project

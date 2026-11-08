@@ -1044,6 +1044,20 @@ export class StudioService {
   }
 
   /**
+   * The Foundry project folder deleting this item takes with it, or null when it
+   * has none. A refusal (a manifest that will not read) comes back as `error`, the
+   * same sentence the delete itself would give.
+   */
+  async describeDelete(id: string): Promise<{ foundryDir: string | null; error?: string }> {
+    const item = this.getItem(id);
+    if (!item) return { foundryDir: null, error: 'Item not found' };
+    const result = await this.electronService.manifestDescribeDelete(this.resolveProjectId(item));
+    return result.success
+      ? { foundryDir: result.foundryDir ?? null }
+      : { foundryDir: null, error: result.error };
+  }
+
+  /**
    * Reload a specific item
    */
   async reloadItem(id: string): Promise<void> {

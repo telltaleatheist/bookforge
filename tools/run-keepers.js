@@ -933,6 +933,8 @@ const SUITES = [
   'test-one-quit',
   // A finished audiobook stays on Foundry's tree under the node it came from (Owen, 2026-11-07).
   'test-audiobook-tree-rows',
+  // Deleting a book deletes its Foundry project, Foundry first, and forgets the caches under both (2026-11-08).
+  'test-book-delete',
   'test-foundry-host-nodes',
   'test-foundry-host-status',
   'test-foundry-host-queue',

@@ -3605,6 +3605,21 @@ export class ElectronService {
   }
 
   /**
+   * What deleting this project takes beyond its own folder: the folder of its
+   * Foundry project, or null when it has none (electron/book-delete.ts).
+   */
+  async manifestDescribeDelete(projectId: string): Promise<{
+    success: boolean;
+    foundryDir?: string | null;
+    error?: string;
+  }> {
+    if (this.isElectron && (window as any).electron.manifest) {
+      return (window as any).electron.manifest.describeDelete(projectId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /**
    * Import a source file into a project
    */
   async manifestImportSource(

@@ -228,6 +228,27 @@ export function forgetDerived(namespace: string, absPath: string): void {
   scheduleSave();
 }
 
+/**
+ * Forget every fact about a file under `dir`, for a tree that has just been
+ * deleted (electron/book-delete.ts). A miss would re-derive anyway; this is so a
+ * deleted book's entries do not sit in the store until eviction reaches them.
+ */
+export function forgetDerivedUnder(dir: string): void {
+  const entries = loaded().entries;
+  const under = path.resolve(dir).toLowerCase() + path.sep;
+  let forgot = false;
+  for (const k of Object.keys(entries)) {
+    const at = k.indexOf('\u0000');
+    if (k.slice(at + 1).startsWith(under)) {
+      delete entries[k];
+      forgot = true;
+    }
+  }
+  if (!forgot) return;
+  dirty = true;
+  scheduleSave();
+}
+
 function scheduleSave(): void {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {

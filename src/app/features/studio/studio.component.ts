@@ -2455,12 +2455,26 @@ export class StudioComponent implements OnInit, OnDestroy {
     const NAMED = 8;
     const lines = titles.slice(0, NAMED).map(t => `  • ${t}`);
     if (titles.length > NAMED) lines.push(`  • …and ${titles.length - NAMED} more`);
+    // A book imported through Foundry keeps its scan, page readings and the edits
+    // made in the Foundry window in its Foundry project, and the delete takes that
+    // folder too (electron/book-delete.ts), so the warning names it.
+    const described = await Promise.all(ids.map(id => this.studioService.describeDelete(id)));
+    const foundryDirs = described.map(d => d.foundryDir).filter((d): d is string => d !== null);
+    const foundryLines = foundryDirs.length === 0 ? [] : [
+      '',
+      foundryDirs.length === 1
+        ? 'Its Foundry project goes too, with the scan, the page readings and every edit made in the Foundry window:'
+        : `${foundryDirs.length} Foundry projects go too, with their scans, page readings and every edit made in the Foundry window:`,
+      ...foundryDirs.slice(0, NAMED).map(d => `  • ${d}`),
+      ...(foundryDirs.length > NAMED ? [`  • …and ${foundryDirs.length - NAMED} more`] : []),
+    ];
     const detail = [
       ...lines,
       '',
       'The whole project folder goes with each one: the file you imported, your working '
       + 'copy and every edit recorded against it, any finished audiobook, and the record '
       + 'of all of it. This cannot be undone.',
+      ...foundryLines,
     ].join('\n');
 
     const many = ids.length > 1;

@@ -24,7 +24,8 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as crypto from 'crypto';
 
-import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest, deleteProject } from './manifest-service';
+import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effectiveAudiobookMetadata, getVariants, modifyManifest } from './manifest-service';
+import { deleteBook } from './book-delete';
 import { scanLibrary, extractCover, getAbsolutePath, isArchiveEntry, projectIdOfEntry } from './ebook-library';
 import { getFfprobePath, getFfmpegPath } from './tool-paths';
 import { extractVttFromM4b } from './metadata-tools';
@@ -753,6 +754,23 @@ export class BookshelfServer {
     } catch {
       // No cache file yet — that's fine
     }
+  }
+
+  /**
+   * Forget the durations of every file under these folders, for trees a book
+   * delete has just discarded (electron/book-delete.ts). Nothing else removes an
+   * entry; a deleted book's m4b would otherwise stay in the file for good.
+   */
+  forgetDurationsUnder(dirs: readonly string[]): void {
+    const unders = dirs.map(dir => path.resolve(dir).toLowerCase() + path.sep);
+    for (const filePath of [...this.durationCache.keys()]) {
+      const resolved = path.resolve(filePath).toLowerCase();
+      if (unders.some(under => resolved.startsWith(under))) {
+        this.durationCache.delete(filePath);
+        this.durationCacheDirty = true;
+      }
+    }
+    if (this.durationCacheDirty) void this.saveDurationCache();
   }
 
   private async saveDurationCache(): Promise<void> {
@@ -2268,7 +2286,8 @@ export class BookshelfServer {
     const projectId = req.query.projectId;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
     try {
-      const result = await deleteProject(projectId);
+      // The book delete, Foundry project and caches with it (electron/book-delete.ts).
+      const result = await deleteBook(projectId);
       if (!result.success) { res.status(404).json({ error: result.error || 'project not found' }); return; }
       this.invalidateCache(); // the shelf list changed
       res.json({ ok: true });

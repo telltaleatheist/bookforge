@@ -215,6 +215,13 @@ export { deleteLedgerStep } from '@owen/foundry-core/node/doors-delete';
  * The windows re-read on the `projects:changed` the delete announces.
  */
 export { deleteExport } from '@owen/foundry-core/node/doors-delete';
+/*
+ * DELETING A WHOLE PROJECT, FOR A HOST WHOSE BOOK IS BEING DELETED (BookForge's
+ * electron/book-delete.ts, 2026-11-08). Hand it the project's absolute folder.
+ * A job writing into it, or a file held open, is a thrown sentence; on success
+ * the folder is gone and every recents row under it with it.
+ */
+export { deleteProjectFolder } from '@owen/foundry-core/node/doors-delete';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '@owen/foundry-core/shared/types';
 /*
  * HOW A HOST SAYS ITS STOP IS NOT ITS CANCEL — re-exported here because this file
