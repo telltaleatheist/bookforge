@@ -43,7 +43,7 @@ import {
   type Registry,
   type ServerEntry,
 } from './servers';
-import { describeRefusal, probe } from './crucible';
+import { describeRefusal, probe, voicesOf } from './crucible';
 import { normaliseServerUrl, pollForToken, startPairing } from './pair';
 import { addClip, listClips, removeClip, type ClipSummary } from './clips';
 import { VoiceReferenceRefused } from '../../shared/crucible/voice-reference';
@@ -377,7 +377,7 @@ async function drawVoices(): Promise<void> {
   }
   let rows;
   try {
-    rows = await clientFor(entry).voices();
+    rows = await voicesOf(clientFor(entry));
   } catch (err) {
     voiceEl.textContent = '';
     voiceHint.textContent = describeRefusal(err, entry.name);

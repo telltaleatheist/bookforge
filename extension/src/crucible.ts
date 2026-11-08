@@ -19,6 +19,8 @@
  * answering and nothing is going to speak until it does".
  */
 
+import { isHiddenVoice, scrubHiddenVoices, shownVoice } from './hidden-voices';
+export { isHiddenVoice, scrubHiddenVoices, shownVoice };
 import {
   CrucibleAuthError,
   CrucibleBusy,
@@ -63,6 +65,10 @@ export interface ServerProbe {
  * thing both switch on — the SDK's error TYPES — is the one shared fact.
  */
 export function describeRefusal(err: unknown, serverName: string): string {
+  return scrubHiddenVoices(describeRefusalRaw(err, serverName));
+}
+
+function describeRefusalRaw(err: unknown, serverName: string): string {
   const at = `Crucible "${serverName}"`;
   if (err instanceof CrucibleBusy) {
     return `${at} is running a job on its lane (${err.busyLine}) and will not take this as well. `
@@ -139,7 +145,7 @@ export async function probe(client: CrucibleClient): Promise<ServerProbe> {
     name: info.server.name,
     version: info.server.version,
     backend: info.host.backend,
-    resident: health.residentModels[0] ?? null,
+    resident: shownVoice(health.residentModels[0] ?? null),
     residentKind: health.residentKind,
     servesTts: info.jobTypes.includes('tts'),
   };
@@ -153,8 +159,8 @@ export async function probe(client: CrucibleClient): Promise<ServerProbe> {
  * than one, and never as a selector — a voice implies its engine, so there is
  * no engine to choose apart from a voice and none to remove later.
  */
-export function voicesOf(client: CrucibleClient): Promise<VoiceInfo[]> {
-  return client.voices();
+export async function voicesOf(client: CrucibleClient): Promise<VoiceInfo[]> {
+  return (await client.voices()).filter((v) => !isHiddenVoice(v.id));
 }
 
 /** True when the voice list spans more than one narrator engine. */
@@ -321,6 +327,11 @@ function holderName(client: string | null): string {
  * this was a Chrome User-Agent string printed in red.
  */
 export function describeHolder(activity: Activity, self: SelfIdentity): HolderNote | null {
+  const note = describeHolderRaw(activity, self);
+  return note === null ? null : { ...note, text: scrubHiddenVoices(note.text) };
+}
+
+function describeHolderRaw(activity: Activity, self: SelfIdentity): HolderNote | null {
   if (activity.streaming !== null) {
     const stream = activity.streaming;
     if (isOurs(stream.client, null, self)) {

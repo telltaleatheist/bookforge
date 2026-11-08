@@ -90,6 +90,10 @@ import {
   describeHolder,
   type HolderNote,
   describeRefusal,
+  isHiddenVoice,
+  scrubHiddenVoices,
+  shownVoice,
+  voicesOf,
   loadVoice as loadVoiceJob,
   residentClipOf,
   unloadVoice as unloadVoiceJob,
@@ -775,10 +779,10 @@ function engineStatus(): EngineStatus {
     server: server?.name ?? null,
     url: server?.url ?? null,
     backend,
-    resident: serverVoice,
+    resident: shownVoice(serverVoice),
     residentKind,
     busy: engineBusy,
-    note: engineNote,
+    note: engineNote === null ? null : scrubHiddenVoices(engineNote),
     lineWait: streamWait,
     holder: engineHolder,
     idleMinutes,
@@ -960,7 +964,7 @@ async function refreshServer(): Promise<boolean> {
     const health = await bound.health();
     residentKind = health.residentKind;
     serverVoice = health.residentKind === 'tts' ? (health.residentModels[0] ?? null) : null;
-    const rows = await bound.voices();
+    const rows = await voicesOf(bound);
     voiceRows = rows.map((v: VoiceInfo): VoiceRow => ({
       id: v.id,
       display: v.display,
@@ -988,7 +992,7 @@ async function refreshServer(): Promise<boolean> {
     // The picker adopts the resident voice, exactly as it used to adopt the
     // app's: what is on the card is the truth, and a stored choice that names
     // something else is a choice, not a claim about the server.
-    if (serverVoice !== null && !switchingVoice) chosenVoice = serverVoice;
+    if (serverVoice !== null && !switchingVoice && !isHiddenVoice(serverVoice)) chosenVoice = serverVoice;
     // The opening pick is the first voice this extension can actually READ
     // with, not simply the first row. Since 2026-09-19 a server may list a
     // screening checkpoint that states no measured length (PHASE18 §4), and
@@ -996,6 +1000,7 @@ async function refreshServer(): Promise<boolean> {
     // loads, shows green, and refuses at the moment they press play. It is not
     // a fallback: nothing is substituted, and when NO row is readable
     // `chosenVoice` stays null and the speak door says so by name.
+    if (isHiddenVoice(chosenVoice)) chosenVoice = null;
     if (chosenVoice === null) {
       const readable = voiceRows.find((v) => isReadable(v.lengths));
       if (readable !== undefined) chosenVoice = readable.id;
@@ -1027,6 +1032,10 @@ function bandFor(voice: string): ListenChunkBand {
   const named = server?.name ?? '?';
   const row = voiceRows.find((v) => v.id === voice);
   if (row === undefined) {
+    if (isHiddenVoice(voice)) {
+      throw new Error(`Crucible "${named}" has a voice loaded that this extension does not read. `
+        + 'Pick a voice in the popup and press Load.');
+    }
     throw new Error(`Crucible "${named}" does not list a voice called "${voice}".`);
   }
   return bandFromVoiceRow(voice, named, row.lengths);
@@ -3470,14 +3479,15 @@ function broadcast(): void {
     upcoming,
     playback: currentStatus(),
     run: runProgress(),
-    connectionError: connectionError ?? undefined,
+    connectionError: connectionError === null ? undefined : scrubHiddenVoices(connectionError),
     voices,
     voiceRows,
     // The voice a read will actually be spoken in: the RESIDENT one. What the
     // picker is showing is `chosenVoice`, which is what Load would make
     // resident — the two differ exactly while nothing (or something else) is on
     // the card, and saying so is the point.
-    currentVoice: voiceForSpeak() ?? chosenVoice,
+    // A hidden voice on the card is never mirrored into the picker.
+    currentVoice: (isHiddenVoice(voiceForSpeak()) ? null : voiceForSpeak()) ?? chosenVoice,
     switchingVoice,
     engine: engineStatus(),
     renderedItemIds: rendered,
@@ -3525,7 +3535,7 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
 // happen, so the pickers are not blank for the first few hundred milliseconds
 // and the countdown is the one the user chose.
 void getSettings().then((s) => {
-  if (!chosenVoice && s.voice) chosenVoice = s.voice;
+  if (!chosenVoice && s.voice && !isHiddenVoice(s.voice)) chosenVoice = s.voice;
   if (chosenClipId === null && s.zeroshotClipId !== '') chosenClipId = s.zeroshotClipId;
   idleMinutes = s.idleMinutes;
   broadcast();

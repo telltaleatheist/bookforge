@@ -47,6 +47,7 @@ import {
   minimumCaptureRateFor
 } from '../../shared/audio/tab-recording';
 import { listClips, type ClipSummary } from './clips';
+import { isHiddenVoice } from './hidden-voices';
 import { unreadableBecause } from './voice-band';
 
 /**
@@ -801,7 +802,8 @@ void listClips().then((found) => {
 });
 
 void loadSettings().then((s) => {
-  selectedVoice = s.voice;
+  // A saved pick of a hidden voice is forgotten, not offered back (hidden-voices.ts).
+  selectedVoice = isHiddenVoice(s.voice) ? '' : s.voice;
   selectedClip = s.zeroshotClipId;
   clipSig = null;
   recordSpeed = (RECORD_SPEEDS as readonly number[]).includes(s.recordSpeed) ? s.recordSpeed : 1;
