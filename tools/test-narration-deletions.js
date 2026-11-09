@@ -77,6 +77,8 @@ const {
   blockCategoryForVlm,
   parseVlmProgressLine,
   VLM_CATEGORIES,
+  VLM_CATEGORY_TO_BLOCK,
+  VLM_PAGE_FURNITURE,
 } = require(path.join(DIST, 'shared', 'vlm', 'conversion.js'));
 
 let failures = 0;
@@ -436,9 +438,37 @@ function illustratedLayout() {
     assert.ok(VLM_CATEGORIES.includes('chapter'));
   });
 
-  await check('a category BookForge does not know throws naming it', () => {
-    assert.throws(() => blockCategoryForVlm('page-header', 'the book'),
-      /data-bf-cat="page-header"/);
+  // The vocabulary is foundry-core's, and the map is BookForge's translation of
+  // it. One row per category, no more and no fewer: a category a new
+  // foundry-core adds fails HERE when BookForge adopts it, not in a book.
+  await check('the map has exactly one row per category foundry-core writes', () => {
+    assert.deepStrictEqual(
+      Object.keys(VLM_CATEGORY_TO_BLOCK).sort(), [...VLM_CATEGORIES].sort());
+    // Read from foundry-core, not restated: its twelve model categories plus `chapter`.
+    const { PDF_BLOCK_CATEGORIES } = require('@owen/foundry-core/shared/categories');
+    assert.strictEqual(VLM_CATEGORIES.length, PDF_BLOCK_CATEGORIES.length + 1);
+  });
+
+  // The Aryan Jesus (2026-11-08): the Foundry window's Ask assistant relabelled
+  // a "67" read as a footnote to Page-footer, Owen applied it, and the narration
+  // cut refused the whole book over the stamp.
+  await check('a running head and a folio are page furniture, not an unknown category', () => {
+    assert.strictEqual(blockCategoryForVlm('page-header', 'test'), 'header');
+    assert.strictEqual(blockCategoryForVlm('page-footer', 'test'), 'footer');
+    assert.deepStrictEqual([...VLM_PAGE_FURNITURE].sort(), ['page-footer', 'page-header']);
+  });
+
+  await check('a category foundry does not write throws naming it, and does not say re-convert', () => {
+    let message = '';
+    assert.throws(() => blockCategoryForVlm('marginalia', 'the book'), (err) => {
+      message = err.message;
+      return true;
+    });
+    assert.match(message, /data-bf-cat="marginalia"/);
+    assert.match(message, /newer Foundry, or by something other than Foundry/);
+    assert.doesNotMatch(message, /re-convert/i);
+    // Not a prototype key either: `constructor` is not a category.
+    assert.throws(() => blockCategoryForVlm('constructor', 'the book'), /data-bf-cat="constructor"/);
   });
 
   // ── the progress parser ───────────────────────────────────────────────────
@@ -1030,6 +1060,35 @@ function illustratedLayout() {
     assert.strictEqual(written.rewrittenFiles.length, 0);
     const after = await readEpubConversionUnits(out);
     assert.strictEqual(after.filter((u) => u.category !== null).length, 6);
+  });
+
+  // The Aryan Jesus shape: a folio left between two paragraphs, stamped
+  // page-footer by a relabel in the Foundry window.
+  await check('a page-footer element stays out of the narration, and the book keeps it', async () => {
+    const withFolio = CHAPTER.replace(
+      '<p data-bf-page="2" data-bf-cat="text">',
+      '<p data-bf-page="1" data-bf-cat="page-footer">67</p>\n<p data-bf-page="2" data-bf-cat="text">');
+    const converted = await buildEpub('folio.epub', withFolio);
+    const before = fs.readFileSync(converted);
+
+    const units = await readEpubConversionUnits(converted);
+    assert.deepStrictEqual(units.filter((u) => u.category === 'page-footer').map((u) => u.text), ['67']);
+
+    const out = path.join(ROOT, 'folio.tts.epub');
+    const written = await writeNarrationEpub(converted, out, []);
+    assert.strictEqual(written.excludedPageFurniture, 1);
+    assert.ok(before.equals(fs.readFileSync(converted)), 'the official book was rewritten');
+    const after = await readEpubConversionUnits(out);
+    assert.ok(!after.some((u) => u.category === 'page-footer' || u.text.trim() === '67'),
+      'the folio reached the narration copy');
+    assert.ok(after.some((u) => u.category === 'text'), 'the prose around the folio went too');
+
+    // The book-editing caller turns it off, and then the element stays put.
+    const kept = path.join(ROOT, 'folio.kept.epub');
+    const keptWritten = await writeNarrationEpub(converted, kept, [],
+      { excludeCaptions: false, excludeFootnotes: false, excludePageFurniture: false });
+    assert.strictEqual(keptWritten.excludedPageFurniture, 0);
+    assert.ok((await readEpubConversionUnits(kept)).some((u) => u.category === 'page-footer'));
   });
 
   await check('the export refuses a key the book does not have', async () => {

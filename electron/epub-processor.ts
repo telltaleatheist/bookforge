@@ -29,7 +29,7 @@ import {
 } from './epub-container';
 import { BLOCK_CATEGORY_IDS } from '../shared/ocr/block-categories';
 import type { NarrationTextRewrite } from '../shared/text/narration-rewrite.js';
-import { blockCategoryForVlm } from '../shared/vlm/conversion';
+import { blockCategoryForVlm, isPageFurnitureStamp } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import { spliceForCollapsedText } from '../shared/document/element-text-edit';
 import type { UnnamedChapterOpeningKind } from '../shared/document/chapter-opening-report';
@@ -6834,6 +6834,8 @@ export interface NarrationEpubWriteResult {
   excludedCaptions: number;
   /** The same, for the footnote asides — `excludeFootnotes`, applied. */
   excludedFootnotes: number;
+  /** The same, for the running heads and folios — `excludePageFurniture`, applied. */
+  excludedPageFurniture: number;
 }
 
 export interface NarrationEpubWriteOptions {
@@ -6919,6 +6921,23 @@ export interface NarrationEpubWriteOptions {
    * A note Owen wants narrated is a reclassification in the Foundry editor.
    */
   excludeFootnotes?: boolean;
+  /**
+   * Leave out every element stamped `page-header` or `page-footer`: the running
+   * head and the folio (`VLM_PAGE_FURNITURE`, shared/vlm/conversion.ts).
+   *
+   * DEFAULT ON. Foundry's own word for these is "Not part of the book", and a
+   * page number read aloud in the middle of a paragraph is exactly what its
+   * engine sets furniture aside to prevent. Foundry drops furniture when it
+   * writes a book, so the stamp appears only where a person (or the Foundry
+   * window's Ask assistant, on their say) relabelled a block: The Aryan Jesus
+   * has a "67" that was read as a footnote and corrected to Page-footer. That
+   * correction is a statement that the block is furniture, and this honours it.
+   *
+   * Same rule as `excludeCaptions` otherwise: the stamp is the only evidence,
+   * the exclusions ride the strike machinery so the cut proves them, and the
+   * official book keeps the element. The book-editing caller passes false.
+   */
+  excludePageFurniture?: boolean;
   /**
    * Spans of TEXT to rewrite in place, keyed by `NarrationNumberTarget.key`.
    *
@@ -8075,7 +8094,7 @@ export async function writeNarrationEpub(
     for (const unit of perFile.get(file)!.units) struck.add(unit.key);
   }
 
-  // ── The captions and the note apparatus, out by default ───────────────────
+  // ── The captions, the note apparatus and page furniture, out by default ───
   //
   // Into the SAME set, HERE — after the strikes, before the overrides and the
   // expectation signatures — so every pass downstream (removal, pruning,
@@ -8083,15 +8102,20 @@ export async function writeNarrationEpub(
   // as it treats a strike, and the guarantee check proves each one left the
   // copy. The category is the stamp's own word, read off this very walk, so no
   // fingerprint is owed: the key was minted against these bytes moments ago.
-  // See `NarrationEpubWriteOptions.excludeCaptions` and `.excludeFootnotes`
-  // for the rulings and the evidence.
+  // See `NarrationEpubWriteOptions.excludeCaptions`, `.excludeFootnotes` and
+  // `.excludePageFurniture` for the rulings and the evidence.
   let excludedCaptions = 0;
   let excludedFootnotes = 0;
+  let excludedPageFurniture = 0;
   const excludeCaption = options?.excludeCaptions !== false;
   const excludeFootnote = options?.excludeFootnotes !== false;
+  const excludeFurniture = options?.excludePageFurniture !== false;
   for (const unit of units) {
     if (struck.has(unit.key)) continue;
-    if (excludeCaption && unit.category === 'caption') {
+    if (excludeFurniture && isPageFurnitureStamp(unit.category)) {
+      struck.add(unit.key);
+      excludedPageFurniture++;
+    } else if (excludeCaption && unit.category === 'caption') {
       struck.add(unit.key);
       excludedCaptions++;
     } else if (excludeFootnote && unit.category === 'footnote') {
@@ -8608,6 +8632,7 @@ export async function writeNarrationEpub(
     unverifiableStrikes: plan.unverifiable,
     excludedCaptions,
     excludedFootnotes,
+    excludedPageFurniture,
   };
 }
 

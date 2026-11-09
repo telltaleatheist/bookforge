@@ -24,32 +24,32 @@
  * chain planner never sees it.
  */
 
+import { PDF_BLOCK_CATEGORIES } from '@owen/foundry-core/shared/categories';
 import { samePath } from '../document/same-path';
 import type { VlmReadingsChoice } from './readings-bank';
 
 /**
- * The categories dots.ocr answers with, lower-cased, exactly as foundry stamps
- * them (`CATEGORY_ATTRIBUTE` in foundry src/vlm/dots-book.ts).
+ * Every `data-bf-cat` value foundry can write, read from foundry-core itself
+ * rather than kept as a second list here.
  *
- * `page-header` and `page-footer` are absent because foundry DROPS those blocks
- * — running heads and folios never reach the book — so no element can carry
- * them. Adding them here would describe a stamp that is never written.
+ * `PDF_BLOCK_CATEGORIES` (foundry-core shared/categories.ts) is every category a
+ * block can carry, in the model's spelling (`Page-footer`); foundry stamps the
+ * same word lower-cased (`categoryAttribute` in foundry-core
+ * engine/vlm/dots-book.ts). The one stamp that is not a model category is
+ * `chapter`, foundry's own mark on a heading the book divides at
+ * (`CHAPTER_ATTRIBUTE`, same file), so it is added by name.
+ *
+ * `page-header` and `page-footer` are in it. This list used to leave them out
+ * on the grounds that foundry drops page furniture before the book is written,
+ * so no element could carry them. That stopped being true when the Foundry
+ * window and its Ask assistant could relabel any block: a page number read as a
+ * footnote and corrected to Page-footer is stamped `page-footer`, and the
+ * narration cut refused the whole book over it (The Aryan Jesus, 2026-11-08).
  */
-export const VLM_CATEGORIES = [
-  'text',
-  'title',
+export const VLM_CATEGORIES: readonly string[] = [
+  ...PDF_BLOCK_CATEGORIES.map((one) => one.id.toLowerCase()),
   'chapter',
-  'section-header',
-  'footnote',
-  'caption',
-  'table',
-  'picture',
-  'quote',
-  'formula',
-  'list-item',
-] as const;
-
-export type VlmCategory = (typeof VLM_CATEGORIES)[number];
+];
 
 /**
  * dots' category → BookForge's block-category palette (shared/ocr/block-categories.ts).
@@ -76,11 +76,16 @@ export type VlmCategory = (typeof VLM_CATEGORIES)[number];
  *    value: a display equation is body content that is not a sentence. It goes
  *    to `body` — it IS narrated unless the user strikes it — and is named here
  *    so the choice is visible rather than buried in a `??`.
+ *  - `page-header` and `page-footer` are the running head and the folio, and
+ *    they map to BookForge's `header` and `footer`: page furniture, which is not
+ *    part of the book and is never read aloud (`VLM_PAGE_FURNITURE`).
  *
- * A category outside this table is a disagreement between foundry and BookForge
- * about what the model can answer, and `blockCategoryForVlm` throws naming it.
+ * The table has exactly one row per entry of `VLM_CATEGORIES`, and
+ * tools/test-narration-deletions.js holds it to that, so a category a new
+ * foundry-core adds fails the keeper when BookForge adopts it rather than
+ * failing a book in front of Owen.
  */
-export const VLM_CATEGORY_TO_BLOCK: Readonly<Record<VlmCategory, string>> = {
+export const VLM_CATEGORY_TO_BLOCK: Readonly<Record<string, string>> = {
   'text': 'body',
   'title': 'title',
   'chapter': 'chapter',
@@ -92,25 +97,59 @@ export const VLM_CATEGORY_TO_BLOCK: Readonly<Record<VlmCategory, string>> = {
   'quote': 'quote',
   'formula': 'body',
   'list-item': 'list',
+  'page-header': 'header',
+  'page-footer': 'footer',
 };
+
+/**
+ * The stamps that mark page furniture: the running head and the folio.
+ *
+ * Derived from the palette rather than listed, so that "furniture" means one
+ * thing: a stamp whose BookForge class is `header` or `footer`. The narration
+ * cut leaves these out of every copy (`NarrationEpubWriteOptions.excludePageFurniture`),
+ * and the number pass never offers one for rewriting.
+ */
+export const VLM_PAGE_FURNITURE: readonly string[] = VLM_CATEGORIES.filter((stamp) => {
+  const block = VLM_CATEGORY_TO_BLOCK[stamp];
+  return block === 'header' || block === 'footer';
+});
+
+/** Is this stamp (as a unit reports it, `null` for an unstamped one) page furniture? */
+export function isPageFurnitureStamp(stamped: string | null): boolean {
+  return stamped !== null && VLM_PAGE_FURNITURE.includes(stamped);
+}
 
 /**
  * The palette id for a `data-bf-cat` value, or a refusal naming it.
  *
- * Never a fallback: a stamp this app cannot read means the book was written by a
- * foundry that answers with categories this build does not know, and painting it
- * as body text would hide that behind a plausible screen.
+ * Never a fallback: painting a stamp this app cannot read as body text would hide
+ * it behind a plausible screen. The refusal says which of two things happened,
+ * because the remedy differs:
+ *
+ *  - foundry-core writes the stamp but the table above gives it no meaning. That
+ *    is a defect in this build of BookForge, and the keeper exists to catch it
+ *    first.
+ *  - foundry-core does not write the stamp at all. Then the book was written or
+ *    edited by a Foundry newer than the one built into this BookForge, or by
+ *    something other than Foundry. Re-converting with this BookForge's Foundry
+ *    would not keep the edit that made it, so this does not suggest it.
  */
 export function blockCategoryForVlm(stamped: string, whatFor: string): string {
-  const mapped = VLM_CATEGORY_TO_BLOCK[stamped as VlmCategory];
-  if (mapped === undefined) {
+  if (Object.prototype.hasOwnProperty.call(VLM_CATEGORY_TO_BLOCK, stamped)) {
+    return VLM_CATEGORY_TO_BLOCK[stamped];
+  }
+  if (VLM_CATEGORIES.includes(stamped)) {
     throw new Error(
-      `${whatFor}: an element is stamped data-bf-cat="${stamped}", which is not a category this `
-      + `build of BookForge knows. The ${VLM_CATEGORIES.length} foundry's vlm-convert writes are `
-      + `${VLM_CATEGORIES.join(', ')}. Update BookForge, or re-convert with the foundry it ships with.`
+      `${whatFor}: an element is stamped data-bf-cat="${stamped}". Foundry writes that category, `
+      + 'but this build of BookForge has no meaning for it (shared/vlm/conversion.ts '
+      + 'VLM_CATEGORY_TO_BLOCK). That is a BookForge defect, not a fault in the book.'
     );
   }
-  return mapped;
+  throw new Error(
+    `${whatFor}: an element is stamped data-bf-cat="${stamped}", which is not a category the Foundry `
+    + `built into this BookForge writes. Its ${VLM_CATEGORIES.length} are ${VLM_CATEGORIES.join(', ')}. `
+    + 'The book was written or edited by a newer Foundry, or by something other than Foundry.'
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

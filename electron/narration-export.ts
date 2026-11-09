@@ -58,6 +58,7 @@ import {
   translateEditorStateDeletions,
 } from './narration-editor-state';
 import { migrateLegacyEpubEditorRecords } from './legacy-epub-layout';
+import { isPageFurnitureStamp } from '../shared/vlm/conversion';
 import { moveIntoPlace } from './processing-passes';
 import { bookDigest } from './sidecar-binding';
 import { bookDigestAlgorithmChange } from '../shared/book-digest';
@@ -326,6 +327,8 @@ export interface NarrationExportResult {
   excludedCaptions: number;
   /** The same, for the footnote asides (`NarrationEpubWriteOptions.excludeFootnotes`). */
   excludedFootnotes: number;
+  /** The same, for running heads and folios (`NarrationEpubWriteOptions.excludePageFurniture`). */
+  excludedPageFurniture: number;
   /** Chapter openings written as their stored chapter names, single line. */
   overriddenChapterOpenings: number;
   /**
@@ -690,6 +693,7 @@ export async function exportNarrationEpub(
     removedSupMarkers: written.removedSupMarkers,
     excludedCaptions: written.excludedCaptions,
     excludedFootnotes: written.excludedFootnotes,
+    excludedPageFurniture: written.excludedPageFurniture,
     overriddenChapterOpenings: written.overriddenElements,
     removedDocuments: written.removedDocuments,
     fromStrikes: merged.fromStrikes,
@@ -914,12 +918,16 @@ export async function strikeInNarrationCopy(
   // own stamps are exactly what the cut left out. A record from before either
   // field exists describes a copy that still has that content, and adds
   // nothing here.
-  if (record.captionsExcluded === true || record.footnotesExcluded === true) {
-    for (const unit of await readEpubConversionUnits(book.absPath)) {
-      if ((record.captionsExcluded === true && unit.category === 'caption')
-        || (record.footnotesExcluded === true && unit.category === 'footnote')) {
-        struck.add(unit.key);
-      }
+  //
+  // Page furniture needs no record: every cut leaves it out
+  // (`excludePageFurniture`'s default, which this file never overrides), and no
+  // copy of a book carrying a furniture stamp could be cut before that, because
+  // the cut refused the stamp outright.
+  for (const unit of await readEpubConversionUnits(book.absPath)) {
+    if (isPageFurnitureStamp(unit.category)
+      || (record.captionsExcluded === true && unit.category === 'caption')
+      || (record.footnotesExcluded === true && unit.category === 'footnote')) {
+      struck.add(unit.key);
     }
   }
   const signedBook = await signBookElements(

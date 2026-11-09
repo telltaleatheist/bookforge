@@ -84,6 +84,7 @@ import {
 import type { ReadingRefusal } from './tts-spoken-forms.js';
 import type { NumberRuleOutcome } from './tts-number-rules.js';
 import type { NarrationNumberTarget, NarrationTextRewrite } from './epub-processor.js';
+import { isPageFurnitureStamp } from '../shared/vlm/conversion.js';
 
 // The citation guard is DEFINED in tts-number-rules.ts, because the rules and
 // this validator owe the same answer about "p. 23". Re-exported here so the
@@ -633,16 +634,19 @@ export function selectNumberTargets(
    * an acronym, a bracketed aside, a spaced hyphen, a roman numeral) print no
    * digit at all, so a digit test would never show the model one of them.
    *
-   * THE CAPTION AND FOOTNOTE EXCLUSION HOLDS EITHER WAY. Narrating a caption is
-   * a decision the cut owns (the narrationInputFor door removes them from the file a
-   * render reads), and this pass must not make one speakable that the cut would
-   * have removed.
+   * THE CAPTION, FOOTNOTE AND PAGE FURNITURE EXCLUSION HOLDS EITHER WAY.
+   * Narrating a caption is a decision the cut owns (the narrationInputFor door
+   * removes them from the file a render reads), and this pass must not make one
+   * speakable that the cut would have removed. A folio is digits and nothing
+   * else, so without this every page number relabelled Page-footer would be
+   * offered for rewriting as words.
    */
   ask: 'digit-bearing' | 'every-block' = 'digit-bearing',
 ): NarrationNumberTarget[] {
   return targets.filter((t) => {
     if (ask === 'digit-bearing' && !DIGIT.test(t.text)) return false;
     if (t.statedCategory === 'caption' || t.statedCategory === 'footnote') return false;
+    if (isPageFurnitureStamp(t.statedCategory)) return false;
     // A code listing is not prose. Its digits are a program's, its spacing is
     // the author's, and a narrator reading "for i in range(ten)" is not an
     // improvement on one reading "range(10)". The punctuation stage refuses it
@@ -2669,9 +2673,10 @@ export interface NumberNormalizationOptions {
  * Stated by the caller, never defaulted, because the two callers want opposite
  * things and neither is "the obvious one":
  *
- *  - the narration cut wants all three ON — it is making the second file, the one
- *    a voice reads, and captions, endnotes and reference markers are not read;
- *  - the narration TEXT PASS wants all three OFF — it is editing the BOOK, on the
+ *  - the narration cut wants all four ON — it is making the second file, the one
+ *    a voice reads, and captions, endnotes, page furniture and reference markers
+ *    are not read;
+ *  - the narration TEXT PASS wants all four OFF — it is editing the BOOK, on the
  *    document chain, and a pass that removed elements would be refused by the
  *    ledger's text-only invariant and would take the user's captions with it.
  *
@@ -2682,6 +2687,7 @@ export interface NumberNormalizationOptions {
 export interface NarrationCopyShape {
   excludeCaptions: boolean;
   excludeFootnotes: boolean;
+  excludePageFurniture: boolean;
   stripSupMarkers: boolean;
 }
 
@@ -3013,6 +3019,7 @@ export async function normalizeNarrationNumbers(
   const written = await writeNarrationEpub(inputPath, stagingEpub, [], {
     excludeCaptions: options.copy.excludeCaptions,
     excludeFootnotes: options.copy.excludeFootnotes,
+    excludePageFurniture: options.copy.excludePageFurniture,
     stripSupMarkers: options.copy.stripSupMarkers,
     rewrites,
   });

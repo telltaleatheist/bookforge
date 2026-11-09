@@ -185,6 +185,7 @@ import {
  */
 import { coverageReportPath } from './coverage-align-job';
 import { takeChunkGuards } from './chunk-guard-ledger';
+import { isPageFurnitureStamp } from '../shared/vlm/conversion';
 /*
  * WHAT A STOP CAN REACH WHILE A BOOK IS BEING PACKED (2026-09-19).
  *
@@ -6967,6 +6968,7 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
   const units = await readEpubConversionUnits(epubPath);
   const captions = units.filter((u) => u.category === 'caption').length;
   const footnotes = units.filter((u) => u.category === 'footnote').length;
+  const furniture = units.filter((u) => isPageFurnitureStamp(u.category)).length;
 
   // The book's own text, in the keys the writer applies an edit by. Read
   // through the SAME walk the writer uses (`readNarrationNumberTargets` says
@@ -6983,7 +6985,7 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
     expandedSpans += edits.length;
   }
 
-  if (captions === 0 && footnotes === 0 && expandedSpans === 0) return epubPath;
+  if (captions === 0 && footnotes === 0 && furniture === 0 && expandedSpans === 0) return epubPath;
 
   const bytes = await fs.readFile(epubPath);
   const sha16 = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
@@ -6991,6 +6993,8 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
   // `.v3`: the rule grew again (the scripture book names, 2026-09-14), so a v2
   // cut on disk describes a rule this door no longer applies and must not be
   // reused. (`.v2` was the footnote asides and the sup markers, 2026-08-30.)
+  // Page furniture (2026-11-08) did not bump it: a book carrying a furniture
+  // stamp was refused before it could be cut, so no v3 cut on disk lacks it.
   const cutPath = path.join(cutDir, `${sha16}.v3.tts.epub`);
 
   try {
@@ -6998,7 +7002,8 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
     // Same source sha ⇒ the same cut, made by this same rule. Reused so a
     // resubmission of a half-finished render preps against the identical file.
     console.log(
-      `[PARALLEL-TTS] ${captions} caption(s) and ${footnotes} note(s) excluded from narration, `
+      `[PARALLEL-TTS] ${captions} caption(s), ${footnotes} note(s) and ${furniture} running head(s) `
+      + `or folio(s) excluded from narration, `
       + `${expandedSpans} scripture book name(s) printed in full (cut on disk reused): ${cutPath}`);
     return cutPath;
   } catch { /* not cut yet */ }
@@ -7011,6 +7016,7 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
   const written = await writeNarrationEpub(epubPath, staging, [], {
     excludeCaptions: true,
     excludeFootnotes: true,
+    excludePageFurniture: true,
     // The writer's own default, taken deliberately since 2026-08-30: *"Reference
     // numbers should never make it to TTS. They aren't read in a real
     // audiobook."* A digits-only <sup> that survived the compile is exactly one.
@@ -7019,14 +7025,16 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
   });
   await renameWithRetry(staging, cutPath);
   await logger.log('INFO', jobId,
-    `${written.excludedCaptions} caption(s), ${written.excludedFootnotes} note(s) and `
+    `${written.excludedCaptions} caption(s), ${written.excludedFootnotes} note(s), `
+    + `${written.excludedPageFurniture} running head(s) or folio(s) and `
     + `${written.removedSupMarkers} reference number(s) excluded from the narration; `
     + `${written.rewrittenSpans} scripture book name(s) printed in full`, {
       cutPath, source: epubPath,
     });
   console.log(
     `[PARALLEL-TTS] excluded from narration: ${written.excludedCaptions} caption(s), `
-    + `${written.excludedFootnotes} note(s), ${written.removedSupMarkers} reference number(s); `
+    + `${written.excludedFootnotes} note(s), ${written.excludedPageFurniture} running head(s) or folio(s), `
+    + `${written.removedSupMarkers} reference number(s); `
     + `${written.rewrittenSpans} scripture book name(s) printed in full — `
     + `the book keeps them; the cut is ${cutPath}`);
   return cutPath;

@@ -925,7 +925,7 @@ const bookPass = async (book, runner, extra = {}) => norm.normalizeNarrationNumb
   book, runner, {
     ...passOptions(runner, extra),
     inputSha16: await norm.epubContentAddress(book),
-    copy: { excludeCaptions: true, excludeFootnotes: true, stripSupMarkers: true },
+    copy: { excludeCaptions: true, excludeFootnotes: true, excludePageFurniture: true, stripSupMarkers: true },
   });
 
 /** A cache directory two runs SHARE, so reuse can be measured. */

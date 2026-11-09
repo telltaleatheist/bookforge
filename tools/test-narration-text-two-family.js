@@ -124,7 +124,7 @@ require.cache[DOOR_MODULE].exports.cleanTextEpub = async function cleanTextEpubS
 
   const staged = `${opts.outPath}.stub-unstamped.epub`;
   await writeNarrationEpub(opts.epubPath, staged, [], {
-    excludeCaptions: false, excludeFootnotes: false, stripSupMarkers: false, rewrites,
+    excludeCaptions: false, excludeFootnotes: false, excludePageFurniture: false, stripSupMarkers: false, rewrites,
   });
   const stamp = {
     stampVersion: NARRATION_TEXT_STAMP_VERSION,

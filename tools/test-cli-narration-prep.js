@@ -397,7 +397,7 @@ test('a block and a paragraph go through the SAME loop, and answer the same', as
     systemPrompt: PROMPT,
     outDir: path.join(ROOT, 'shared-book'),
     inputSha16: await norm.epubContentAddress(book),
-    copy: { excludeCaptions: true, excludeFootnotes: true, stripSupMarkers: true },
+    copy: { excludeCaptions: true, excludeFootnotes: true, excludePageFurniture: true, stripSupMarkers: true },
     onProgress: (done, total, label) => bookTicks.push({ done, total, label }),
   });
 
