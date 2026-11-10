@@ -155,6 +155,7 @@ import { isBookPath } from '@shared/document/book-path';
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'all'" (click)="narrationFilter.set('all')">All</button>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'professional'" (click)="narrationFilter.set('professional')">Professional</button>
           <button class="tag-filter-pill" [class.active]="narrationFilter() === 'tts'" (click)="narrationFilter.set('tts')">TTS</button>
+          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'none'" title="Books with no audiobook attached yet" (click)="narrationFilter.set('none')">No audiobook</button>
         </div>
         <app-studio-browse
           [items]="browseItems()"
@@ -221,6 +222,12 @@ import { isBookPath } from '@shared/document/book-path';
               title="Books without a professionally read audiobook, plus any book that has a TTS one"
               (click)="narrationFilter.set('tts')"
             >TTS</button>
+            <button
+              class="tag-filter-pill"
+              [class.active]="narrationFilter() === 'none'"
+              title="Books with no audiobook attached yet"
+              (click)="narrationFilter.set('none')"
+            >No audiobook</button>
           </div>
           <app-studio-list
             [articles]="filteredArticles()"
@@ -1563,7 +1570,8 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly activeTag = signal<string | null>(null);
 
   // Narration filter (books only): professional (≥1 "professionally read" variant).
-  readonly narrationFilter = signal<'all' | 'professional' | 'tts'>('all');
+  // 'none' (Owen, 2026-11-10): books with no audiobook attached yet, of either kind.
+  readonly narrationFilter = signal<'all' | 'professional' | 'tts' | 'none'>('all');
 
   private matchesSearch(item: StudioItem, query: string): boolean {
     if (!query.trim()) return true;
@@ -1597,6 +1605,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     const f = this.narrationFilter();
     if (f === 'all') return true;
     if (f === 'tts') return !item.hasProfessionalNarration || !!item.hasAiNarration;
+    // No audiobook variant at all. The two flags between them cover every
+    // audiobook variant a book has (professionally read, or not), so neither
+    // set is exactly "nothing attached yet".
+    if (f === 'none') return !item.hasProfessionalNarration && !item.hasAiNarration;
     return !!item.hasProfessionalNarration;
   }
 
