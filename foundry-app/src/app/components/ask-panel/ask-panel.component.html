@@ -153,15 +153,32 @@
             (Owen, 2026-11-10): a card asking for a title and the text. The
             Presets modal is where several run in order, and where they are
             reordered, edited and deleted.
+
+            EDIT AND DELETE ARE ON THE PRESET ITSELF TOO (Owen, 2026-11-10:
+            "right-click it and it edit or delete. with an x next to the
+            presets"). The ✕ deletes, after the app's own card has asked; a
+            right-click offers Edit and Delete. A preset that cannot run now is
+            dimmed and not `disabled`: a disabled button swallows the
+            right-click, and editing one never needed a book or a model.
           -->
           <div class="presets">
             @for (preset of presetRow(); track preset.id) {
-              <button class="preset" [disabled]="!canRunPreset()" [title]="preset.question" (click)="runPreset(preset)">{{ preset.label }}</button>
+              <span class="chip" [class.off]="!canRunPreset()" (contextmenu)="presetMenuAt($event, preset)">
+                <button class="preset" [attr.aria-disabled]="!canRunPreset()" [title]="preset.question" (click)="runPreset(preset)">{{ preset.label }}</button>
+                <button class="chip-x" title="Delete this preset" [attr.aria-label]="'Delete the preset ' + preset.label" (click)="deletePreset(preset)">✕</button>
+              </span>
             }
             @if (presetRow().length < presetMax) {
               <button class="preset add" title="Add a preset: a title, and the text sent to the model when it is pressed" (click)="ui.openAskPreset(null, 'panel')">+ Add preset</button>
             }
           </div>
+          @if (presetMenu(); as open) {
+            <div class="menu-scrim" (click)="presetMenu.set(null)" (contextmenu)="$event.preventDefault(); presetMenu.set(null)"></div>
+            <div class="menu" role="menu" [attr.aria-label]="'The preset ' + open.preset.label" [style.left.px]="open.x" [style.top.px]="open.y">
+              <button role="menuitem" (click)="editPreset(open.preset)">Edit preset…</button>
+              <button role="menuitem" class="danger" (click)="deletePreset(open.preset)">Delete preset</button>
+            </div>
+          }
           <textarea
             #box
             class="request"

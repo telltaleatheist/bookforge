@@ -79,10 +79,7 @@ export class AskPresetsDialogComponent {
   }
 
   protected remove(id: string): void {
-    void this.asks.savePresets({
-      presets: this.presets().filter((one) => one.id !== id),
-      checked: [...this.checked()].filter((one) => one !== id),
-    });
+    void this.asks.deletePreset(id);
   }
 
   protected send(): void {

@@ -176,6 +176,15 @@ export class AskService {
     return this.savePresets({ presets: [...this.presets(), fresh], checked: [...this.checkedPresets(), fresh.id] });
   }
 
+  /** One preset, gone from the list and from the checked set. */
+  async deletePreset(id: string): Promise<boolean> {
+    await this.loadPresets();
+    return this.savePresets({
+      presets: this.presets().filter((one) => one.id !== id),
+      checked: [...this.checkedPresets()].filter((one) => one !== id),
+    });
+  }
+
   /**
    * WHAT THE PRESETS MODAL SENDS WITH — the Ask panel's model choice, whether it
    * is ready, whether a run is going, and the box's text ("Add preset" starts

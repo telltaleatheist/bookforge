@@ -62,7 +62,7 @@ import { JobModelComponent } from '../job-model/job-model.component';
   selector: 'app-ask-panel',
   imports: [JobModelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '[class.shut]': '!open()' },
+  host: { '[class.shut]': '!open()', '(document:keydown.escape)': 'presetMenu.set(null)' },
   templateUrl: './ask-panel.component.html',
   styleUrl: './ask-panel.component.scss',
 })
@@ -263,6 +263,38 @@ export class AskPanelComponent {
   /** A preset can run when a book is in front, nothing is running, and a model is chosen. */
   protected readonly canRunPreset = computed(() =>
     this.tab() !== null && !this.busy() && this.modelReady() && this.server() !== null);
+
+  /** The right-click menu on a preset: which one, and where the pointer was. */
+  protected readonly presetMenu = signal<{ readonly preset: AskPreset; readonly x: number; readonly y: number } | null>(null);
+
+  /** Open it at the pointer, kept inside the window. */
+  protected presetMenuAt(event: MouseEvent, preset: AskPreset): void {
+    event.preventDefault();
+    this.presetMenu.set({
+      preset,
+      x: Math.max(4, Math.min(event.clientX, window.innerWidth - 170)),
+      y: Math.max(4, Math.min(event.clientY, window.innerHeight - 80)),
+    });
+  }
+
+  protected editPreset(preset: AskPreset): void {
+    this.presetMenu.set(null);
+    this.ui.openAskPreset(preset.id, 'panel');
+  }
+
+  /** The ✕ and the menu's Delete. Asked first: the ✕ sits a few pixels from the button that runs it. */
+  protected async deletePreset(preset: AskPreset): Promise<void> {
+    this.presetMenu.set(null);
+    const agreed = await this.confirm.ask({
+      message: `Delete the preset "${preset.label}"?`,
+      detail: [
+        'Its title and its text go from the app, for every book.',
+        'Nothing it changed on a book is undone.',
+      ],
+      confirm: 'Delete preset',
+    });
+    if (agreed) await this.asks.deletePreset(preset.id);
+  }
 
   /** One preset, now, as one run headed with its name. */
   protected runPreset(preset: AskPreset): void {
