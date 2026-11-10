@@ -59,6 +59,11 @@
                         <p class="q-line q-after q-retype" [class.undoing]="undoing">
                           <span class="arrow">→ </span>{{ retyped(item) }}
                         </p>
+                      } @else if (item.kind === 'insert') {
+                        <p class="q-line" [class.struck]="undoing">{{ shown(key(item), item.text) }}</p>
+                        <p class="q-line q-after q-retype" [class.undoing]="undoing" title="Undo strikes the added block; it stays on the page, struck.">
+                          <span class="arrow">→ </span>{{ structure(item) }}
+                        </p>
                       } @else if (item.kind === 'join' || item.kind === 'split' || item.kind === 'restore' || item.kind === 'link' || item.kind === 'unlink' || item.kind === 'revert') {
                         <p class="q-line" [class.struck]="item.kind === 'restore' && undoing">{{ shown(key(item), item.before) }}</p>
                         <p class="q-line q-after q-retype" [class.undoing]="undoing" [title]="renamedOnUndo(item)">

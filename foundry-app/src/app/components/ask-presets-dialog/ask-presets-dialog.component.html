@@ -13,54 +13,36 @@
 
       <div class="list">
         @for (preset of presets(); track preset.id; let i = $index; let last = $last) {
-          <div class="row" [class.open]="opened() === preset.id">
+          <div class="row">
             <label class="pick">
               <input type="checkbox" [checked]="checked().has(preset.id)" (change)="flip(preset.id)" />
             </label>
-            <div class="what" (click)="flip(preset.id)">
+            <div class="what" [title]="preset.question" (click)="flip(preset.id)">
               <span class="name">{{ preset.label }}</span>
-              @if (preset.description.length > 0) {
-                <span class="desc">{{ preset.description }}</span>
-              }
+              <span class="desc">{{ preset.question }}</span>
             </div>
             <div class="tools">
               <button class="tool" title="Move up" [disabled]="i === 0" (click)="move(i, -1)">↑</button>
               <button class="tool" title="Move down" [disabled]="last" (click)="move(i, 1)">↓</button>
-              <button class="tool" [title]="opened() === preset.id ? 'Close' : 'Edit the question'" (click)="toggle(preset.id)">✎</button>
+              <button class="tool" title="Edit this preset" (click)="ui.openAskPreset(preset.id, 'list')">✎</button>
               <button class="tool danger" title="Delete this preset" (click)="remove(preset.id)">✕</button>
             </div>
-            @if (opened() === preset.id) {
-              <div class="edit">
-                <label class="field">
-                  <span>Name</span>
-                  <input #name type="text" [value]="preset.label" [attr.maxlength]="labelMax" (change)="rename(preset, name.value)" />
-                </label>
-                <label class="field">
-                  <span>Description</span>
-                  <input #desc type="text" [value]="preset.description" [attr.maxlength]="descriptionMax" (change)="redescribe(preset, desc.value)" />
-                </label>
-                <label class="field">
-                  <span>Question</span>
-                  <textarea #question rows="7" [value]="preset.question" [attr.maxlength]="questionMax" (change)="reword(preset, question.value)"></textarea>
-                </label>
-              </div>
-            }
           </div>
         } @empty {
-          <p class="none">No presets. Add one, or restore the defaults.</p>
+          <p class="none">No presets yet. Add one: a title, and the text sent to the model when it is pressed.</p>
         }
       </div>
 
-      @if (problem(); as said) {
-        <p class="problem">{{ said }}</p>
+      @if (presets().length > 0) {
+        @if (problem(); as said) {
+          <p class="problem">{{ said }}</p>
+        }
       }
 
       <footer class="foot">
-        <button class="ghost" [disabled]="presets().length >= presetMax" (click)="add()">Add preset</button>
-        <button class="ghost" (click)="restore()">Restore default presets</button>
+        <button class="ghost" [disabled]="presets().length >= presetMax" (click)="ui.openAskPreset(null, 'list')">Add preset</button>
         <span class="spacer"></span>
         <button class="ghost" (click)="ui.closeAskPresets()">Cancel</button>
         <button class="primary" [disabled]="!canSend()" (click)="send()">Send {{ steps().length }}</button>
       </footer>
     </div>
-  

@@ -122,6 +122,11 @@ export function onKeyDown(this: App, event: KeyboardEvent): void {
     this.ui.closeSimplify();
     return;
   }
+  if (event.key === 'Escape' && this.ui.askPresetEdit() !== null) {
+    event.preventDefault();
+    this.ui.closeAskPreset();
+    return;
+  }
   if (event.key === 'Escape' && this.ui.askPresetsOpen()) {
     event.preventDefault();
     this.ui.closeAskPresets();

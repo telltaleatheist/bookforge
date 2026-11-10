@@ -42,7 +42,6 @@
       padding: 8px 14px;
       border-bottom: 1px solid var(--border-subtle);
     }
-    .row.open { background: var(--bg-hover); }
     .pick { display: flex; align-items: center; cursor: pointer; }
     .what { display: flex; flex-direction: column; gap: 2px; min-width: 0; cursor: pointer; }
     .name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
@@ -56,17 +55,6 @@
     .tool:hover:not(:disabled) { background: var(--bg-input); border-color: var(--border-default); color: var(--text-primary); }
     .tool:disabled { opacity: 0.35; cursor: default; }
     .tool.danger:hover:not(:disabled) { color: var(--error); }
-    .edit { grid-column: 2 / 4; display: flex; flex-direction: column; gap: 8px; padding: 6px 0 4px; }
-    .field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-tertiary); }
-    .field input, .field textarea {
-      width: 100%; box-sizing: border-box;
-      padding: 6px 8px;
-      background: var(--bg-input); color: var(--text-primary);
-      border: 1px solid var(--border-default); border-radius: var(--radius-md);
-      font-family: inherit; font-size: 12px; line-height: 1.45;
-    }
-    .field textarea { resize: vertical; }
-    .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
 
     .problem { margin: 0; padding: 8px 14px; font-size: 12px; color: var(--warn); border-top: 1px solid var(--border-subtle); }
 

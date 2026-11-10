@@ -15,7 +15,7 @@ import {
 } from '@owen/foundry-core/shared/ask';
 import type { Replayed } from '@owen/foundry-core/shared/ops';
 import { newestFirst, type AskConversation } from '@owen/foundry-core/shared/ask-conversations';
-import { AskChain, DEFAULT_CHECKED, askPresetsOrDefaults, type AskChainStep, type AskPreset, type AskPresetsKept, type AskStepEnd } from '@owen/foundry-core/shared/ask-presets';
+import { AskChain, presetLabel, presetQuestion, type AskChainStep, type AskPreset, type AskPresetsKept, type AskStepEnd } from '@owen/foundry-core/shared/ask-presets';
 
 import { BookStacksService, type BookStack } from './book-stacks.service';
 import { NoticeService } from './notice.service';
@@ -124,32 +124,56 @@ export class AskService {
 
   /** What the settings hold (undefined until read). */
   private readonly keptPresets = signal<AskPresetsKept | undefined>(undefined);
-  /** The modal's list — what is kept, or the shipped defaults. Its order is the run order. */
-  readonly presets = computed<readonly AskPreset[]>(() => askPresetsOrDefaults(this.keptPresets()?.presets ?? null));
-  /** Which were checked when Send was last pressed, or the defaults. */
-  readonly checkedPresets = computed<ReadonlySet<string>>(() => new Set(this.keptPresets()?.checked ?? DEFAULT_CHECKED));
+  /** The person's presets, in their order, which is the run order. None are drawn until the settings are read. */
+  readonly presets = computed<readonly AskPreset[]>(() => this.keptPresets()?.presets ?? []);
+  /** Which are checked in the Presets modal. */
+  readonly checkedPresets = computed<ReadonlySet<string>>(() => new Set(this.keptPresets()?.checked ?? []));
 
+  /**
+   * A read that fails leaves the list UNREAD, and says so. It is not drawn as an
+   * empty list that was read: the next save would then write one preset over
+   * however many the settings really hold.
+   */
   async loadPresets(): Promise<void> {
     if (!api || this.keptPresets() !== undefined) return;
     try {
       this.keptPresets.set(await api.ask.presets());
     } catch (err) {
-      this.keptPresets.set({ presets: null, checked: null });
-      this.notices.notice.set(`Ask's presets could not be read, so the defaults are shown: ${err instanceof Error ? err.message : String(err)}`);
+      this.notices.notice.set(`Ask's presets could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  /** Keep the list (null restores the defaults) and/or which are checked. */
-  async savePresets(patch: { presets?: readonly AskPreset[] | null; checked?: readonly string[] }): Promise<void> {
-    if (!api) return;
+  /** Keep the list and/or which are checked. Answers whether it was kept; a failure says why on the notice line. */
+  async savePresets(patch: { presets?: readonly AskPreset[]; checked?: readonly string[] }): Promise<boolean> {
+    if (!api) return false;
+    // Never over a list that was not read (loadPresets, above); its own notice has said why.
+    await this.loadPresets();
+    if (this.keptPresets() === undefined) return false;
     try {
       this.keptPresets.set(await api.ask.savePresets({
-        ...(patch.presets === undefined ? {} : { presets: patch.presets === null ? null : [...patch.presets] }),
+        ...(patch.presets === undefined ? {} : { presets: [...patch.presets] }),
         ...(patch.checked === undefined ? {} : { checked: [...patch.checked] }),
       }));
+      return true;
     } catch (err) {
       this.notices.notice.set(`Ask's presets could not be saved: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
     }
+  }
+
+  /**
+   * ONE PRESET, KEPT — the add/edit card's Save. A new one (`id` null) goes at
+   * the end of the list and is checked; an existing one keeps its place and its
+   * id under its new words.
+   */
+  async keepPreset(id: string | null, label: string, question: string): Promise<boolean> {
+    await this.loadPresets();
+    const words = { label: presetLabel(label), question: presetQuestion(question) };
+    if (id !== null) {
+      return this.savePresets({ presets: this.presets().map((one) => (one.id === id ? { ...one, ...words } : one)) });
+    }
+    const fresh: AskPreset = { id: `mine:${Date.now().toString(36)}`, ...words };
+    return this.savePresets({ presets: [...this.presets(), fresh], checked: [...this.checkedPresets(), fresh.id] });
   }
 
   /**

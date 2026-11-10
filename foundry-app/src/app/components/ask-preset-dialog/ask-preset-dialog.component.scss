@@ -1,0 +1,58 @@
+
+    :host { position: fixed; inset: 0; z-index: 1200; display: block; pointer-events: none; }
+    .scrim {
+      pointer-events: auto;
+      position: absolute; inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(4px);
+      animation: fade 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .card {
+      pointer-events: auto;
+      position: relative;
+      margin: 10vh auto 0;
+      width: 560px;
+      max-width: calc(100vw - 32px);
+      max-height: 80vh;
+      display: flex; flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 20px 40px -10px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      animation: rise 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes rise { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: scale(1); } }
+
+    .head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border-subtle); }
+    .title { flex: 1; font-family: var(--font-display); font-weight: 600; font-size: 16px; }
+    .x { background: transparent; border: none; cursor: pointer; color: var(--text-tertiary); font-size: 13px; padding: 3px 5px; border-radius: var(--radius-sm); }
+    .x:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    .body { display: flex; flex-direction: column; gap: 12px; padding: 14px; overflow-y: auto; }
+    .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-tertiary); }
+    .field input, .field textarea {
+      width: 100%; box-sizing: border-box;
+      padding: 7px 9px;
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border-default); border-radius: var(--radius-md);
+      font-family: inherit; font-size: 13px; line-height: 1.45;
+    }
+    .field textarea { resize: vertical; min-height: 120px; }
+    .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+
+    .foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border-subtle); }
+    .spacer { flex: 1; }
+    .primary, .ghost {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 28px; padding: 0 12px;
+      border-radius: var(--radius-md);
+      font-size: 12px; font-weight: 500; line-height: 1;
+      cursor: pointer;
+    }
+    .primary { border: none; background: var(--accent); color: var(--text-inverse); }
+    .primary:hover:not(:disabled) { background: var(--accent-hover); }
+    .ghost { background: var(--bg-input); border: 1px solid var(--border-default); color: var(--text-primary); }
+    .ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .primary:disabled, .ghost:disabled { opacity: 0.5; cursor: not-allowed; }

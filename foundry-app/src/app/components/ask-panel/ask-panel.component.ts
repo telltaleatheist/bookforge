@@ -20,7 +20,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { ConfirmService } from '../../core/confirm.service';
 import { runsOf } from '@owen/foundry-core/shared/ask-conversations';
-import type { AskPreset } from '@owen/foundry-core/shared/ask-presets';
+import { ASK_PRESET_MAX, type AskPreset } from '@owen/foundry-core/shared/ask-presets';
 import { api } from '../../core/foundry';
 import { JobModelComponent } from '../job-model/job-model.component';
 
@@ -258,6 +258,7 @@ export class AskPanelComponent {
 
   /** The kept presets, in their order: the row above the box. */
   protected readonly presetRow = computed(() => this.asks.presets());
+  protected readonly presetMax = ASK_PRESET_MAX;
 
   /** A preset can run when a book is in front, nothing is running, and a model is chosen. */
   protected readonly canRunPreset = computed(() =>

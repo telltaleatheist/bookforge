@@ -18,6 +18,7 @@ import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-d
 import { CleanDialogComponent } from './components/clean-dialog/clean-dialog.component';
 import { AskReviewDialogComponent } from './components/ask-review-dialog/ask-review-dialog.component';
 import { AskPresetsDialogComponent } from './components/ask-presets-dialog/ask-presets-dialog.component';
+import { AskPresetDialogComponent } from './components/ask-preset-dialog/ask-preset-dialog.component';
 import { AnalysisDialogComponent } from './components/analysis-dialog/analysis-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
 import { CaptureNewDialogComponent } from './components/capture-new-dialog/capture-new-dialog.component';
@@ -115,7 +116,7 @@ import * as keys from './app.keys';
     QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, CleanDialogComponent,
-    MetadataDialogComponent, MintMetaDialogComponent, AskReviewDialogComponent, AskPresetsDialogComponent,
+    MetadataDialogComponent, MintMetaDialogComponent, AskReviewDialogComponent, AskPresetsDialogComponent, AskPresetDialogComponent,
     AnalysisDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
     CaptureNewDialogComponent, CaptureProgressComponent, SetupWizardComponent,

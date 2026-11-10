@@ -1,0 +1,40 @@
+
+    <div class="scrim" (click)="ui.closeAskPreset()"></div>
+    <div class="card" role="dialog" aria-modal="true" [attr.aria-label]="adding ? 'Add preset' : 'Edit preset'">
+      <header class="head">
+        <span class="title">{{ adding ? 'Add preset' : 'Edit preset' }}</span>
+        <button class="x" (click)="ui.closeAskPreset()" title="Close">✕</button>
+      </header>
+
+      <div class="body">
+        <label class="field">
+          <span>Title</span>
+          <input
+            #title
+            type="text"
+            placeholder="Fix the chapters"
+            [value]="label()"
+            [attr.maxlength]="labelMax"
+            (input)="label.set(title.value)"
+            (keydown.enter)="save()"
+          />
+        </label>
+        <label class="field">
+          <span>Text sent to the model</span>
+          <textarea
+            #text
+            rows="11"
+            placeholder="What you would type into the Ask box."
+            [value]="question()"
+            [attr.maxlength]="questionMax"
+            (input)="question.set(text.value)"
+          ></textarea>
+        </label>
+      </div>
+
+      <footer class="foot">
+        <span class="spacer"></span>
+        <button class="ghost" (click)="ui.closeAskPreset()">Cancel</button>
+        <button class="primary" [disabled]="!canSave()" (click)="save()">{{ adding ? 'Add preset' : 'Save' }}</button>
+      </footer>
+    </div>

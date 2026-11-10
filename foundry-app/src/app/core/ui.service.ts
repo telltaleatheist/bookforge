@@ -132,6 +132,13 @@ export class UiService {
    */
   readonly askPresetsOpen = signal(false);
   /**
+   * The card that adds or edits ONE preset (Owen, 2026-11-10): its title and the
+   * text sent to the model. `id` null is a new one. `from` is where it was
+   * opened, because closing it goes back to the Presets list when the person
+   * came from there, and to the page when they came from the Ask panel.
+   */
+  readonly askPresetEdit = signal<{ readonly id: string | null; readonly from: 'panel' | 'list' } | null>(null);
+  /**
    * The Analysis dialog — read this book against the categories (docs/ANALYSIS.md).
    *
    * IT IS ONE OF THE FIVE THAT CONFIGURE AN ACT AGAINST THE POSITION, so it looks
@@ -420,6 +427,7 @@ export class UiService {
      */
     this.hostOpOpen.set(null);
     this.mintMetaOpen.set(null);
+    this.askPresetEdit.set(null);
   }
 
   /**
@@ -536,6 +544,18 @@ export class UiService {
 
   closeAskPresets(): void {
     this.askPresetsOpen.set(false);
+  }
+
+  openAskPreset(id: string | null, from: 'panel' | 'list'): void {
+    this.only(null);
+    this.askPresetEdit.set({ id, from });
+  }
+
+  /** Saved or not, the card closes to where it was opened from. */
+  closeAskPreset(): void {
+    const was = this.askPresetEdit();
+    this.askPresetEdit.set(null);
+    if (was?.from === 'list') this.only(this.askPresetsOpen);
   }
 
   openAnalysis(): void {

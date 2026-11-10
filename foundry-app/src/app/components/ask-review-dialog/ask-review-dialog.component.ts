@@ -137,7 +137,7 @@ export class AskReviewDialogComponent {
   }
 
   /** What a join, a split, a restore or a link does, said for its row. */
-  protected structure(item: Extract<AskMark, { kind: 'join' | 'split' | 'restore' | 'link' | 'unlink' | 'revert' }>): string {
+  protected structure(item: Extract<AskMark, { kind: 'join' | 'split' | 'insert' | 'restore' | 'link' | 'unlink' | 'revert' }>): string {
     return structureSaid(item);
   }
 

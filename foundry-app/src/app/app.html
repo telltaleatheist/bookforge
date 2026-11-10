@@ -138,6 +138,9 @@
       @if (ui.askPresetsOpen()) {
         <app-ask-presets-dialog />
       }
+      @if (ui.askPresetEdit() !== null) {
+        <app-ask-preset-dialog />
+      }
 
       <!--
         THE ANALYSIS DIALOG, mounted with the acts above it because it IS one of
