@@ -147,9 +147,10 @@
             </p>
           }
           <!--
-            THE PRESETS, ONE PRESS EACH (Owen, 2026-11-02) — the person's own
-            list, in its order and with its titles. A press runs that one at
-            once; the text it sends is on hover. The last button adds one
+            THE PRESETS (Owen, 2026-11-02) — the person's own list, in its
+            order and with its titles. A press puts that one's text in the box
+            below, to be changed before Send (Owen, 2026-11-10); the text is
+            on hover too. The last button adds one
             (Owen, 2026-11-10): a card asking for a title and the text. The
             Presets modal is where several run in order, and where they are
             reordered, edited and deleted.
@@ -157,14 +158,14 @@
             EDIT AND DELETE ARE ON THE PRESET ITSELF TOO (Owen, 2026-11-10:
             "right-click it and it edit or delete. with an x next to the
             presets"). The ✕ deletes, after the app's own card has asked; a
-            right-click offers Edit and Delete. A preset that cannot run now is
-            dimmed and not `disabled`: a disabled button swallows the
-            right-click, and editing one never needed a book or a model.
+            right-click offers Edit and Delete. While a run is going the box
+            is disabled, so a preset is dimmed; it is not `disabled`, because
+            a disabled button swallows the right-click.
           -->
           <div class="presets">
             @for (preset of presetRow(); track preset.id) {
-              <span class="chip" [class.off]="!canRunPreset()" (contextmenu)="presetMenuAt($event, preset)">
-                <button class="preset" [attr.aria-disabled]="!canRunPreset()" [title]="preset.question" (click)="runPreset(preset)">{{ preset.label }}</button>
+              <span class="chip" [class.off]="busy()" (contextmenu)="presetMenuAt($event, preset)">
+                <button class="preset" [attr.aria-disabled]="busy()" [title]="preset.question" (click)="usePreset(preset)">{{ preset.label }}</button>
                 <button class="chip-x" title="Delete this preset" [attr.aria-label]="'Delete the preset ' + preset.label" (click)="deletePreset(preset)">✕</button>
               </span>
             }

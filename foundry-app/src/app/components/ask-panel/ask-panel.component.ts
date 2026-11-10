@@ -104,6 +104,7 @@ export class AskPanelComponent {
   protected readonly liveOpen = computed(() => !this.liveFolded());
 
   private readonly threadBox = viewChild<ElementRef<HTMLElement>>('thread');
+  private readonly requestBox = viewChild<ElementRef<HTMLTextAreaElement>>('box');
 
   /** The book tab in front of the person, which is what the pane is drawing. */
   protected readonly tab = computed(() => {
@@ -260,10 +261,6 @@ export class AskPanelComponent {
   protected readonly presetRow = computed(() => this.asks.presets());
   protected readonly presetMax = ASK_PRESET_MAX;
 
-  /** A preset can run when a book is in front, nothing is running, and a model is chosen. */
-  protected readonly canRunPreset = computed(() =>
-    this.tab() !== null && !this.busy() && this.modelReady() && this.server() !== null);
-
   /** The right-click menu on a preset: which one, and where the pointer was. */
   protected readonly presetMenu = signal<{ readonly preset: AskPreset; readonly x: number; readonly y: number } | null>(null);
 
@@ -296,12 +293,23 @@ export class AskPanelComponent {
     if (agreed) await this.asks.deletePreset(preset.id);
   }
 
-  /** One preset, now, as one run headed with its name. */
-  protected runPreset(preset: AskPreset): void {
-    const tab = this.tab();
-    if (tab === null || !this.canRunPreset()) return;
-    this.liveFolded.set(false);
-    void this.asks.runPresets(tab, this.pane(), [preset], this.server(), this.model());
+  /**
+   * A PRESS PUTS THE PRESET'S TEXT IN THE BOX; Send sends it (Owen, 2026-11-10:
+   * *"lets make the presets just fill the text box with the text of the preset
+   * so i can edit it before sending it"*). It replaces what the box held: a
+   * preset is a whole question. The box takes the caret, at the end, so the
+   * next keys add to it. While a run is going the box is disabled, and a press
+   * does nothing.
+   */
+  protected usePreset(preset: AskPreset): void {
+    if (this.busy()) return;
+    this.draft.set(preset.question);
+    const box = this.requestBox()?.nativeElement;
+    if (box === undefined) return;
+    // The value now, not at the next render: the caret is placed against it.
+    box.value = preset.question;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
   }
 
   /** Light a place the model pointed at, and go to it; clicking it again puts it down. */
