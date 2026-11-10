@@ -837,6 +837,40 @@ test('a part-finished book that is NOT running moves at once: its next step star
   assert.strictEqual(jobOf(job.id).steps[0].venue, 'mac', 'the finished step keeps where it ran');
 });
 
+test('"any" on a part-finished book with nothing running gives its server up: it waits for the first free one', async () => {
+  /*
+   * Owen, 2026-11-10: "dropping it into up next should stay there until a slot
+   * is fully free." A book taken off its server by hand goes back unassigned.
+   * Here mac is then occupied by another book, so this one starts on local.
+   */
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true }, local: { reachable: true } },
+  });
+  await fresh('any-while-idle', [gpu], host);
+  const job = enqueueSent({
+    title: 'Taken off its slot',
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'tts-conversion', label: 'Narrate again', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+    ],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
+  engine.pause();
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac', 'precondition: paused between steps, still assigned to mac');
+
+  engine.setWaitFor(job.id, 'any');
+  assert.strictEqual(jobOf(job.id).waitFor, 'any');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined, 'nothing is running, so the server is given up');
+  assert.strictEqual(jobOf(job.id).steps[1].venue, undefined, 'and its next step is pencilled in for none');
+  assert.strictEqual(jobOf(job.id).steps[0].venue, 'mac', 'the finished step keeps where it ran');
+});
+
 test('"any" on a book that is already on a server is not a move: it stays and finishes there', async () => {
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({

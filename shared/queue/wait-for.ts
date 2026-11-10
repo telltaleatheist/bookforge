@@ -217,8 +217,12 @@ export interface WaitForFacts {
    * lane. Only a POLLED busy is walked past (see {@link ServerState}). Absent or
    * false: the pre-queue behaviour exactly — a busy card parks the row.
    *
-   * For `any`, a free server still wins; with none free, the SHORTEST line
-   * (`queueDepth`) wins, ties in rank order.
+   * ONLY A NAMED SERVER'S LINE IS JOINED. A book set to `any` waits here, in Up
+   * next, until a server is actually free (Owen, 2026-11-10: *"it shouldnt add
+   * it to a slot queue, it should sit there and wait until the slot is actually
+   * open. some slots move slower than others"*). Until then it took the
+   * shortest line among busy cards, which committed it to one machine while
+   * another might come free first.
    */
   readonly queuesOnServer?: boolean;
 }
@@ -416,6 +420,16 @@ function holdAnyNoneReachable(tried: readonly string[]): string {
 }
 
 /**
+ * `any`, and at least one server is answering but occupied. "None reachable"
+ * would send the operator to check a network that is fine; the book is simply
+ * next in line for whichever card comes free first.
+ */
+function holdAnyNoneFree(tried: readonly string[]): string {
+  return `Waiting for any server; none of the ${tried.length} running `
+    + `${tried.length === 1 ? 'is' : 'are'} free yet (${tried.join('; ')}). It starts on the first one that is.`;
+}
+
+/**
  * `any`, and NO enabled server will serve the class it needs.
  *
  * A different sentence from {@link holdAnyNoneReachable} for the same reason
@@ -551,14 +565,15 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
    * server nobody has asked is the one asked now.
    */
   let firstUnknown: string | null = null;
-  /** For a step that queues on the server: the shortest line among busy cards. */
-  let shortestLine: { server: string; depth: number } | null = null;
+  /** Whether any candidate is answering and simply occupied, which is a different sentence from none answering. */
+  let occupied = false;
   for (const row of capable) {
     // §2.4: "a book set to `any` takes the first server whose GPU slot is free,
     // in rank order". Ours is the slot we can be certain about, so it is asked
     // before the network is.
     const ours = facts.gpuSlotTaken(row.name);
     if (ours !== null) {
+      occupied = true;
       tried.push(`${row.name}: BookForge is already ${ours} there`);
       continue;
     }
@@ -568,26 +583,18 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
       if (firstUnknown === null) firstUnknown = row.name;
       continue;
     }
-    if (state.kind === 'busy' && facts.queuesOnServer === true && state.polled !== undefined) {
-      // A line, not a wall. Unstated depth ranks after every stated one (and
-      // among themselves, in rank order): it is not evidence of a short line.
-      const depth = state.polled.queueDepth ?? Number.POSITIVE_INFINITY;
-      if (shortestLine === null || depth < shortestLine.depth) shortestLine = { server: row.name, depth };
-    }
+    // A busy card is not joined under `any`, even by a step that queues on the
+    // server (see `WaitForFacts.queuesOnServer`): the book waits for a free one.
+    if (state.kind === 'busy') occupied = true;
     tried.push(state.kind === 'busy'
       ? `${row.name}: ${state.line}`
       : `${row.name}: ${state.detail}`);
   }
-  /*
-   * AN UNASKED SERVER IS ASKED BEFORE A LINE IS JOINED: it may be free, and a
-   * free card beats any place in a queue. Only with every capable server
-   * answered, none free, does a queueing step take the shortest line.
-   */
+  // An unasked server is asked before the book settles in to wait: it may be free.
   if (firstUnknown !== null) {
     return { kind: 'ask', server: firstUnknown, sentence: asking(firstUnknown) };
   }
-  if (shortestLine !== null) return { kind: 'run', server: shortestLine.server };
-  return { kind: 'hold', sentence: holdAnyNoneReachable(tried) };
+  return { kind: 'hold', sentence: occupied ? holdAnyNoneFree(tried) : holdAnyNoneReachable(tried) };
 }
 
 function forOneServer(

@@ -2259,13 +2259,31 @@ export function setWaitFor(jobId: string, value: string): void {
    * saying where the rest of it goes, and {@link followMove} carries it out —
    * at once if nothing is running, after the running step lands if one is.
    *
-   * `any` on a book that already has a server is NOT a move: there is no point
-   * in a serial book changing servers mid-way unless somebody asked for it, so
-   * the book stays where it is and finishes there.
+   * `any` WHILE A STEP IS RUNNING is not a move: the step finishes where it is
+   * and the book stays on that server for the rest, because a serial book does
+   * not change servers mid-way unasked.
+   *
+   * `any` ON A BOOK WITH NOTHING RUNNING GIVES ITS SLOT UP (Owen, 2026-11-10:
+   * *"dropping it into up next should stay there until a slot is fully free"*).
+   * That is the operator taking the book off its server by hand. It goes back
+   * to Up next unassigned and takes the first server that is actually free,
+   * which may be a different one. Its finished steps keep where they ran.
    */
   if (job.waitForResolved !== undefined && value === WAIT_FOR_ANY) {
     job.waitFor = value;
+    if (job.waitForResolved !== RETIRED_LOCAL_NARRATOR_VENUE
+      && !job.steps.some((step) => step.status === 'running')) {
+      job.waitForResolved = undefined;
+      for (const step of job.steps) {
+        if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+        clearAdmissionHold(step);
+        step.venue = undefined;
+        forgetStepParks(step.id);
+      }
+      if (crucibleLeaseHost !== null) void crucibleLeaseHost.closeRow(job.id);
+    }
     changed();
+    pump();
     return;
   }
   if (value !== WAIT_FOR_ANY) {
@@ -2393,8 +2411,15 @@ export function sendToQueue(jobId: string): void {
  * Until Foundry ships a discard door (asked 2026-09-19, foundry-mac-1), a
  * re-run of a returned read RESUMES from its bank, and the caller is told so by
  * {@link returnToPendingKeepsBank} rather than discovering it on the invoice.
- * Everything a run keeps on OUR side — output, metrics, notes, progress — is
- * cleared here, so nothing of the stopped attempt is read as this one's.
+ *
+ * ── IT IS NO LONGER "START OVER" (Owen, 2026-11-10) ────────────────────────
+ *
+ * The 2026-09-18 ruling above asked for a start over, and this door reset
+ * every step. Owen has since ruled the other way: a book moved back to Pending
+ * keeps what it has finished, and what was stopped part-way picks up where it
+ * stopped (see the loop below). What this door still retires is everything
+ * that binds the run to a machine: the assignment, the venues of the steps
+ * still to run, the parks and the lease.
  */
 export async function returnToPending(jobId: string): Promise<void> {
   const job = requireJob(jobId);
@@ -2421,6 +2446,8 @@ export async function returnToPending(jobId: string): Promise<void> {
   // Stop whatever is live FIRST, and by the module's own door — the same order
   // `remove` uses. A step still writing while its status is rewritten underneath
   // it is how a settle lands on top of the reset and undoes it.
+  /** The steps stopped here mid-act, whose modules can pick a stopped act up again. */
+  const stoppedHere = new Set<string>();
   for (const step of job.steps) {
     if (step.status !== 'running') continue;
     const live = runningSteps.get(step.id);
@@ -2433,9 +2460,33 @@ export async function returnToPending(jobId: string): Promise<void> {
     }
     live.abort.abort();
     runningSteps.delete(step.id);
+    if (moduleFor(step.type).stopIsResumable === true) stoppedHere.add(step.id);
   }
 
   for (const step of job.steps) {
+    /*
+     * WHAT IS FINISHED STAYS FINISHED (Owen, 2026-11-10: *"if i move it back to
+     * pending, and it already has part of the job completed, like if cleanup
+     * already ran but tts hasnt run yet, it should sit in pending with the
+     * cleanup queue done. so the next job that would happen after i move it to
+     * up next or to an actual slot would be tts"*).
+     *
+     * Until then this door was "start over": every step went back to held, a
+     * finished cleanup included, and it ran again. A `done` step now keeps its
+     * status, its output, its metrics and where it ran. Send to queue releases
+     * the steps behind it, and the first of them is the next thing that runs.
+     */
+    if (step.status === 'done') continue;
+    /*
+     * AND A STEP STOPPED PART-WAY PICKS UP WHERE IT STOPPED, for the same
+     * reason: a half-rendered narration is part of the job completed.
+     * `wasInterrupted` is what tells TTS to resume its session instead of
+     * rendering from sentence zero, so it is kept when it was set, and set for
+     * a step this door stopped itself when its module can resume a stopped act.
+     * The same promise a Stop makes (`stoppedRunToPending`). Rendering from the
+     * start is the Narrate modal's own choice, not a side effect of a drag.
+     */
+    const resumes = step.wasInterrupted === true || stoppedHere.has(step.id);
     step.status = 'held';
     step.error = undefined;
     step.progress = {};
@@ -2445,29 +2496,12 @@ export async function returnToPending(jobId: string): Promise<void> {
     step.completionNotes = undefined;
     step.startedAt = undefined;
     step.finishedAt = undefined;
-    /*
-     * A RETURN TO PENDING IS "START OVER", SO THE RESUME FLAG COMES OFF.
-     *
-     * `wasInterrupted` is not decoration — it is what tells TTS to pick the
-     * session up from sentence N instead of rendering from zero. Left standing
-     * on a returned run it turned Owen's *"start over with exact same
-     * settings"* into a resume of the very attempt he just took out of the
-     * queue: an inline-prep chain re-adopts the old session and the book comes
-     * out of the machine he changed his mind about. Everything else of the
-     * stopped attempt is cleared two lines up; this is the one field that
-     * would have made the clearing pointless.
-     *
-     * `lastError` goes with it, and for the opposite reason to P6's: that
-     * field is *the account of the attempt before this one*, kept so a reason
-     * survives a Stop or a Retry — but a run sent back to Pending has no
-     * attempt before this one any more. A "Last time: …" line under a staged
-     * row is history the run no longer owns.
-     */
-    step.wasInterrupted = undefined;
-    // With it, WHOSE gesture that was: a staged run has no stop to remember,
-    // and a stale `'user'` here would have the row skipped by the untargeted
-    // Start for ever after it was sent back to the queue (`release`).
+    step.wasInterrupted = resumes ? true : undefined;
+    // WHOSE gesture the stop was: a staged run has no stop to remember, and a
+    // stale `'user'` here would have the row skipped by the untargeted Start
+    // for ever after it was sent back to the queue (`release`).
     step.stopReason = undefined;
+    // The account of the attempt before this one. A staged row shows none.
     step.lastError = undefined;
     // The machine this step was PENCILLED IN for, which is now a decision the
     // operator is about to make again. Left standing it would have the bench
@@ -3579,8 +3613,8 @@ function jobIsStageable(job: QueueJob): boolean {
  * again"*). It used to stay on its lane, still assigned to the server, still
  * drawn in the slot.
  *
- * NOT {@link returnToPending}, which is "start over" and clears every step.
- * A Stop promises the work already done is kept, so a `done` step stays done
+ * The same promise {@link returnToPending} makes since 2026-11-10, when it
+ * stopped being "start over". A Stop promises the work already done is kept, so a `done` step stays done
  * and the stopped one stays `held` and interrupted — Send to queue releases it
  * and it resumes where it stopped. What goes is everything that binds the run
  * to a card: the assignment, the venues of the steps still to run, the parks,

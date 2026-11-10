@@ -183,7 +183,7 @@ async function runAgainst(ending) {
       'a REFUSED busy (a door that shut) is honoured by everyone');
   });
 
-  await check('scheduler: `any` prefers a free server, then the SHORTEST line', () => {
+  await check('scheduler: `any` takes a free server and never joins a line', () => {
     const depth = { a: 5, b: 1, c: 3 };
     const base = (state) => ({
       waitFor: waitFor.WAIT_FOR_ANY, resolved: undefined,
@@ -192,12 +192,16 @@ async function runAgainst(ending) {
       needClass: undefined, canServe: () => true, queuesOnServer: true,
     });
     const allBusy = (n) => ({ kind: 'busy', line: `busy ${n}`, polled: { queueDepth: depth[n] } });
-    assert.deepStrictEqual(waitFor.decideWaitFor(base(allBusy)), { kind: 'run', server: 'b' });
+    // Owen, 2026-11-10: an `any` book waits in Up next until a slot is actually
+    // open. It took the shortest line (b) until then.
+    const held = waitFor.decideWaitFor(base(allBusy));
+    assert.strictEqual(held.kind, 'hold', 'every card is busy, so the book waits here and joins none of their lines');
+    assert.match(held.sentence, /none of the 3 running are free yet \(a: busy a; b: busy b; c: busy c\)\. It starts on the first one that is\./);
     const cFree = (n) => (n === 'c' ? { kind: 'ready' } : allBusy(n));
     assert.deepStrictEqual(waitFor.decideWaitFor(base(cFree)), { kind: 'run', server: 'c' });
     const aUnknown = (n) => (n === 'a' ? { kind: 'unknown' } : allBusy(n));
     assert.strictEqual(waitFor.decideWaitFor(base(aUnknown)).kind, 'ask',
-      'an unasked server is asked before a line is joined — it may be free');
+      'an unasked server is asked before the book settles in to wait — it may be free');
   });
 
   await check('409 queue_full is a WAIT with the line named, not a failure', () => {

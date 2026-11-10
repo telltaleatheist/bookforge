@@ -190,19 +190,21 @@ function chainModules() {
   };
 }
 
-// ── PK7 · A return to Pending is a START OVER ───────────────────────────────
+// ── PK7 · A return to Pending KEEPS WHAT IS DONE ────────────────────────────
 
 /*
- * THE FINDING (bug hunt round 2). `returnToPending` clears output, metrics,
- * progress, notes, timestamps and the venue — and left `wasInterrupted`
- * standing. That flag is not decoration: it is what tells TTS to resume the
- * cached session instead of rendering from sentence zero. So Owen's *"move it
- * back to the queue to start over with exact same settings"* re-adopted the
- * session of the very attempt he had just pulled out of the queue, on whatever
- * machine he then picked. `lastError` goes with it: a staged run has no
- * "attempt before this one" to account for.
+ * THE RULING CHANGED (Owen, 2026-11-10): *"if i move it back to pending, and it
+ * already has part of the job completed, like if cleanup already ran but tts
+ * hasnt run yet, it should sit in pending with the cleanup queue done. so the
+ * next job that would happen after i move it to up next or to an actual slot
+ * would be tts."*
+ *
+ * This test used to pin the opposite, from the 2026-09-18 ruling ("move it back
+ * to the queue to start over"): every step back to held and the resume flag
+ * cleared. Now a finished step stays finished with its output, a step stopped
+ * part-way keeps its resume, and only what binds the run to a machine goes.
  */
-test('PK7: a run sent back to Pending resumes NOTHING', async () => {
+test('PK7: a run sent back to Pending keeps its finished steps, and a stopped one resumes', async () => {
   const prep = fakeModule('prepare', { resource: () => 'cpu' });
   const tts = fakeModule('tts-conversion', { travels: true, stopIsResumable: true });
   await fresh('return-to-pending', [prep, tts], {
@@ -220,12 +222,8 @@ test('PK7: a run sent back to Pending resumes NOTHING', async () => {
   await settle();
   assert.ok(tts.runs[0], 'precondition: the narration is on the card');
 
-  // The exact state the hunt found live: a resumable stop, which is what sets
-  // the resume flag AND (P6) parks the runner's last words in `lastError`.
-  // The APP CLOSING, not the user's Stop: since 2026-09-25 a user Stop sends
-  // the run to Pending itself, keeping its resume on purpose (Owen: "if i hit
-  // stop it should give up the lease and move to pending again"), so the only
-  // road left to a queued run that says "interrupted" is a close.
+  // A resumable stop that leaves the run in the live queue: the app closing.
+  // (A user Stop sends the run to Pending itself.)
   await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'BookForge is closing.',
     { resumable: true, stopReason: 'closed' });
   await settle();
@@ -233,28 +231,37 @@ test('PK7: a run sent back to Pending resumes NOTHING', async () => {
     'precondition: a resumable stop is exactly what promises a resume');
   assert.ok(typeof stepAt(job.id, 1).lastError === 'string',
     'precondition (P6): and the account of it is kept');
+  const preparedOutput = stepAt(job.id, 0).output;
+  assert.ok(preparedOutput !== undefined, 'precondition: the finished step has its output');
 
   await engine.returnToPending(job.id);
 
   assert.strictEqual(jobOf(job.id).pending, true);
-  // The row the finding is about, named before the sweep, so a failure here
-  // reads as itself rather than as whichever step the loop reached first.
-  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, undefined,
-    'THE FINDING: the narration still said "interrupted", so the next press RESUMED the session '
-    + 'of the attempt Owen had just pulled out of the queue to start over');
-  assert.strictEqual(stepAt(job.id, 1).lastError, undefined,
-    'and a staged run has no attempt before this one to account for');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined, 'the machine is a question again');
 
-  for (const step of jobOf(job.id).steps) {
-    assert.strictEqual(step.status, 'held', step.label);
-    assert.strictEqual(step.wasInterrupted, undefined,
-      `${step.label}: THE FINDING — a returned run that still says "interrupted" is resumed by `
-      + 'the next press, so "start over" restarts nothing and the old session is re-adopted');
-    assert.strictEqual(step.lastError, undefined,
-      `${step.label}: a staged run has no attempt before this one to account for`);
-    assert.strictEqual(step.error, undefined, step.label);
-    assert.strictEqual(step.venue, undefined, step.label);
-  }
+  // The finished step: kept whole.
+  assert.strictEqual(stepAt(job.id, 0).status, 'done',
+    'THE RULING: the step that finished is still finished in Pending, so it does not run again');
+  assert.deepStrictEqual(stepAt(job.id, 0).output, preparedOutput, 'with its output');
+
+  // The stopped step: held, unbound from the machine, and still a resume.
+  const narrate = stepAt(job.id, 1);
+  assert.strictEqual(narrate.status, 'held');
+  assert.strictEqual(narrate.wasInterrupted, true,
+    'a narration stopped part-way is part of the job completed: it picks up where it stopped');
+  assert.strictEqual(narrate.venue, undefined, 'it is not pencilled in for the old machine');
+  assert.strictEqual(narrate.stopReason, undefined,
+    'no stop is remembered, or the untargeted Start would skip the row after Send to queue');
+  assert.strictEqual(narrate.lastError, undefined, 'a staged row shows no account of an earlier attempt');
+  assert.strictEqual(narrate.error, undefined);
+
+  // Sent to the queue again, the NEXT thing that runs is the narration: the finished step is not repeated.
+  engine.sendToQueue(job.id);
+  engine.start();
+  await settle();
+  assert.strictEqual(prep.runs.length, 1, 'Prepare did not run a second time');
+  assert.strictEqual(tts.runs.length, 2, 'the narration is what started');
+  assert.strictEqual(tts.runs[1].ctx.step.wasInterrupted, true, 'and it started as a resume');
 });
 
 // ── Q2/F6 · Retry revives the whole subtree ─────────────────────────────────
