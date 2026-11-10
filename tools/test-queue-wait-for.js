@@ -791,6 +791,52 @@ test('a book on a server MOVES when the operator says so: the running step finis
   assert.strictEqual(jobOf(job.id).waitForResolved, 'local', 'on the server the book was moved to');
 });
 
+test('a part-finished book that is NOT running moves at once: its next step starts on the server it was moved to', async () => {
+  /*
+   * Owen, 2026-11-10: "if i want to move it to a different slot and it isnt
+   * already running in one, it shouldnt be blocked from doing that." One book,
+   * one server keeps the SCHEDULER from scattering a book's steps; it is not a
+   * wall in front of a move. Here a step has finished on mac, nothing is
+   * running, and the book is moved to local: the assignment is released on the
+   * spot and the next step launches on local. The finished step keeps mac as
+   * its venue, because where work happened is history.
+   */
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true }, local: { reachable: true } },
+  });
+  await fresh('move-while-idle', [gpu], host);
+  const job = enqueueSent({
+    title: 'Half done',
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'tts-conversion', label: 'Narrate again', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+    ],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
+  // Paused, so the first step lands and the second is not claimed.
+  engine.pause();
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 1, 'paused: the second step has not started');
+  assert.strictEqual(jobOf(job.id).steps[0].status, 'done');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac', 'part of the book ran on mac, and it is still assigned there');
+
+  engine.setWaitFor(job.id, 'local');
+  assert.strictEqual(jobOf(job.id).waitFor, 'local');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined, 'nothing is running, so the move is carried out at once');
+
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 2, 'the next step ran');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'local', 'on the server the book was moved to');
+  assert.strictEqual(jobOf(job.id).steps[1].venue, 'local');
+  assert.strictEqual(jobOf(job.id).steps[0].venue, 'mac', 'the finished step keeps where it ran');
+});
+
 test('"any" on a book that is already on a server is not a move: it stays and finishes there', async () => {
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({
