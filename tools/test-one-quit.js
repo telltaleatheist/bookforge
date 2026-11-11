@@ -53,10 +53,16 @@ const at = (s) => {
 
 check('before-quit asks the book window before it shuts anything down, and quits from the yes', () => {
   const gate = at('if (quitWaitsForBookWindow(foundryMount.foundryWindow(), foundryMount.windowLetGo())) {');
-  at("foundryMount.letTheWindowGo(() => { isQuitting = true; app.quit(); });");
-  assert.ok(gate < at('if (cleanupDone) return;'), 'the cleanup guard runs before the book window is asked');
+  const yes = at('foundryMount.letTheWindowGo(() => {');
+  assert.ok(/^foundryMount\.letTheWindowGo\(\(\) => \{\n\s*quitNote\([^\n]*\);\n\s*isQuitting = true;\n\s*app\.quit\(\);\n\s*\}\);/.test(body.slice(yes)),
+    'the yes no longer sets isQuitting and quits');
+  assert.ok(gate < at('if (cleanupDone) {'), 'the cleanup guard runs before the book window is asked');
   assert.ok(gate < at('await queueEngine.shutdown();'), 'the queue is shut down before the book window is asked');
   assert.ok(gate < at('event.preventDefault();\n  cleanupDone = true;'), 'the cleanup starts before the book window is asked');
+  // A second Quit during the cleanup still goes through: the guard returns without preventing it.
+  const guard = at('if (cleanupDone) {');
+  assert.ok(!body.slice(guard, at('if (!isPrimaryInstance) return;')).includes('preventDefault'),
+    'the cleanup guard now prevents a repeated quit, which would leave the app unquittable mid-cleanup');
   // A "keep it open" leaves the ✕ hiding the main window, as before the press.
   assert.ok(body.slice(gate, at("foundryMount.letTheWindowGo(")).includes('isQuitting = false;'),
     'a quit the documents refused leaves isQuitting set');

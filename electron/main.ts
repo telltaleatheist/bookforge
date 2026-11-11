@@ -14443,15 +14443,40 @@ let cleanupDone = false;
  */
 function quitStepWithDeadline(label: string, ms: number, run: () => Promise<void>): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
+  const started = Date.now();
+  quitStepRunning = label;
   const deadline = new Promise<void>((resolve) => {
     timer = setTimeout(() => {
       console.error(
         `[MAIN] QUIT WATCHDOG: '${label}' did not finish within ${ms / 1000}s — abandoning it `
         + 'and continuing shutdown. If stray processes survive this quit, this step is why.');
+      quitNote(`Quit: '${label}' did not finish within ${ms / 1000}s and was abandoned`);
       resolve();
     }, ms);
   });
-  return Promise.race([run(), deadline]).finally(() => clearTimeout(timer));
+  return Promise.race([run(), deadline]).finally(() => {
+    clearTimeout(timer);
+    quitNote(`Quit: '${label}' took ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  });
+}
+
+/*
+ * THE QUIT, WRITTEN TO bookforge.log (Owen, 2026-11-11: "bookforge still isnt
+ * quitting on the first attempt when i right click in tray->quit bookforge. i do
+ * it twice"). Every line the shutdown printed went to the console, and an
+ * installed app has none, so a quit that needed two presses left nothing to
+ * read. These lines say which of the two it was: a quit that was stopped (the
+ * book window's question), or a cleanup that was still running when Quit was
+ * pressed again, and at which step.
+ */
+let quitStepRunning: string | null = null;
+let quitCleanupStartedAt: number | null = null;
+/** Set as the log files are closed, the last step: a note after that would reopen one. */
+let quitLogClosed = false;
+function quitNote(message: string): void {
+  console.log(`[MAIN] ${message}`);
+  if (quitLogClosed) return;
+  getMainLogger().info(message);
 }
 
 /**
@@ -14486,11 +14511,23 @@ app.on('before-quit', async (event) => {
   if (quitWaitsForBookWindow(foundryMount.foundryWindow(), foundryMount.windowLetGo())) {
     event.preventDefault();
     isQuitting = false;
-    foundryMount.letTheWindowGo(() => { isQuitting = true; app.quit(); });
+    quitNote('Quit asked: the book window is open, so its documents are asked first');
+    foundryMount.letTheWindowGo(() => {
+      quitNote('Quit: the book window said yes');
+      isQuitting = true;
+      app.quit();
+    });
     return;
   }
   isQuitting = true;
-  if (cleanupDone) return;
+  if (cleanupDone) {
+    // Either the cleanup's own closing app.quit(), or Quit pressed again while it runs.
+    if (quitCleanupStartedAt !== null) {
+      quitNote(`Quit asked again ${((Date.now() - quitCleanupStartedAt) / 1000).toFixed(1)}s into the cleanup, `
+        + `during '${quitStepRunning ?? 'the queue shutdown'}': exiting now with the cleanup unfinished`);
+    }
+    return;
+  }
 
   // A second instance that lost the single-instance lock never owned any
   // workers — running the GLOBAL kill sweep from it would murder the primary
@@ -14500,8 +14537,9 @@ app.on('before-quit', async (event) => {
   // Prevent quit until cleanup is done
   event.preventDefault();
   cleanupDone = true;
+  quitCleanupStartedAt = Date.now();
 
-  console.log('[MAIN] Running cleanup before quit...');
+  quitNote('Quit: cleanup started');
 
   // THE CRUCIBLE OPERATOR WINDOW IS GONE (2026-09-17) and so is this teardown.
   // Owen: *"no more opening a crucible page in bookforge settings."* Nothing
@@ -14754,12 +14792,16 @@ app.on('before-quit', async (event) => {
   });
 
   // Close loggers
+  quitNote(`Quit: cleanup finished in ${((Date.now() - (quitCleanupStartedAt ?? Date.now())) / 1000).toFixed(1)}s`);
   await quitStepWithDeadline('close loggers', 5_000, async () => {
+    quitLogClosed = true;
     await closeLoggers();
   });
 
   clearTimeout(quitBackstop);
-  console.log('[MAIN] Cleanup complete, quitting...');
+  console.log(`[MAIN] Cleanup complete in ${((Date.now() - (quitCleanupStartedAt ?? Date.now())) / 1000).toFixed(1)}s, quitting...`);
+  // Cleared so the app.quit() below is not read as a second press.
+  quitCleanupStartedAt = null;
   app.quit();
 });
 
