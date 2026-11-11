@@ -684,9 +684,11 @@ function buildBar(): void {
   status.appendChild(statusLabel);
 
   // ✕ dismisses the whole on-page UI — the bar AND the per-block play/− buttons —
-  // and releases the rendered audio. The toolbar popup brings it all back.
-  const close = iconBtn('close', 18, 'Close reader controls', () => {
-    send({ target: 'background', cmd: 'transport', op: 'close' });
+  // and ends the read. Rendered audio is KEPT (it leaves when the tab closes or
+  // after 24 hours untouched), so bringing the controls back from the toolbar
+  // popup replays instead of rendering again.
+  const close = iconBtn('close', 18, 'Close reader controls (keeps what has been rendered)', () => {
+    send({ target: 'background', cmd: 'transport', op: 'stop' });
     toggleUi(false);
   });
   close.classList.add('bfr-close');

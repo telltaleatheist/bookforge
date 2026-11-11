@@ -396,9 +396,13 @@ function relaySnapshotTo(snapshot: QueueSnapshot, tabId: number): void {
 
 // ─── Tear down when the active tab navigates or closes ────────────────────────
 //
-// 'close' (not 'stop') because the page the audio belongs to is gone: this is the
-// point where rendered audio is actually freed. A plain Stop keeps it, so that
-// pressing play again on the same page never re-renders.
+// A CLOSED tab sends 'close': the page the audio belongs to is gone, and this is
+// the point where rendered audio is actually freed. A tab that is merely LOADING
+// sends 'stop' — the read ends because its page is gone, but the audio is kept.
+// `loading` is a reload as often as a departure (Memory Saver reloads a discarded
+// tab the moment it is looked at again), the cache is keyed by (voice, text), and
+// an article rendered ahead of time has to still be rendered when its reader
+// comes back. What is never replayed leaves by the 24-hour sweep or the LRU cap.
 
 // ─── The Options page changed which Crucible is selected ──────────────────────
 //
@@ -432,6 +436,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== 'loading' || !isRunsTab(tabId)) return;
-  void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' });
+  void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'stop' });
   if (tabId === activeTabId) activeTabId = null;
 });

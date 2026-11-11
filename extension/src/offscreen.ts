@@ -423,7 +423,7 @@ class Session {
  * a read that was interrupted keeps whatever sentences it got, and the next play
  * resumes generation at `renderedCount` instead of paying to synthesize the same
  * words twice. Nothing here is ever thrown away to make room for a re-render: the
- * only ways out are the LRU cap and the user closing the page/controls.
+ * only ways out are the LRU cap, the tab closing, and CACHE_TTL_MS without a touch.
  */
 interface CacheEntry {
   segments: Uint8Array[];
@@ -434,24 +434,57 @@ interface CacheEntry {
   renderedCount: number;
   complete: boolean;
   lastUsed: number;
+  /** Wall clock of the last read or write — what CACHE_TTL_MS is measured from. */
+  touchedAt: number;
 }
+
+// How long rendered audio is kept with nobody touching it (Owen, Nov 11 2026: an
+// article rendered ahead of time stays rendered until its tab closes "or times out
+// after 24 hours or something"). Measured from the last read or write, so an
+// article being listened to never expires underneath the listener.
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const cache = new Map<string, CacheEntry>();
 let lruCounter = 0;
 
 function cacheGet(key: string): CacheEntry | undefined {
   const entry = cache.get(key);
-  if (entry) entry.lastUsed = ++lruCounter;
+  if (!entry) return undefined;
+  if (Date.now() - entry.touchedAt > CACHE_TTL_MS) {
+    cache.delete(key);
+    forgetRendered(key);
+    return undefined;
+  }
+  entry.lastUsed = ++lruCounter;
+  entry.touchedAt = Date.now();
   return entry;
 }
-function cachePut(key: string, entry: Omit<CacheEntry, 'lastUsed'>): void {
+/** Free every entry nobody has touched in CACHE_TTL_MS. */
+function sweepExpiredCache(): void {
+  const now = Date.now();
+  let dropped = 0;
+  for (const [key, entry] of [...cache]) {
+    if (now - entry.touchedAt <= CACHE_TTL_MS) continue;
+    cache.delete(key);
+    forgetRendered(key);
+    dropped++;
+  }
+  if (dropped > 0) {
+    console.log(`[BFR] ${dropped} rendered block(s) untouched for 24 hours — freed`);
+    broadcast();
+  }
+}
+setInterval(sweepExpiredCache, 15 * 60 * 1000);
+
+function cachePut(key: string, entry: Omit<CacheEntry, 'lastUsed' | 'touchedAt'>): void {
   // Never let a shorter partial overwrite a longer/complete render of the same text.
   const existing = cache.get(key);
   if (existing && (existing.complete || existing.renderedCount >= entry.renderedCount) && !entry.complete) {
     existing.lastUsed = ++lruCounter;
+    existing.touchedAt = Date.now();
     return;
   }
-  cache.set(key, { ...entry, lastUsed: ++lruCounter });
+  cache.set(key, { ...entry, lastUsed: ++lruCounter, touchedAt: Date.now() });
   let total = 0;
   for (const e of cache.values()) total += e.bytes;
   while (total > CACHE_LIMIT_BYTES && cache.size > 1) {
@@ -1790,8 +1823,10 @@ function concludeCurrent(): void {
  * Stop the read (Stop button, or the queue emptied): cancel generation and clear
  * the queue, but KEEP every rendered second. Stopping means "I'm done with this
  * article", not "throw away the audio" — pressing play again must replay instantly
- * rather than pay to synthesize words that were already spoken once. Memory is
- * bounded by the LRU cap; the audio is freed for real in {@link purgeAll}.
+ * rather than pay to synthesize words that were already spoken once. This is also
+ * what a reload, a navigation and the on-page ✕ do: the cache is keyed by
+ * (voice, text), so the same article replays after any of them. Memory is bounded
+ * by the LRU cap and CACHE_TTL_MS; the audio is freed for real in {@link purgeAll}.
  */
 function stopAll(): void {
   // A stream still waiting in the server's line leaves it (see `openAbort`).
@@ -1808,9 +1843,12 @@ function stopAll(): void {
 }
 
 /**
- * Tear down for real: the user closed the on-page controls, or the tab navigated
- * away / closed. This is the ONLY path that frees rendered audio — up to
- * CACHE_LIMIT_BYTES of it — so leaving a page releases the memory promptly.
+ * Tear down for real: the run's TAB CLOSED. Besides the LRU cap and the 24-hour
+ * sweep this is the only path that frees rendered audio. It used to run on every
+ * reload and navigation of the tab and on the on-page ✕ as well, which is how an
+ * article rendered ahead of time came back un-rendered (Nov 11 2026): Chrome's
+ * Memory Saver discards a background tab and RELOADS it on return, and that
+ * reload purged everything.
  */
 function purgeAll(): void {
   stopAll();
