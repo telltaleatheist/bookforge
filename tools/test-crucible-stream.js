@@ -627,7 +627,7 @@ async function noLocalArmChecks() {
         for (const staleLegacyKey of [false, true]) {
           const { facade: cold, local } = facadeFor(fake, { staleLegacyKey });
           assert.deepStrictEqual(cold.getAvailableVoices(),
-            ['deathstalker', 'mistborn', 'owen', 'sigma', 'thirdreich', 'default'],
+            ['deathstalker', 'mistborn', 'owen-audiobook', 'sigma', 'thirdreich', 'default'],
             'with nothing started the pickers see every voice a Crucible can be asked for — '
             + `staleLegacyKey: ${staleLegacyKey}`);
           assert.strictEqual(cold.getEngineState(), 'stopped');

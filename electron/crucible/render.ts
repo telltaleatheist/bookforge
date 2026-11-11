@@ -128,10 +128,10 @@ export const CRUCIBLE_RENDER_TAKE = 0;
  * THE MAP, WRITTEN DOWN, BECAUSE THE TWO CATALOGS ARE TWO CATALOGS.
  *
  * BookForge names its voices in `electron/data/higgs-models.json`
- * (`deathstalker`, `mistborn`, `owen`, `thirdreich`, `sigma`, `default`, and
- * four `zeroshot-*`). Crucible names its own in `crucible/voices/*.toml`
- * (`deathstalker`, `mistborn`, `owen`, `sigma`, `thirdreich`, `zeroshot`,
- * `higgs-default`). Five ids coincide and two do not, and a coincidence is not
+ * (`deathstalker`, `mistborn`, `owen-audiobook`, `thirdreich`, `sigma`,
+ * `default`, and four `zeroshot-*`). Crucible names its own in
+ * `crucible/voices/*.toml` (`deathstalker`, `mistborn`, `owen-audiobook`,
+ * `owen-youtube`, `sigma`, `thirdreich`, `zeroshot`, `higgs-default`). Five ids coincide and two do not, and a coincidence is not
  * an identity: a server is entitled to rename a voice, and the day it does, a
  * `voiceId` passed straight through would render the wrong speaker rather than
  * refuse.
@@ -151,7 +151,9 @@ export const CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE: Readonly<Record<string, string>>
   // The five merged Higgs v3 fine-tunes, same word both sides.
   deathstalker: 'deathstalker',
   mistborn: 'mistborn',
-  owen: 'owen',
+  // `owen` until 2026-11-11. Crucible retired that voice on 2026-10-25 for
+  // `owen-audiobook` and `owen-youtube`; the stale row hid both from the picker.
+  'owen-audiobook': 'owen-audiobook',
   sigma: 'sigma',
   thirdreich: 'thirdreich',
   // The base model with no reference. BookForge calls it `default` because it is

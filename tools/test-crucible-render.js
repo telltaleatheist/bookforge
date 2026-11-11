@@ -525,7 +525,9 @@ async function voiceMapChecks() {
   await check('the five fine-tunes and the base voice map to Crucible voice ids', () => {
     assert.strictEqual(render.crucibleVoiceFor('higgs', 'mistborn'), 'mistborn');
     assert.strictEqual(render.crucibleVoiceFor('higgs', 'deathstalker'), 'deathstalker');
-    assert.strictEqual(render.crucibleVoiceFor('higgs', 'owen'), 'owen');
+    assert.strictEqual(render.crucibleVoiceFor('higgs', 'owen-audiobook'), 'owen-audiobook');
+    // The retired id is refused by name, not passed through to a server that no longer has it.
+    assert.throws(() => render.crucibleVoiceFor('higgs', 'owen'), /has no Crucible voice/);
     assert.strictEqual(render.crucibleVoiceFor('higgs', 'sigma'), 'sigma');
     assert.strictEqual(render.crucibleVoiceFor('higgs', 'thirdreich'), 'thirdreich');
     // The one id that is NOT the same word on both sides, which is the whole
