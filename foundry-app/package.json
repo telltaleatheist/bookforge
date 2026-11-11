@@ -1,7 +1,7 @@
 {
   "name": "foundry-app",
   "productName": "Foundry",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "BookForge's book window: its Angular renderer. Its main-process half compiles in BookForge's own tsconfig.electron.json.",
   "private": true,
   "scripts": {

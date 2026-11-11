@@ -62,16 +62,24 @@ import { chapterSpan } from '@owen/foundry-core/shared/flow';
  * width keeps its proportion when the window changes size. Before this it was
  * 520px fitted against a 384px library (doubled 2026-11-02 for Ask), and a
  * width stored in pixels under the old key is no longer read.
+ *
+ * AND NOW IT OPENS AS WIDE AS THE LIBRARY (Owen, 2026-11-11: *"lets make the
+ * right-side nav (with ask and stuff) the same width as the left side nav (the
+ * worktree). the right side nav is a bit too wide right now"*). 22% each side,
+ * and the book takes the 56% between them. The even split above gave the book
+ * and this panel 39% apiece, which left the page a narrow column beside a panel
+ * of mostly empty rows. A drag still widens it, and the share kept under the
+ * 39% default's key is no longer read, so the new width is what opens.
  */
-const DEFAULT_SHARE = 0.39;
-/** The narrowest it goes, in px, and the widest share of the window a drag can take. */
-const MIN_WIDTH = 220;
+const DEFAULT_SHARE = 0.22;
+/** The narrowest it goes, in px (the library's own floor), and the widest share of the window a drag can take. */
+const MIN_WIDTH = 288;
 const MAX_SHARE = 0.7;
 /** The shortest an open section can be dragged, in pixels: its header and a row or two. */
 const MIN_SECTION = 72;
 /** Ask starts with a larger share: it is the section that reads a conversation. */
 const DEFAULT_WEIGHTS: Record<string, number> = { chapters: 1, notes: 1, furniture: 1, ask: 1.5 };
-const SHARE_KEY = 'foundry.inspector.share';
+const SHARE_KEY = 'foundry.inspector.share.2';
 const WEIGHTS_KEY = 'foundry.inspector.weights';
 
 /*

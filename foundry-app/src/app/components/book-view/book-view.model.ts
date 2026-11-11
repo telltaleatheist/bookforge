@@ -396,9 +396,15 @@ export const ALIGNED_MIN_REM = 68;
  * words, not to make the ransom notes `ALIGNED_MIN_REM` refuses. The aligned
  * pair OPENS wider than its floor because the floor is what drew the complaint.
  * No ceiling here: the ceiling is the pane, and `measure` asks the pane.
+ *
+ * ALONE OPENS WIDER THAN ITS FLOOR TOO (Owen, 2026-11-11: *"lets make the
+ * book's white background bigger"*, with a screenshot of the page dragged to
+ * about 65rem at the 13px root). The inspector narrowed to the library's width the same day, so
+ * the pane has the room; where it does not, the sheet's own
+ * `min(…, 100% - 5rem)` holds it inside the gray.
  */
 export const MEASURE_REM = {
-  alone: { opens: 46, floor: 46 },
+  alone: { opens: 65, floor: 46 },
   aligned: { opens: 44, floor: 38 },
 } as const;
 
