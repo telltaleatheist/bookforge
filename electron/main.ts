@@ -14554,8 +14554,9 @@ app.on('before-quit', async (event) => {
   // running would be spawning workers into a teardown.
   await queueEngine.shutdown();
 
-  // The trash drain stops between files, so this returns in well under the time
-  // one unlink takes. A half-removed tree left in `.trash` is a CORRECT state —
+  // The trash drain stops between files and its wait between passes ends on
+  // stop() (it did not until 2026-11-11, and a quit stood still for up to 30 s
+  // here), so this returns in well under the time one unlink takes. A half-removed tree left in `.trash` is a CORRECT state —
   // it is already out of the library — and the next start finishes it.
   {
     const remover = libraryTrashRemover;

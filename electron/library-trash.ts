@@ -742,7 +742,7 @@ async function finishMarkedTree(
 }
 
 export interface TrashRemoverHandle {
-  /** Ends the loop. Resolves once the pass in flight has stopped. */
+  /** Ends the loop. Resolves once the pass in flight has stopped, and at once when the loop is waiting. */
   stop(): Promise<void>;
 }
 
@@ -755,7 +755,33 @@ export interface TrashRemoverHandle {
 export function startLibraryTrashRemover(deps: RemoverDeps = {}): TrashRemoverHandle {
   let stopping = false;
   const log = deps.log ?? console.log;
-  const sleep = deps.sleep ?? realSleep;
+
+  /*
+   * THE WAIT BETWEEN PASSES ENDS WHEN stop() IS CALLED (Owen, 2026-11-11: the
+   * tray's Quit took two presses). The loop spends nearly all its life here:
+   * an empty trash waits IDLE_POLL_MS, 30 seconds, and a share that is not
+   * answering waits 60. `stop()` awaits the loop, and these waits were plain
+   * sleeps, so quitting stood still for whatever was left of one before the
+   * first shutdown step ran, with nothing on screen. The second press of Quit
+   * was what ended the app, with the cleanup skipped (bookforge.log, 23:27:26Z:
+   * "Quit asked again 2.3s into the cleanup, during 'the queue shutdown'").
+   * The stop flag being "checked between every single file" was true of a pass
+   * and said nothing about the wait after one.
+   */
+  let wake: (() => void) | null = null;
+  const sleep = (ms: number): Promise<void> => {
+    if (stopping) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = (): void => { wake = null; resolve(); };
+      if (deps.sleep !== undefined) {
+        wake = done;
+        void deps.sleep(ms).then(done);
+        return;
+      }
+      const timer = setTimeout(done, ms);
+      wake = () => { clearTimeout(timer); done(); };
+    });
+  };
 
   const loop = (async () => {
     while (!stopping) {
@@ -781,6 +807,7 @@ export function startLibraryTrashRemover(deps: RemoverDeps = {}): TrashRemoverHa
   return {
     async stop(): Promise<void> {
       stopping = true;
+      wake?.();
       await loop;
     },
   };

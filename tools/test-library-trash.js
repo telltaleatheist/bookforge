@@ -571,6 +571,27 @@ test('the background remover drains what it was given, and stop() resolves', asy
   assert.strictEqual(trashEntries(root).length, 0, 'the loop drained it');
 });
 
+test('stop() ends the wait between passes: a quit does not stand still for the idle poll', async () => {
+  /*
+   * Owen, 2026-11-11: Quit took two presses. With the trash empty the loop is in
+   * its 30 s wait, stop() awaited the loop, and the first shutdown step did not
+   * start until the wait ran out. Both arms: the real timer, and an injected
+   * sleep that never returns.
+   */
+  const root = makeLibrary();
+  for (const sleep of [undefined, () => new Promise(() => { /* never */ })]) {
+    const handle = startLibraryTrashRemover({ libraryRoot: root, log: quiet, ...(sleep ? { sleep } : {}) });
+    // Let the first pass find nothing and settle into the wait.
+    await new Promise((r) => setTimeout(r, 150));
+    const started = Date.now();
+    await Promise.race([
+      handle.stop(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('stop() was still waiting after 2 s')), 2000)),
+    ]);
+    assert.ok(Date.now() - started < 1000, 'stop() came back in well under a second');
+  }
+});
+
 // ── Run ────────────────────────────────────────────────────────────────────
 
 (async () => {
