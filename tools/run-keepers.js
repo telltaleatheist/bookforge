@@ -1154,6 +1154,9 @@ const SUITES = [
   // package Foundry's main process requires must be BookForge's own dependency
   // (2026-11-03: the installed app died on '@owen/tool-loop').
   'test-foundry-deps-packaged',
+  // And the same for BookForge's own main process, since the renderer-only
+  // packages left dependencies (2026-11-11) and no longer ship.
+  'test-main-deps-packaged',
 ];
 
 /**

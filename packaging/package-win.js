@@ -54,13 +54,30 @@ const steps = [
   `npx electron-builder --win --x64 -c.extraMetadata.version=${require('./app-version').computeVersion()}`,
 ];
 
+/*
+ * HOW LONG EACH STEP TOOK, printed at the end (Owen, 2026-11-11: the Windows
+ * package took about ten minutes against much less on the Mac). The same day
+ * the renderer-only packages left `dependencies`, which took the installer from
+ * 18,600 loose files to roughly a third of that; this table is how the next slow step is
+ * found by reading rather than guessing.
+ */
+const took = [];
+const clock = (ms) => `${Math.floor(ms / 60000)}m ${String(Math.round((ms % 60000) / 1000)).padStart(2, '0')}s`;
 for (const cmd of steps) {
   console.log(`\n[package-win] $ ${cmd}`);
+  const started = Date.now();
   try {
     execSync(cmd, { cwd: repoRoot, stdio: 'inherit', env: process.env });
   } catch (err) {
-    fail(`Step failed: ${cmd}\n${err.message}`);
+    fail(`Step failed after ${clock(Date.now() - started)}: ${cmd}\n${err.message}`);
   }
+  took.push({ cmd, ms: Date.now() - started });
 }
 
+console.log('\n[package-win] Step times:');
+for (const { cmd, ms } of took) {
+  // The builder's command carries the version flag; its first three words name it.
+  console.log(`  ${clock(ms).padStart(7)}  ${cmd.split(' ').slice(0, 3).join(' ')}`);
+}
+console.log(`  ${clock(took.reduce((sum, step) => sum + step.ms, 0)).padStart(7)}  total`);
 console.log('\n[package-win] Done — NSIS installer in release/ ("BookForge Setup *.exe").');
