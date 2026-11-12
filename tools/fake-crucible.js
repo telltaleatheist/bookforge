@@ -638,6 +638,7 @@ function sessionRoutes(behaviour = {}) {
           idleS: body.idle_s === undefined ? 300 : body.idle_s,
           maxWaitS: body.max_wait_s === undefined ? 3600 : body.max_wait_s,
           client: req.headers['x-crucible-client'] || null,
+          contextTokens: body.context_tokens === undefined ? null : body.context_tokens,
         };
         const refusal = behaviour.refuseOpen ? behaviour.refuseOpen(attempt, openAttempts) : null;
         if (refusal) return refuse(res, refusal);

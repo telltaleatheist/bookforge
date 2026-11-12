@@ -138,6 +138,63 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     }
   });
 
+  /*
+   * THE CONTEXT A RUN NEEDS (Owen, 2026-11-11/12: request it before the model
+   * loads, measured every time). It goes on the wire as `context_tokens`, and a
+   * row's session is reused only by an act it can hold.
+   */
+  await check('a stated context goes on the session; a later act that needs more gets its own', async () => {
+    const routes = sessionRoutes();
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    try {
+      const said = [];
+      await lease.withCrucibleRowScope('job_ctx', async () => {
+        await lease.withCrucibleLease(
+          { server, kind: 'model', id: 'qwen3.8-27b-4bit', act: 'clean', contextTokens: 7604, onLog: (l) => said.push(l) },
+          async () => {},
+        );
+        // Needs less than the session holds: reused, nothing reopened.
+        await lease.withCrucibleLease(
+          { server, kind: 'model', id: 'qwen3.8-27b-4bit', act: 'simplify', contextTokens: 5166, onLog: (l) => said.push(l) },
+          async () => {},
+        );
+        assert.strictEqual(routes.session.opened.length, 1, 'an act the session can hold reuses it');
+        // Needs more: the first is closed and one sized for this act is opened.
+        await lease.withCrucibleLease(
+          { server, kind: 'model', id: 'qwen3.8-27b-4bit', act: 'analysis', contextTokens: 12000, onLog: (l) => said.push(l) },
+          async () => {},
+        );
+      });
+      await lease.closeCrucibleRowLease('job_ctx');
+      await settle();
+      assert.deepStrictEqual(routes.session.opened.map((o) => o.contextTokens), [7604, 12000]);
+      assert.ok(said.some((l) => /needs 12000 tokens, so it is closed/.test(l)), 'the reopen is said, with the figure');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  await check('a session that stated no context is not reused by an act that states one', async () => {
+    const routes = sessionRoutes();
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    try {
+      await lease.withCrucibleRowScope('job_ctx2', async () => {
+        await lease.withCrucibleLease({ server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} }, async () => {});
+        await lease.withCrucibleLease(
+          { server, kind: 'model', id: 'qwen3.5-9b', act: 'simplify', contextTokens: 4000, onLog: () => {} },
+          async () => {},
+        );
+      });
+      await lease.closeCrucibleRowLease('job_ctx2');
+      await settle();
+      assert.deepStrictEqual(routes.session.opened.map((o) => o.contextTokens), [null, 4000]);
+    } finally {
+      await fake.close();
+    }
+  });
+
   await check('OUTSIDE a row scope a session is closed in its own finally', async () => {
     const routes = sessionRoutes();
     const fake = await startFakeCrucible(routes.handler);

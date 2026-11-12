@@ -135,6 +135,11 @@ export interface CrucibleLease {
   readonly act: string;
   /** True once the session has ended, by us or by the server. */
   readonly ended: boolean;
+  /**
+   * The least context it was opened with ({@link CrucibleLeaseOptions.contextTokens}),
+   * which Crucible guarantees its model was started at; null when it stated none.
+   */
+  readonly contextTokens: number | null;
   /** Close the session and give the machine back. Idempotent; never throws. */
   release(): Promise<void>;
 }
@@ -161,6 +166,13 @@ export interface CrucibleLeaseOptions {
   readonly touchMs?: number;
   /** Free text for the run's log. */
   readonly onLog?: (line: string) => void;
+  /**
+   * THE CONTEXT THIS RUN'S LARGEST REQUEST NEEDS, measured from its own book
+   * (Owen, 2026-11-11/12: request the context the run needs before the model
+   * loads, and measure every time). Sent as the session's `contextTokens`
+   * (Crucible 2.0.38): the model is never started under it. Absent states none.
+   */
+  readonly contextTokens?: number;
 }
 
 /** Every session this process currently holds. */
@@ -282,6 +294,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
     ...(kind === 'model' ? { model: leased } : {}),
     idleS: CRUCIBLE_SESSION_IDLE_S,
     maxWaitS: CRUCIBLE_SESSION_MAX_WAIT_S,
+    ...(options.contextTokens === undefined ? {} : { contextTokens: options.contextTokens }),
     onQueue: (position) => {
       const line = crucibleQueuedLine(server, position.position, position.of);
       if (!saidWaiting) {
@@ -347,6 +360,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
     kind,
     leased,
     act,
+    contextTokens: options.contextTokens ?? null,
     get ended(): boolean { return ended; },
     async release(): Promise<void> {
       if (ended) return;
@@ -625,17 +639,27 @@ async function withRowLease<T>(
   if (going !== undefined) await going;
   const held = rowLeases.get(row);
   if (held !== undefined && !held.ended) {
-    if (held.server === options.server) {
+    /*
+     * A SESSION THAT CANNOT HOLD THIS ACT'S REQUESTS IS NOT REUSED. Its model
+     * was started at no less than the context it stated; an act that needs more
+     * (or states a need against a session that stated none, whose context is
+     * unknown) closes it and opens one sized for itself.
+     */
+    const need = options.contextTokens;
+    const fits = need === undefined || (held.contextTokens !== null && held.contextTokens >= need);
+    if (held.server === options.server && fits) {
       options.onLog?.(
         `[crucible] reusing this run's session at ${options.server} (opened for ${held.act}); `
         + `this act is ${options.act}, so nothing else runs there between them.`,
       );
       return run(held);
     }
-    options.onLog?.(
-      `[crucible] this run's session is at ${held.server}; this act wants ${options.server}, so `
-      + 'the first is closed.',
-    );
+    options.onLog?.(held.server === options.server
+      ? `[crucible] this run's session at ${options.server} was opened for ${held.act} `
+        + `${held.contextTokens === null ? 'with no stated context' : `at ${held.contextTokens} tokens`}; `
+        + `this act needs ${need} tokens, so it is closed and one sized for this act is opened.`
+      : `[crucible] this run's session is at ${held.server}; this act wants ${options.server}, so `
+        + 'the first is closed.');
     rowLeases.delete(row);
     await held.release();
   }
