@@ -16,48 +16,11 @@ import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getManagedBinaryPath } from './update/managed-bins';
-import { isWrapHyphenBreak } from './ai-cleanup-prepass';
+// Lines and blocks are built by the ONE builder the Reader extension's PDF view
+// also uses — see shared/pdf/text-blocks.ts. This file only reads mutool's XML.
+import { PageBlockBuilder, type PdfTextBlock } from '../shared/pdf/text-blocks';
 
 const execAsync = promisify(exec);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Block line joining
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Join the laid-out lines of ONE mutool block into flowing prose.
- *
- * A mutool "block" is a paragraph-shaped group of lines that MuPDF found on the
- * page, so the breaks between them are line-wrap artifacts of the page geometry,
- * not authored structure. Joining them with a newline carried that geometry
- * straight through `<p>${text}</p>` into exported.epub and on into TTS, which
- * reads the ragged wrap as if it were meant — the text stops flowing naturally.
- * Measured across the 103 archived exported.epub files: 381,746 in-paragraph
- * newlines, 72.5% of them sitting mid-word and only 7.2% after terminal
- * punctuation.
- *
- * EXCEPTION — a wrap hyphen KEEPS its newline. `word-\nword` is the exact shape
- * the cleanup hyphen pre-pass matches (HYPHEN_SPLIT), and that pre-pass resolves
- * the pair from the book's own corpus: "inter-\nests" → interests, but
- * "seven-\nyear" → seven-year. The cheap "next char is lowercase ⇒ dehyphenate"
- * rule used by the downstream block joiners gets the second one wrong, so we do
- * NOT decide it here. Dropping the newline would delete the pre-pass's only
- * input and freeze every wrap hyphen as a permanent mid-word hyphen.
- *
- * Whitespace is otherwise left exactly as mutool emitted it: `\n` and ` ` are
- * both one character, so `char_count` is unchanged by this join, and the
- * category learner's thresholds keep their calibration.
- *
- * Caller guarantees a non-empty array (flushBlock returns early when empty).
- */
-function joinBlockLines(lines: string[]): string {
-  let out = lines[0];
-  for (let i = 1; i < lines.length; i++) {
-    const next = lines[i];
-    out += isWrapHyphenBreak(out, next) ? `\n${next}` : ` ${next}`;
-  }
-  return out;
-}
 
 /**
  * Decode XML character entities (both named and numeric)
@@ -457,221 +420,51 @@ export class MutoolBridge {
     let rawCharCount = 0;
     let parsedCharCount = 0;
 
-    let currentPage = -1;
-    let currentBlockLines: Array<{
-      text: string;
-      fontName: string;
-      fontSize: number;
-      isBold: boolean;
-      isItalic: boolean;
-      y: number;
-      height: number;
-      x: number;
-      width: number;
-    }> = [];
-    let blockStartX = Infinity;
-    let blockStartY = Infinity;
-    let blockEndX = 0;
-    let blockEndY = 0;
+    // A font persists across lines, blocks and pages until the next <font>, as
+    // the XML states it; each page's builder starts with the one in force.
+    let fontName = '';
+    let fontSize = 0;
+    let builder: PageBlockBuilder | null = null;
 
-    // Track current line data
-    let lineText = '';
-    let lineFontName = '';
-    let lineFontSize = 0;
-    let lineY = Infinity;  // Start at Infinity so first char sets the minimum
-    let lineHeight = 0;
-    let lineX = Infinity;
-    let lineEndX = 0;
-    let isBold = false;
-    let isItalic = false;
-
-    const flushLine = () => {
-      if (lineText.trim()) {
-        currentBlockLines.push({
-          text: lineText,
-          fontName: lineFontName,
-          fontSize: lineFontSize,
-          isBold,
-          isItalic,
-          y: lineY,
-          height: lineHeight,
-          x: lineX,
-          width: lineEndX - lineX
-        });
-
-        blockStartX = Math.min(blockStartX, lineX);
-        blockStartY = Math.min(blockStartY, lineY);
-        blockEndX = Math.max(blockEndX, lineEndX);
-        blockEndY = Math.max(blockEndY, lineY + lineHeight);
-      }
-      // Reset all line tracking variables for the next line
-      lineText = '';
-      lineX = Infinity;
-      lineEndX = 0;
-      lineY = Infinity;  // Reset to Infinity so first char sets the minimum
-      lineHeight = 0;
-    };
-
-    const flushBlock = () => {
-      if (currentBlockLines.length === 0) return;
-
-      const pageDim = pageDimensions[currentPage] || { width: 612, height: 792, originX: 0, originY: 0 };
-      const originX = pageDim.originX || 0;
-      const originY = pageDim.originY || 0;
-
-      // Apply origin offset to block coordinates
-      const adjustedStartX = blockStartX - originX;
-      const adjustedStartY = blockStartY - originY;
-      const adjustedEndX = blockEndX - originX;
-      const adjustedEndY = blockEndY - originY;
-
-      // Combine text into flowing prose (see joinBlockLines — page line-wraps are
-      // layout, not structure; only wrap hyphens keep their break).
-      const text = joinBlockLines(currentBlockLines.map(l => l.text));
-
-      // Find dominant font
-      const fontCounts = new Map<string, number>();
-      const sizeCounts = new Map<number, number>();
-      let totalBold = 0;
-      let totalItalic = 0;
-      let totalChars = 0;
-
-      for (const line of currentBlockLines) {
-        const len = line.text.length;
-        totalChars += len;
-        fontCounts.set(line.fontName, (fontCounts.get(line.fontName) || 0) + len);
-        sizeCounts.set(line.fontSize, (sizeCounts.get(line.fontSize) || 0) + len);
-        if (line.isBold) totalBold += len;
-        if (line.isItalic) totalItalic += len;
-      }
-
-      const dominantFont = [...fontCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
-      const dominantSize = [...sizeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 10;
-
-      // Determine region (use adjusted Y for percentage calculation)
-      const blockHeight = adjustedEndY - adjustedStartY;
-      const bottomPct = (adjustedStartY + blockHeight) / pageDim.height;
-      let region = 'body';
-      const trimmedText = text.trim();
-      const textLen = trimmedText.length;
-
-      const looksLikeBodyText = textLen > 100 ||
-        /[.!?]["']?\s+[A-Z]/.test(trimmedText) ||
-        (trimmedText.endsWith('.') && textLen > 60);
-
-      // Text blocks entirely within top 15% with 1-2 lines = header
-      // (headers often have title + page number on separate lines)
-      if (currentBlockLines.length <= 2 && bottomPct < 0.15 && !looksLikeBodyText) {
-        region = 'header';
-      } else if (bottomPct > 0.92 || (bottomPct > 0.88 && textLen < 50)) {
-        region = 'footer';
-      } else if (bottomPct > 0.70) {
-        region = 'lower';
-      }
-
-      // Use same ID format as mupdf.js extractPageBlocks for backwards compatibility.
-      //
-      // The id is hashed from the NEWLINE-JOINED form, which is what this block's
-      // text used to be. Block ids are persisted — manifest `deletedBlockIds`,
-      // chapter `blockId`/`mergedBlockIds`, paragraph breaks, per-block text
-      // corrections — so they must not shift when the join character changes.
-      // Re-hashing on the space-joined text would silently orphan every edit a
-      // user has already made to an existing project.
-      const idText = currentBlockLines.map(l => l.text).join('\n');
-      const blockId = this.hashId(`${currentPage}:${adjustedStartX.toFixed(0)},${adjustedStartY.toFixed(0)}:${idText.substring(0, 50)}`);
-
-      blocks.push({
-        id: blockId,
-        page: currentPage,
-        x: adjustedStartX,
-        y: adjustedStartY,
-        width: adjustedEndX - adjustedStartX,
-        height: adjustedEndY - adjustedStartY,
-        text,
-        font_size: dominantSize,
-        font_name: dominantFont,
-        char_count: text.length,
-        region,
-        category_id: '',
-        is_bold: totalBold > totalChars / 2,
-        is_italic: totalItalic > totalChars / 2,
-        is_superscript: false,
-        is_image: false,
-        is_footnote_marker: false,
-        line_count: currentBlockLines.length
-      });
-
-      // Reset
-      currentBlockLines = [];
-      blockStartX = Infinity;
-      blockStartY = Infinity;
-      blockEndX = 0;
-      blockEndY = 0;
+    const flushPage = () => {
+      if (!builder) return;
+      for (const b of builder.finish()) blocks.push(this.toMutoolBlock(b));
+      builder = null;
     };
 
     for (const line of lines) {
-      // Track page
       const pageMatch = line.match(/<page id="page(\d+)"/);
       if (pageMatch) {
-        flushLine();
-        flushBlock();
-        currentPage = parseInt(pageMatch[1]) - 1;
+        flushPage();
+        const page = parseInt(pageMatch[1]) - 1;
+        builder = new PageBlockBuilder(page, pageDimensions[page] || { width: 612, height: 792, originX: 0, originY: 0 });
+        builder.font(fontName, fontSize);
         continue;
       }
+      if (!builder) continue;
 
-      // Track blocks
-      if (line.includes('<block ')) {
-        flushLine();
-        flushBlock();
-        continue;
-      }
+      if (line.includes('<block ')) { builder.endBlock(); continue; }
+      if (line.includes('<line ')) { builder.endLine(); continue; }
 
-      // Track lines
-      if (line.includes('<line ')) {
-        flushLine();
-        continue;
-      }
-
-      // Track font
       const fontMatch = line.match(/<font name="([^"]*)" size="([^"]*)"/);
       if (fontMatch) {
-        lineFontName = fontMatch[1];
-        lineFontSize = parseFloat(fontMatch[2]);
-        const fontLower = lineFontName.toLowerCase();
-        isBold = fontLower.includes('bold');
-        isItalic = fontLower.includes('italic') || fontLower.includes('oblique');
+        fontName = fontMatch[1];
+        fontSize = parseFloat(fontMatch[2]);
+        builder.font(fontName, fontSize);
         continue;
       }
 
-      // Parse character
       if (line.includes('<char ')) rawCharCount++;
       const charMatch = line.match(/<char quad="([^"]*)"[^>]*c="([^"]*)"/);
       if (charMatch) {
         const quad = charMatch[1].split(' ').map(parseFloat);
-        const char = decodeXmlEntities(charMatch[2]);
-
         if (quad.length >= 8) {
-          // Quad has 4 corners (8 values): compute proper bounding box from all points
-          const xCoords = [quad[0], quad[2], quad[4], quad[6]];
-          const yCoords = [quad[1], quad[3], quad[5], quad[7]];
-          const x = Math.min(...xCoords);
-          const y = Math.min(...yCoords);
-          const x2 = Math.max(...xCoords);
-          const y2 = Math.max(...yCoords);
-
           parsedCharCount++;
-          lineText += char;
-          lineX = Math.min(lineX, x);
-          lineEndX = Math.max(lineEndX, x2);
-          lineY = Math.min(lineY, y);  // Track minimum Y (top of line)
-          lineHeight = Math.max(lineHeight, y2 - y);
+          builder.char(decodeXmlEntities(charMatch[2]), quad);
         }
       }
     }
-
-    // Flush final data
-    flushLine();
-    flushBlock();
+    flushPage();
 
     // Loud failure instead of silent zero text: chars exist in the raw stext
     // but none matched the quad-based regex — the mutool build in use emits a
@@ -681,6 +474,25 @@ export class MutoolBridge {
     }
 
     return blocks;
+  }
+
+  /**
+   * The app's block: the shared builder's block plus a persisted id.
+   *
+   * The id is hashed from the NEWLINE-JOINED form (`idText`), which is what this
+   * block's text used to be. Block ids are persisted — manifest `deletedBlockIds`,
+   * chapter `blockId`/`mergedBlockIds`, paragraph breaks, per-block text
+   * corrections — so they must not shift when the join character changes.
+   * Re-hashing on the space-joined text would silently orphan every edit a user
+   * has already made to an existing project.
+   */
+  private toMutoolBlock(b: PdfTextBlock): MutoolTextBlock {
+    const { idText, lines: _lines, ...rest } = b;
+    return {
+      ...rest,
+      id: this.hashId(`${b.page}:${b.x.toFixed(0)},${b.y.toFixed(0)}:${idText.substring(0, 50)}`),
+      category_id: '',
+    };
   }
 
   /**
