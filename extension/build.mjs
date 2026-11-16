@@ -1,7 +1,8 @@
 import * as esbuild from 'esbuild';
 import { cpSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
 
 const watch = process.argv.includes('--watch');
 // Distribution build: do NOT bake this machine's local TTS token into dist. Each
@@ -13,6 +14,15 @@ const dist = process.argv.includes('--dist');
 rmSync('dist', { recursive: true, force: true });
 mkdirSync('dist', { recursive: true });
 cpSync('static', 'dist', { recursive: true });
+
+// mupdf.js for the PDF reader view: an ES module with top-level await that
+// finds its .wasm beside itself, so it ships as files and pdf-viewer imports it
+// at run time. The same mupdf the app reads PDFs with (root package.json).
+{
+  const mupdfDist = dirname(createRequire(import.meta.url).resolve('mupdf'));
+  mkdirSync('dist/mupdf', { recursive: true });
+  for (const f of ['mupdf.js', 'mupdf-wasm.js', 'mupdf-wasm.wasm']) cpSync(join(mupdfDist, f), join('dist/mupdf', f));
+}
 
 // Bake the local TTS API token (and host/port) into the build so the RECORDER
 // connects without the user pasting it each time. Read from the app's userData
@@ -56,6 +66,8 @@ const options = {
     'src/offscreen.ts',
     'src/options.ts',
     'src/popup.ts',
+    // The PDF reader view (pdf.html). Loads mupdf.js at run time — see below.
+    'src/pdf-viewer.ts',
     // The tab recorder's AudioWorklet processor. Its own entry because
     // audioWorklet.addModule() loads a SCRIPT, and MV3's script-src 'self'
     // rejects a blob: URL — it has to be a real file in the package.

@@ -116,6 +116,27 @@ not under a wrapper folder).
 - When the current item finishes, playback advances to the next queued item; an
   empty queue stops.
 
+## Read a PDF
+
+Chrome shows a PDF in a viewer no extension can script, so the content script
+cannot run on it. On a PDF tab the popup offers **Open PDF in reader view**,
+which asks for the PDF's site (the file is downloaded again, with your
+cookies) and opens `pdf.html?src=<url>` in the same tab. Back returns to the
+PDF.
+
+The reader view reads the file with mupdf.js and the app's own rules —
+`shared/pdf/text-blocks.ts` builds the blocks and `shared/pdf/block-classify.ts`
+says what each one is — so running heads, page numbers and reference marks are
+left out, footnotes are shown small and never read, and line-end hyphens are
+settled from the document's own words, as the app's cleanup does. Then it
+loads `content.js`, so everything under **Use** works on it.
+
+- `file://` PDFs need **Allow access to file URLs** on the extension's
+  chrome://extensions card.
+- A scanned PDF has no text layer; the page says so.
+- mupdf.js (10 MB of WASM) is copied from the repo root's `node_modules/mupdf`
+  at build time, so run `npm install` at the root first.
+
 ## Record a tab
 
 The popup's **Recorder** section captures the decoded audio of the tab you are

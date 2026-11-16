@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF</title>
+  <style>
+    :root {
+      --bg: #fbfaf7;
+      --fg: #1f1f1f;
+      --muted: #6b6b6b;
+      --rule: #e2ded6;
+      --accent: #4f7cff;
+      --error: #b63b3b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #1b1c1f; --fg: #e6e4df; --muted: #9a978f; --rule: #34353a; --error: #ff8a80; }
+    }
+    html, body { margin: 0; background: var(--bg); color: var(--fg); }
+    body { font: 19px/1.6 Georgia, "Times New Roman", serif; }
+    .top {
+      position: sticky; top: 0; z-index: 1;
+      display: flex; gap: 16px; align-items: center; justify-content: space-between;
+      padding: 8px 16px; background: var(--bg); border-bottom: 1px solid var(--rule);
+      font: 13px/1.4 system-ui, sans-serif; color: var(--muted);
+    }
+    .top a { color: var(--accent); text-decoration: none; }
+    #progress { height: 3px; background: var(--rule); }
+    #progressFill { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
+    #status { max-width: 40rem; margin: 3rem auto; padding: 0 16px; font: 15px/1.5 system-ui, sans-serif; color: var(--muted); }
+    #status.error { color: var(--error); }
+    #book { max-width: 40rem; margin: 0 auto; padding: 1.5rem 16px 6rem; }
+    #book h1 { font-size: 1.6em; line-height: 1.25; margin: 1.6em 0 0.6em; }
+    #book h1.doc-title { margin-top: 0.4em; }
+    #book h2 { font-size: 1.3em; line-height: 1.3; margin: 1.4em 0 0.5em; }
+    #book h3 { font-size: 1.08em; margin: 1.2em 0 0.4em; }
+    #book p { margin: 0 0 0.9em; }
+    #book blockquote { margin: 0 0 0.9em 1.5em; font-style: italic; }
+    #book figcaption { font-size: 0.85em; color: var(--muted); margin: 0 0 0.9em; }
+    #book aside { font-size: 0.78em; line-height: 1.45; color: var(--muted); margin: 0 0 0.6em; padding-left: 0.8em; border-left: 2px solid var(--rule); }
+    #book sup { font-size: 0.65em; color: var(--muted); }
+    .page-mark { font: 11px/1 system-ui, sans-serif; color: var(--muted); text-align: right; margin: 1.4em 0 0.6em; border-top: 1px solid var(--rule); padding-top: 4px; user-select: none; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <span>BookForge Reader · PDF reader view</span>
+    <a id="original" hidden>Open the original PDF</a>
+  </div>
+  <div id="progress" hidden><div id="progressFill"></div></div>
+  <div id="status">Opening…</div>
+  <article id="book"></article>
+  <script src="pdf-viewer.js"></script>
+</body>
+</html>

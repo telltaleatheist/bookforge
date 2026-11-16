@@ -754,6 +754,52 @@ serverBtn.addEventListener('click', () => {
   send({ target: 'background', cmd: 'engine', op, voice: selectedVoice || undefined });
 });
 
+// ─── PDF tabs ─────────────────────────────────────────────────────────────────
+// Chrome's PDF viewer is a frame no extension can script, so a PDF is read in
+// the extension's own reader view (pdf.html, src/pdf-viewer.ts) instead.
+
+const pdfRow = $('pdfRow') as HTMLDivElement;
+const openPdfBtn = $('openPdf') as HTMLButtonElement;
+let pdfUrl: string | null = null;
+
+/** Is the active tab showing a PDF? By its address, else by asking the page. */
+async function detectPdf(): Promise<void> {
+  const tab = await activeTab();
+  const url = tab?.url ?? '';
+  if (tab?.id === undefined || !/^(https?|file):/.test(url)) return;
+  let isPdf = /\.pdf$/i.test(new URL(url).pathname);
+  if (!isPdf) {
+    try {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => document.contentType,
+      });
+      isPdf = r?.result === 'application/pdf';
+    } catch { /* a page we may not script is not one we can tell about */ }
+  }
+  if (!isPdf) return;
+  pdfUrl = url;
+  pdfRow.hidden = false;
+}
+
+openPdfBtn.addEventListener('click', async () => {
+  const tab = await activeTab();
+  if (!pdfUrl || tab?.id === undefined) return;
+  const u = new URL(pdfUrl);
+  if (u.protocol !== 'file:') {
+    // The reader view downloads the file itself, with the user's cookies, so it
+    // needs the PDF's origin. Asked here, inside the click (a user gesture).
+    const granted = await chrome.permissions.request({ origins: [`${u.protocol}//${u.host}/*`] });
+    if (!granted) return;
+  }
+  await chrome.tabs.update(tab.id, {
+    url: `${chrome.runtime.getURL('pdf.html')}?src=${encodeURIComponent(pdfUrl)}`,
+  });
+  window.close();
+});
+
+void detectPdf();
+
 toggleUiBtn.addEventListener('click', async () => {
   const tab = await activeTab();
   if (tab?.id === undefined) return;
