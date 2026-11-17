@@ -171,8 +171,41 @@ async function main(): Promise<void> {
   document.title = fileNameOf(url);
 
   say('Downloading…');
-  const bytes = await fetchBytes(url);
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await fetchBytes(url);
+  } catch (err) {
+    if (!url.startsWith('file:')) throw err;
+    // Chrome can refuse an extension a local file for reasons the extension
+    // cannot see. Picking the file is a read Chrome always allows, so offer it
+    // rather than leave the page at an error.
+    bytes = await pickLocalFile(err instanceof Error ? err.message : String(err), fileNameOf(url));
+  }
+  await openAndRender(bytes, url);
+}
 
+/** Ask the user to pick the file; resolves with its bytes. */
+function pickLocalFile(why: string, name: string): Promise<ArrayBuffer> {
+  say(`${why} You can still open it by choosing it here:`, true);
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,.pdf';
+  input.hidden = true;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'pick';
+  btn.textContent = `Choose ${name}.pdf…`;
+  btn.addEventListener('click', () => input.click());
+  statusEl.append(document.createElement('br'), btn, input);
+  return new Promise((resolve) => {
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (file) void file.arrayBuffer().then(resolve);
+    });
+  });
+}
+
+async function openAndRender(bytes: ArrayBuffer, url: string): Promise<void> {
   say('Loading the PDF reader…');
   const mupdf = await loadMupdf();
   let doc: Mupdf.Document;
