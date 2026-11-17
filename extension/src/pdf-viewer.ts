@@ -53,15 +53,38 @@ function fileNameOf(url: string): string {
   }
 }
 
+/**
+ * A local file. `fetch()` does not support the file: scheme at all, even for an
+ * extension that has been given file access — XMLHttpRequest does, so a file
+ * is read that way. Whether the access switch is on is ASKED, not guessed from
+ * the failure, so the message names the actual cause.
+ */
+async function readLocalFile(url: string): Promise<ArrayBuffer> {
+  const allowed = await chrome.extension.isAllowedFileSchemeAccess();
+  if (!allowed) {
+    throw new Error('Chrome would not let the extension open this file. Turn on "Allow access to file URLs" '
+      + 'for BookForge Reader in chrome://extensions, then reload this page.');
+  }
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url);
+    xhr.responseType = 'arraybuffer';
+    // A file: read reports status 0 on success.
+    xhr.onload = () => (xhr.response instanceof ArrayBuffer && xhr.response.byteLength > 0
+      ? resolve(xhr.response)
+      : reject(new Error(`Could not read ${decodeURIComponent(new URL(url).pathname)}: the file came back empty.`)));
+    xhr.onerror = () => reject(new Error(`Could not read ${decodeURIComponent(new URL(url).pathname)}. `
+      + 'Check that the file still exists and that Chrome can read it.'));
+    xhr.send();
+  });
+}
+
 async function fetchBytes(url: string): Promise<ArrayBuffer> {
+  if (url.startsWith('file:')) return readLocalFile(url);
   let res: Response;
   try {
     res = await fetch(url, { credentials: 'include' });
   } catch (err) {
-    if (url.startsWith('file:')) {
-      throw new Error('Chrome would not let the extension open this file. Turn on "Allow access to file URLs" '
-        + 'for BookForge Reader in chrome://extensions, then reload this page.');
-    }
     throw new Error(`Could not download the PDF: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!res.ok) throw new Error(`Could not download the PDF: the server answered ${res.status} ${res.statusText}`.trim());
