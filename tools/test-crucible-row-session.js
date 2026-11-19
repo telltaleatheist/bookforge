@@ -175,25 +175,30 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     }
   });
 
-  await check('a session that stated no context is not reused by an act that states one', async () => {
-    const routes = sessionRoutes();
-    const fake = await startFakeCrucible(routes.handler);
-    const server = nameFake(fake.url);
-    try {
-      await lease.withCrucibleRowScope('job_ctx2', async () => {
-        await lease.withCrucibleLease({ server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} }, async () => {});
-        await lease.withCrucibleLease(
-          { server, kind: 'model', id: 'qwen3.5-9b', act: 'simplify', contextTokens: 4000, onLog: () => {} },
-          async () => {},
-        );
-      });
-      await lease.closeCrucibleRowLease('job_ctx2');
-      await settle();
-      assert.deepStrictEqual(routes.session.opened.map((o) => o.contextTokens), [null, 4000]);
-    } finally {
-      await fake.close();
-    }
-  });
+  // 2.0.39: a session that stated none runs at its model's default (the fake's
+  // 16384), which Crucible reports on its state; reuse is judged against that.
+  for (const [need, opens] of [[4000, [null]], [20000, [null, 20000]]]) {
+    await check(`a session that stated no context runs at the default; an act needing ${need} `
+      + `${opens.length === 1 ? 'reuses it' : 'opens its own'}`, async () => {
+      const routes = sessionRoutes();
+      const fake = await startFakeCrucible(routes.handler);
+      const server = nameFake(fake.url);
+      try {
+        await lease.withCrucibleRowScope('job_ctx2', async () => {
+          await lease.withCrucibleLease({ server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} }, async () => {});
+          await lease.withCrucibleLease(
+            { server, kind: 'model', id: 'qwen3.5-9b', act: 'simplify', contextTokens: need, onLog: () => {} },
+            async () => {},
+          );
+        });
+        await lease.closeCrucibleRowLease('job_ctx2');
+        await settle();
+        assert.deepStrictEqual(routes.session.opened.map((o) => o.contextTokens), opens);
+      } finally {
+        await fake.close();
+      }
+    });
+  }
 
   await check('OUTSIDE a row scope a session is closed in its own finally', async () => {
     const routes = sessionRoutes();

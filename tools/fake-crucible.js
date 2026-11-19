@@ -534,7 +534,8 @@ function noServerHost() {
 /**
  * ── THE QUEUE-SESSION ROUTES (Crucible 1.0.76, which replaced leases) ───────
  *
- * `POST /v1/queue/sessions`, `GET /v1/queue/sessions/{id}/events`,
+ * `POST /v1/queue/sessions`, `GET /v1/queue/sessions/{id}` (its state),
+ * `GET /v1/queue/sessions/{id}/events`,
  * `POST /v1/queue/sessions/{id}/touch`, `DELETE /v1/queue/sessions/{id}` and
  * `DELETE /v1/queue/{id}` (a session's id there ends it) — crucible
  * docs/QUEUE.md and docs/internals/queue-sessions.md. A HANDLER a keeper's own
@@ -590,7 +591,10 @@ function sessionRoutes(behaviour = {}) {
   const stamp = '2026-10-01T00:00:00+00:00';
   const doc = (id, status, attempt, more = {}) => ({
     session_id: id, status, act: attempt.act, client: attempt.client, model: attempt.model,
-    context: null, position: null, idle_s: attempt.idleS, max_wait_s: attempt.maxWaitS, created: stamp,
+    // 2.0.39: an open text session reports the context its model started at: the
+    // stated figure, else the model's default (16384 here).
+    context: status !== 'queued' && attempt.model !== null ? (attempt.contextTokens ?? 16384) : null,
+    position: null, idle_s: attempt.idleS, max_wait_s: attempt.maxWaitS, created: stamp,
     opened_at: status === 'queued' ? null : stamp, idle_deadline: null, first_work_deadline: null, max_hold_deadline: null,
     items_run: 0, in_flight: [], stream_session: null, load_job: null, closed_at: null,
     reason: null, message: null, error: null, ...more,
@@ -713,6 +717,15 @@ function sessionRoutes(behaviour = {}) {
       }
 
       const end = /^\/v1\/queue\/sessions\/([^/]+)$/.exec(p) || /^\/v1\/queue\/([^/]+)$/.exec(p);
+      if (end && req.method === 'GET' && p.startsWith('/v1/queue/sessions/')) {
+        const entry = docs.get(decodeURIComponent(end[1]));
+        if (entry === undefined) {
+          return refuse(res, { status: 404, code: 'unknown_queue_session', message: 'no such session' });
+        }
+        send(res, 200, doc(entry.id, entry.status, entry.attempt, entry.status === 'closed'
+          ? { closed_at: stamp, reason: entry.reason, message: `closed (${entry.reason})` } : {}));
+        return true;
+      }
       if (end && req.method === 'DELETE') {
         const sessionId = decodeURIComponent(end[1]);
         const entry = docs.get(sessionId);

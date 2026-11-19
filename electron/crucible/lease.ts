@@ -136,8 +136,10 @@ export interface CrucibleLease {
   /** True once the session has ended, by us or by the server. */
   readonly ended: boolean;
   /**
-   * The least context it was opened with ({@link CrucibleLeaseOptions.contextTokens}),
-   * which Crucible guarantees its model was started at; null when it stated none.
+   * The context its model was started at, as Crucible reported it on open
+   * (`session.context`, 2.0.39): the stated {@link CrucibleLeaseOptions.contextTokens},
+   * a resident model's larger one, or the model's default when none was stated.
+   * Null for a session with no text model.
    */
   readonly contextTokens: number | null;
   /** Close the session and give the machine back. Idempotent; never throws. */
@@ -170,7 +172,9 @@ export interface CrucibleLeaseOptions {
    * THE CONTEXT THIS RUN'S LARGEST REQUEST NEEDS, measured from its own book
    * (Owen, 2026-11-11/12: request the context the run needs before the model
    * loads, and measure every time). Sent as the session's `contextTokens`
-   * (Crucible 2.0.38): the model is never started under it. Absent states none.
+   * (Crucible 2.0.39): a model loaded for the session starts at exactly this,
+   * not at its 16k default; a resident one already at this or more is kept.
+   * Absent states none, and the model starts at its default.
    */
   readonly contextTokens?: number;
 }
@@ -309,6 +313,24 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
     + `${kind === 'model' ? ` with ${leased} resident` : ''} — nothing from another client runs `
     + 'there until it closes');
 
+  /*
+   * THE CONTEXT ITS MODEL STARTED AT is on the session's state, not its handle
+   * (2.0.39). A read that fails leaves it unknown, and an unknown context is
+   * never reused for a stated need (withRowLease reopens instead), so the
+   * session is still released by its owner below rather than dropped here.
+   */
+  let context: number | null = null;
+  if (kind === 'model') {
+    try {
+      context = (await session.state()).context;
+      log(`crucible "${server}" session ${session.id}: ${leased} runs at ${context ?? 'an unreported'} tokens of context`
+        + `${options.contextTokens === undefined ? '' : ` (this run asked for ${options.contextTokens})`}`);
+    } catch (err) {
+      log(`crucible "${server}" session ${session.id}: its context could not be read `
+        + `(${err instanceof Error ? err.message : String(err)}); the next act that states a need opens its own`);
+    }
+  }
+
   let ended = false;
   const forget = (): void => {
     if (ended) return;
@@ -360,7 +382,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
     kind,
     leased,
     act,
-    contextTokens: options.contextTokens ?? null,
+    contextTokens: context,
     get ended(): boolean { return ended; },
     async release(): Promise<void> {
       if (ended) return;
@@ -641,9 +663,9 @@ async function withRowLease<T>(
   if (held !== undefined && !held.ended) {
     /*
      * A SESSION THAT CANNOT HOLD THIS ACT'S REQUESTS IS NOT REUSED. Its model
-     * was started at no less than the context it stated; an act that needs more
-     * (or states a need against a session that stated none, whose context is
-     * unknown) closes it and opens one sized for itself.
+     * runs at the context Crucible reported on open; an act that needs more (or
+     * a session with no text model) closes it and opens one sized for itself.
+     * One already at least that large is kept: reusing it costs no reload.
      */
     const need = options.contextTokens;
     const fits = need === undefined || (held.contextTokens !== null && held.contextTokens >= need);
