@@ -690,7 +690,7 @@ function sessionRoutes(behaviour = {}) {
           if (res.writableEnded) return;
           if (entry.status === 'open' && !entry.saidOpened) {
             entry.saidOpened = true;
-            frame('opened', {});
+            frame('opened', { context: doc(entry.id, 'open', entry.attempt).context });
           }
           if (entry.status === 'closed') {
             frame('closed', { reason: entry.reason, message: `closed (${entry.reason})`, items_run: 0, held_s: 0 });

@@ -137,7 +137,7 @@ export interface CrucibleLease {
   readonly ended: boolean;
   /**
    * The context its model was started at, as Crucible reported it on open
-   * (`session.context`, 2.0.39): the stated {@link CrucibleLeaseOptions.contextTokens},
+   * (`session.context`, 2.0.40): the stated {@link CrucibleLeaseOptions.contextTokens},
    * a resident model's larger one, or the model's default when none was stated.
    * Null for a session with no text model.
    */
@@ -313,22 +313,12 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
     + `${kind === 'model' ? ` with ${leased} resident` : ''} — nothing from another client runs `
     + 'there until it closes');
 
-  /*
-   * THE CONTEXT ITS MODEL STARTED AT is on the session's state, not its handle
-   * (2.0.39). A read that fails leaves it unknown, and an unknown context is
-   * never reused for a stated need (withRowLease reopens instead), so the
-   * session is still released by its owner below rather than dropped here.
-   */
-  let context: number | null = null;
-  if (kind === 'model') {
-    try {
-      context = (await session.state()).context;
-      log(`crucible "${server}" session ${session.id}: ${leased} runs at ${context ?? 'an unreported'} tokens of context`
-        + `${options.contextTokens === undefined ? '' : ` (this run asked for ${options.contextTokens})`}`);
-    } catch (err) {
-      log(`crucible "${server}" session ${session.id}: its context could not be read `
-        + `(${err instanceof Error ? err.message : String(err)}); the next act that states a need opens its own`);
-    }
+  // THE CONTEXT ITS MODEL STARTED AT, from the ticket or the `opened` event
+  // (2.0.40); null for a session with no text model.
+  const context = session.context;
+  if (context !== null) {
+    log(`crucible "${server}" session ${session.id}: ${leased} runs at ${context} tokens of context`
+      + `${options.contextTokens === undefined ? '' : ` (this run asked for ${options.contextTokens})`}`);
   }
 
   let ended = false;
