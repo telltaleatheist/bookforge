@@ -482,6 +482,17 @@ export function asSessionWait(err: unknown, server: string, act: string): unknow
     }
     return new CrucibleRefused(err.status, refusal.code ?? err.code, refusal.message, err.details);
   }
+  // A MODEL THAT DID NOT FIT WHEN IT LOADED is the same weather met one step
+  // later: the forecast passed and the engine found the card short (the 27B
+  // Simplify of 2026-11-11). It waits like the up-front refusal; any other
+  // load failure stays the misconfiguration it names.
+  if (err instanceof CrucibleSessionClosed && err.reason === 'load_failed') {
+    const refusal = refusalOf(err);
+    if (crucibleSessionRefusalIsWeather(refusal.code)) {
+      const line = crucibleNoRoomLine(server, refusal.message);
+      return new CrucibleSessionWait(line, { busyLine: line });
+    }
+  }
   if (err instanceof CrucibleSessionClosed && err.reason !== 'load_failed') {
     const line = crucibleRemovedLine(server, err.reason, err.message);
     switch (crucibleRemovalDisposition(err.reason)) {

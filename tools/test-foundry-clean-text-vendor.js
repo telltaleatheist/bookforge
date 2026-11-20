@@ -507,7 +507,17 @@ const VENDOR_LEAVES = '770480d';
  * calls become `replaceFile` from src/fs-replace.ts, plus its import. I/O, NOT a rule move — n19 stays.
  * This side took the same two lines through electron/fs-retry.ts's `renameWithRetry`.
  */
-const ONE_DOOR_BASELINE = 'afba881';
+/*
+ * MOVED 2026-11-19, afba881 → 79a36ef (foundry-core 0.1.5, what BookForge ships), read in full: one
+ * commit touches these files besides 33ab5e2 (the move to packages/foundry-core, a rename with no byte
+ * changed). 734a876 (a run states the context it needs before its model loads): the loop in
+ * `askAboutEach` that builds each ask's model input is lifted, line for line, into an exported
+ * `normalizerInputs`, which `askAboutEach` now calls, so a measuring run sizes the very inputs a real
+ * pass sends. DRIVER only, NOT a rule move: no rule table, validator, prompt or constant changed, so n19
+ * stays. This side's serial driver needs nothing. (bf02412, after 0.1.5, moves a doc comment back onto
+ * `askAboutEach`; the next foundry-core adopted repins for it.)
+ */
+const ONE_DOOR_BASELINE = '79a36ef';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -569,7 +579,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '9613c21f1ad0596fae586c7bcac4e97ffeb1104e3e83039586fd23f9ef2e9376',
+      sha256: '868a9cecc4469f7d1e64d629e1755ac4d788fe34ba3156377da4a3b7e2877dc6',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -621,7 +631,10 @@ const FILES = [
         + 'toAppliedOffset. Not a rule move; the same lines here. '
         + 'REPINNED 2026-10-10 for afba881: the two renames that put the record and the text in place go '
         + 'through src/fs-replace.ts (a holder on the library share waited out) and its import. Not a rule '
-        + 'move — I/O only; the same lines here, through electron/fs-retry.ts.',
+        + 'move — I/O only; the same lines here, through electron/fs-retry.ts. '
+        + 'REPINNED 2026-11-19 for 734a876 (shipped in foundry-core 0.1.5): the input-building loop of '
+        + 'askAboutEach lifted, unchanged, into an exported normalizerInputs (so a measured run sizes the '
+        + 'inputs a real pass sends). Not a rule move; the driver only, and nothing here.',
     },
   },
   {

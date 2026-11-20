@@ -467,6 +467,12 @@ async function runCleanLines(opts, deps) {
           ...removalArgs(opts),
         ];
         log(`[clean-lines] triage: ${installed.path} ${triageArgs.join(' ')} (act decide, model ${triageEngine.model})`);
+        // Measured before the model loads, as the app's queue measures it (Owen, 2026-11-12: measure every time).
+        const triageContext = await d.measureFoundryContext(triageArgs, {
+          ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+          env: triageEngine.env,
+        });
+        log(`[clean-lines] triage: ${triageContext === undefined ? 'no request to size' : `the largest request needs ${triageContext} tokens`}`);
         const tri = await d.withCrucibleTextActLease(triageEngine, () => d.runFoundry(triageArgs, {
           ...(opts.signal === undefined ? {} : { signal: opts.signal }),
           env: triageEngine.env,
@@ -474,7 +480,7 @@ async function runCleanLines(opts, deps) {
             const trimmed = line.trim();
             if (trimmed.length > 0) log(`[foundry] ${trimmed}`);
           },
-        }));
+        }), triageContext);
         if (tri.code !== 0) {
           throw new Error(`foundry clean-triage exited ${tri.code}. What it said:\n${(tri.stderr || '').slice(-4000)}`);
         }
@@ -507,9 +513,18 @@ async function runCleanLines(opts, deps) {
         if (trimmed.length > 0) log(`[foundry] ${trimmed}`);
       },
     });
-    result = crucible === null
-      ? await spawnEngine()
-      : await d.withCrucibleTextActLease(crucible, spawnEngine);
+    if (crucible === null) {
+      result = await spawnEngine();
+    } else {
+      // The app's narration cleanup measures the same way (electron/narration-clean-text.ts): the engine plans
+      // this exact run, writing nothing, and the session loads the model at that context.
+      const cleanContext = await d.measureFoundryContext(args, {
+        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+        env: crucible.env,
+      });
+      log(`[clean-lines] ${cleanContext === undefined ? 'the rules settle every block; no context to state' : `the largest request needs ${cleanContext} tokens; the model loads at that`}`);
+      result = await d.withCrucibleTextActLease(crucible, spawnEngine, cleanContext);
+    }
   } finally {
     // Success or failure alike: a failed run must hand the card back exactly as a
     // finished one does.
@@ -572,6 +587,7 @@ function defaultDeps() {
   return {
     foundryVersion: bridge.foundryVersion,
     runFoundry: bridge.runFoundry,
+    measureFoundryContext: bridge.measureFoundryContext,
     cleanTextEngineSettings: door.cleanTextEngineSettings,
     parseCleanTextProgress: door.parseCleanTextProgress,
     textServerRoute: textServer.textServerRoute,

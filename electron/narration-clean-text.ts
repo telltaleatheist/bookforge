@@ -607,7 +607,7 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
       + 'Nothing was written.');
   }
 
-  const { foundryEngineCommand, runFoundry } = await import('./foundry-bridge.js');
+  const { foundryEngineCommand, measureFoundryContext, runFoundry } = await import('./foundry-bridge.js');
   const { readNarrationTextStamp } = await import('./epub-processor.js');
 
   // No engine-version gate: the `--epub` failsafe door is in the engine vendored
@@ -731,7 +731,24 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
       console.log(`[NARRATION-TEXT] ${line}`);
     },
   });
-  const result = await withCrucibleTextActLease(crucible, spawnEngine);
+  /*
+   * ── THE CONTEXT THIS BOOK NEEDS, MEASURED BEFORE THE MODEL LOADS ──────────
+   *
+   * Owen, 2026-11-12: "measure every time. We don't need 16k if the paragraphs
+   * are all small. This should apply to Bookforge as well." The engine plans
+   * this exact run with `--measure-context` (writing nothing, asking no server)
+   * and the session asks Crucible to load the model at that context. A book the
+   * rules finish alone states none.
+   */
+  opts.onProgress?.(0, 0, 'Measuring the context this book needs');
+  const contextTokens = await measureFoundryContext(args, {
+    env: crucible.env,
+    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+  });
+  console.log(contextTokens === undefined
+    ? '[NARRATION-TEXT] the rules settle every block, so the session states no context'
+    : `[NARRATION-TEXT] the largest request needs ${contextTokens} tokens; the model loads at that`);
+  const result = await withCrucibleTextActLease(crucible, spawnEngine, contextTokens);
 
   if (result.code !== 0) {
     throw new Error(

@@ -200,6 +200,19 @@ const { check, summary } = makeChecker();
     assert.strictEqual(lease.asSessionWait(err, 'mac', 'clean'), err);
   });
 
+  // 2026-11-11: the 27B Simplify passed Crucible's forecast and then vLLM found
+  // the card 0.05 GiB short. That is the up-front refusal's weather, one step on.
+  await check('a load_failed session whose error is no room on the card WAITS, as the refusal does', () => {
+    const said = 'qwen3.8-27b-4bit needs 1.0 GiB of KV cache and the card has 0.95 GiB';
+    const err = new sdk.CrucibleSessionClosed(409, said,
+      { session_id: 'ses-8', reason: 'load_failed', error: { code: 'insufficient_kv_cache', message: said } },
+      { sessionId: 'ses-8', reason: 'load_failed' });
+    const wait = lease.asSessionWait(err, 'pc', 'simplify');
+    assert.ok(wait instanceof lease.CrucibleSessionWait, `got ${wait}`);
+    assert.strictEqual(wait.removedLine, undefined, 'a failed load is never an operator removal');
+    assert.ok(wait.busyLine.includes(said), wait.busyLine);
+  });
+
   // 2026-10-16: a cleanup and a pronunciation guide were taken out of BookForge's
   // queue as "removed by an operator" because a game held 4 GiB of the card and
   // the server refused the session's KV cache. Refused is the server saying no.

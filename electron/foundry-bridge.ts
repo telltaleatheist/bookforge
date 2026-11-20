@@ -51,6 +51,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { engineBundlePath } from '@owen/foundry-core/engine';
+import { readContextNeed } from '@owen/foundry-core/node/context-need';
 
 // The one owner of the endpoint header map, and of removing it. See the
 // comment at the spawn in `runFoundry`.
@@ -203,6 +204,42 @@ export function runFoundry(args: string[], opts: FoundryRunOptions = {}): Promis
       finish(() => resolve({ code: code ?? -1, stdout, stderr }));
     });
   });
+}
+
+/**
+ * THE CONTEXT A RUN'S LARGEST REQUEST NEEDS, asked of the engine before the run
+ * (Owen, 2026-11-12: "measure every time. We don't need 16k if the paragraphs
+ * are all small. This should apply to Bookforge as well").
+ *
+ * The same argv with `--measure-context`: the engine plans the run exactly as
+ * it would, prints one `FOUNDRY_CONTEXT_NEED` line and exits, writing nothing
+ * and asking no server. The figure goes on the Crucible session, which loads
+ * the model at exactly that context.
+ *
+ * Returns undefined for a run that would ask no model anything (the rules
+ * settle every block), so the session states no context. A measure that fails
+ * or prints no figure throws with the engine's own words: it planned the very
+ * run that is about to be made, so its failure is that run's failure, said
+ * before a model is loaded for it.
+ */
+export async function measureFoundryContext(
+  args: readonly string[],
+  opts: Pick<FoundryRunOptions, 'env' | 'signal' | 'cwd'> = {},
+): Promise<number | undefined> {
+  const measuring = [...args, '--measure-context'];
+  const result = await runFoundry(measuring, opts);
+  if (result.code !== 0) {
+    throw new Error(
+      `the Foundry engine could not measure the context for "${args[0]}" (exit ${result.code}): `
+      + `${result.stderr.trim() || result.stdout.trim() || 'it said nothing'}`);
+  }
+  const need = readContextNeed(result.stdout);
+  if (need === null) {
+    throw new Error(
+      `the Foundry engine measured "${args[0]}" and printed no context figure. What it said:\n`
+      + `${result.stdout.trim()}\n${result.stderr.trim()}`);
+  }
+  return need.contextTokens ?? undefined;
 }
 
 export interface FoundryVersion {

@@ -271,7 +271,7 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     const input = path.join(dir, 'lines.txt');
     const output = path.join(dir, 'out.txt');
     fs.writeFileSync(input, 'Chapter 1 begins.\nHe nodded.\n', 'utf8');
-    const spawns = []; const leases = [];
+    const spawns = []; const leases = []; const measured = [];
     const crucible = {
       server: 'pc', endpoint: 'http://c:7100/v1/openai', model: 'qwen3.5-9b', act: 'clean', maskedHeaders: '{}',
       env: { FOUNDRY_ENDPOINT_HEADERS: JSON.stringify({ Authorization: 'Bearer t', 'X-Crucible-Api': '1', 'X-Crucible-Act': 'clean' }) },
@@ -282,7 +282,15 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
       processTextVenueHost: () => ({}),
       decideWhereTextActRuns: async () => ({ where: 'crucible', server: 'pc', because: 'the test' }),
       resolveCrucibleTextEngine: async (act) => { assert.strictEqual(act, 'clean'); return crucible; },
-      withCrucibleTextActLease: async (engine, run) => { leases.push({ act: engine.act, model: engine.model }); return run(); },
+      withCrucibleTextActLease: async (engine, run, contextTokens) => {
+        leases.push({ act: engine.act, model: engine.model, contextTokens });
+        return run();
+      },
+      // Each act is measured with ITS OWN argv and credential before its lease (Owen, 2026-11-12).
+      measureFoundryContext: async (args, opts) => {
+        measured.push({ cmd: args[0], act: JSON.parse(opts.env.FOUNDRY_ENDPOINT_HEADERS)['X-Crucible-Act'], args });
+        return args[0] === 'clean-triage' ? 2358 : 7604;
+      },
       parseCleanTextProgress: () => null,
       runFoundry: async (args, opts) => {
         const at = (flag) => args[args.indexOf(flag) + 1];
@@ -302,7 +310,12 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     assert.deepStrictEqual(spawns.map((s) => s.cmd), ['clean-triage', 'clean-text']);
     assert.strictEqual(spawns[0].act, 'decide', 'the triage is asked as decide');
     assert.strictEqual(spawns[1].act, 'clean', 'the cleaner is asked as clean');
-    assert.deepStrictEqual(leases, [{ act: 'decide', model: 'qwen3.5-9b' }, { act: 'clean', model: 'qwen3.5-9b' }]);
+    assert.deepStrictEqual(leases, [
+      { act: 'decide', model: 'qwen3.5-9b', contextTokens: 2358 },
+      { act: 'clean', model: 'qwen3.5-9b', contextTokens: 7604 },
+    ], 'each lease states the context its own act measured');
+    assert.deepStrictEqual(measured.map((m) => [m.cmd, m.act]), [['clean-triage', 'decide'], ['clean-text', 'clean']]);
+    assert.deepStrictEqual(measured.map((m) => m.args), spawns.map((s) => s.args), 'the measure plans the very run that follows');
     const cleanArgs = spawns[1].args;
     assert.strictEqual(cleanArgs[cleanArgs.indexOf('--triage') + 1], result.verdictsPath, 'clean-text reads the verdicts');
     // THE REMOVAL (2026-09-29): on unless said, as the app's box, and the SAME on both halves.

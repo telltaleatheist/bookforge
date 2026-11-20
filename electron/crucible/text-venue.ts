@@ -655,6 +655,12 @@ export async function resolveCrucibleTextEngine(
 export async function withCrucibleTextActLease<T>(
   engine: CrucibleTextEngine,
   run: () => Promise<T>,
+  /**
+   * The context the act's largest request needs, measured from its own book
+   * (Owen, 2026-11-12: measure every time). The model loads at exactly this
+   * (Crucible 2.0.39); absent, it loads at its default.
+   */
+  contextTokens?: number,
 ): Promise<T> {
   const { withCrucibleLease } = await import('./lease.js');
   // Only the TAKE is translated. Once `run` has begun, whatever it throws is the
@@ -663,7 +669,10 @@ export async function withCrucibleTextActLease<T>(
   let started = false;
   try {
     return await withCrucibleLease(
-      { server: engine.server, kind: 'model', id: engine.model, act: engine.act },
+      {
+        server: engine.server, kind: 'model', id: engine.model, act: engine.act,
+        ...(contextTokens === undefined ? {} : { contextTokens }),
+      },
       async () => {
         started = true;
         return run();
