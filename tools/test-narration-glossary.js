@@ -710,6 +710,33 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.doesNotMatch(glossary.GLOSSARY_SYSTEM, /\besp\b|Wolf/);
   });
 
+  // Owen, 2026-11-12: measure every time, BookForge as well. The guide's session is
+  // sized for its largest request, from the forms alone, before the model loads.
+  await test('the guide\'s context need covers every request it can make, and grows with the book', () => {
+    const { requestNeed } = require('@owen/foundry-core/node/context-need');
+    assert.strictEqual(glossary.glossaryContextNeed([]), null, 'nothing to ask states no context');
+    const need = glossary.glossaryContextNeed(BOOK);
+    assert.ok(Number.isInteger(need) && need > 0, `a figure: ${need}`);
+    // Every request the run can actually send for these forms fits under it.
+    for (const form of BOOK) {
+      const meanings = (MEANINGS[form.key] || { senses: [] }).senses;
+      const sentences = form.occurrences.map((o) => o.sentence).slice(0, 6);
+      const sent = [
+        requestNeed(glossary.GLOSSARY_SYSTEM, glossary.questionFor(form), 1500),
+        requestNeed(glossary.GLOSSARY_SYSTEM, glossary.questionFor(form, { sentences, meanings }), 1500),
+        ...form.occurrences.map((o) => requestNeed(glossary.placingState(form),
+          `${glossary.placingInstructions(form)}\n${glossary.placingItem(o)}\n${JSON.stringify(glossary.placingOptions(meanings))}`, 1)),
+      ];
+      for (const one of sent) assert.ok(one <= need, `${form.key}: a request of ${one} over the stated ${need}`);
+    }
+    const long = 'The pinnace circled the planet Wolf IV for an hour, and then another, and nobody aboard said anything. '.repeat(12);
+    const longer = { ...WOLF, occurrences: [...WOLF.occurrences, occ('e-999', 0, 'Wolf IV', long)] };
+    assert.ok(glossary.glossaryContextNeed([longer]) > glossary.glossaryContextNeed([WOLF]),
+      'a longer sentence in the book is a larger second look');
+    // Far under the 16k a model loads at by default: the point of measuring.
+    assert.ok(need < 16384, `${need}`);
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exitCode = failed === 0 ? 0 : 1;
 })();

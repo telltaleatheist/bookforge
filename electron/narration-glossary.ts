@@ -94,6 +94,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { CrucibleBusy, CrucibleUnreachable } from '@crucible/client';
+import { requestNeed } from '@owen/foundry-core/node/context-need';
 
 import { asSessionWait, takeCrucibleLease, type CrucibleLease } from './crucible/lease';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
@@ -772,6 +773,44 @@ export type GlossaryPlacer = (
 /** The occurrences one decide request carries: the shared state is primed once per request. */
 const PLACE_BATCH = 40;
 
+/** The answer room one meanings question asks for (`chatAsker`). */
+const MEANINGS_ANSWER_TOKENS = 1500;
+/** At most this many sentences go back in a second look (`nowhere.slice(0, 6)`) or a focused ask. */
+const SECOND_LOOK_SENTENCES = 6;
+
+/**
+ * THE CONTEXT THE LARGEST REQUEST OF THIS GUIDE CAN NEED, from the book alone,
+ * before the model loads (Owen, 2026-11-12: "measure every time … This should
+ * apply to Bookforge as well"). Counted with Foundry's arithmetic
+ * (`requestNeed`, @owen/foundry-core), so the guide and the engine's acts ask
+ * Crucible for context the same way.
+ *
+ * The first question about a form is known exactly. What follows it depends on
+ * the model's own answers, so it is BOUNDED, not guessed:
+ *  - a second look (or a focused ask) carries at most six of the form's
+ *    sentences, so its six longest are counted, and the meanings it hands back
+ *    came out of an answer capped at {@link MEANINGS_ANSWER_TOKENS}, so that is
+ *    their room;
+ *  - a placement carries the form's state, its meanings as options (the same
+ *    room) and one sentence, so its longest is counted, with one token of answer.
+ * Null when no form needs the model.
+ */
+export function glossaryContextNeed(forms: readonly PrintedForm[]): number | null {
+  let need: number | null = null;
+  const most = (n: number): void => { need = need === null ? n : Math.max(need, n); };
+  for (const form of forms) {
+    const longest = [...form.occurrences].map((o) => o.sentence)
+      .sort((a, b) => b.length - a.length).slice(0, SECOND_LOOK_SENTENCES);
+    most(requestNeed(GLOSSARY_SYSTEM, questionFor(form), MEANINGS_ANSWER_TOKENS));
+    most(requestNeed(GLOSSARY_SYSTEM, questionFor(form, { sentences: longest, meanings: [] }), MEANINGS_ANSWER_TOKENS)
+      + MEANINGS_ANSWER_TOKENS);
+    const longestItem = form.occurrences.map(placingItem).reduce((a, b) => (b.length > a.length ? b : a), '');
+    most(requestNeed(placingState(form), `${placingInstructions(form)}
+${longestItem}`, 1) + MEANINGS_ANSWER_TOKENS);
+  }
+  return need;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 5: the guide Foundry is handed
 // ─────────────────────────────────────────────────────────────────────────────
@@ -939,7 +978,7 @@ function chatAsker(server: string, model: string, signal: AbortSignal): Glossary
       model,
       act: 'analysis',
       temperature: 0,
-      maxTokens: 1500,
+      maxTokens: MEANINGS_ANSWER_TOKENS,
       thinking: false,
       messages: [
         { role: 'system', content: GLOSSARY_SYSTEM },
@@ -1153,8 +1192,15 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
       // An upstream-routed class has no card to hold (text-acts.ts); a local one needs its turn.
       if (opts.ask === undefined && !isUpstreamModelId(model)) {
         try {
+          // Sized for this guide's largest request, measured from the forms still to decide.
+          const pending = new Set([...toAsk, ...toPlace()].map(formKey));
+          const contextTokens = glossaryContextNeed(forms.filter((f) => pending.has(formKey(f))));
+          report(contextTokens === null
+            ? 'glossary: no request to size'
+            : `glossary: the largest request can need ${contextTokens} tokens; the model loads at that`);
           lease = await takeCrucibleLease({
             server, kind: 'model', id: model, act: 'analysis', signal,
+            ...(contextTokens === null ? {} : { contextTokens }),
             onQueue: (line) => report(`glossary: ${line}`),
             onLog: (line) => console.log(`[GLOSSARY] ${line}`),
           });
