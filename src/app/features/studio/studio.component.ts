@@ -8,9 +8,7 @@ import {
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
 import { StudioItem, StudioItemType, MainTab } from './models/studio.types';
-import { sortStudioItems } from './models/studio-sort';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
-import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
 import { StudioVersionsComponent } from './components/studio-versions/studio-versions.component';
 import { StudioAnalysisModalComponent } from './components/studio-analysis-modal/studio-analysis-modal.component';
 import { StudioAnalysisTarget, studioManifestProjectId } from './analysis-target';
@@ -38,11 +36,12 @@ import { isBookPath } from '@shared/document/book-path';
 /**
  * StudioComponent - Unified workspace for books and articles
  *
- * Two views: Browse (cover grid) and Workspace (list + book tabs).
+ * One view: the list on the left, the selected book's tabs on the right. The
+ * Browse cover grid was removed on 2026-11-27 (Owen: "it looks terrible").
  * Book tabs: Versions | Content (articles) | Analytics | Skipped, plus Listen
  * (its own window). Content analysis opens as a source-locked modal, and so does
  * processing: the narration modal is the one door onto a run, opened from the
- * Versions page, the Browse card and an article's Finalize. The Process pipeline
+ * Versions page and an article's Finalize. The Process pipeline
  * page that used to be a tab here was erased on 2026-08-27; what is left in its
  * slot is the Correct sentences surface, which is entered from one button and
  * leaves the way it came.
@@ -62,7 +61,6 @@ import { isBookPath } from '@shared/document/book-path';
     CorrectSentencesComponent,
     MetadataEditorComponent,
     SkippedChunksPanelComponent,
-    StudioBrowseComponent,
     StudioVersionsComponent,
     StudioAnalysisModalComponent,
     AnalyticsPanelComponent
@@ -83,53 +81,6 @@ import { isBookPath } from '@shared/document/book-path';
         </div>
       }
 
-      <!-- Top bar: view toggle (Browse grid vs Workspace) -->
-      <div class="studio-topbar">
-        <div class="view-toggle">
-          <button [class.active]="viewMode() === 'browse'" (click)="viewMode.set('browse')">Browse</button>
-          <button [class.active]="viewMode() === 'workspace'" (click)="viewMode.set('workspace')">Workspace</button>
-        </div>
-
-        <!-- Shared sort control (Browse + Workspace order identically) -->
-        <div class="sort-control">
-          <desktop-select
-            class="sort-select"
-            [options]="sortOptions"
-            [ngModel]="studioService.sort().field"
-            (ngModelChange)="studioService.setSortField($event)"
-            ariaLabel="Sort by"
-          />
-          <button
-            class="sort-dir"
-            [disabled]="studioService.sort().field === 'custom'"
-            (click)="studioService.toggleSortDirection()"
-            [title]="studioService.sort().direction === 'asc' ? 'Ascending' : 'Descending'"
-          >
-            {{ studioService.sort().direction === 'asc' ? '↑' : '↓' }}
-          </button>
-        </div>
-
-        @if (viewMode() === 'browse') {
-          <div class="topbar-search">
-            <input
-              type="text"
-              placeholder="Search titles, authors, tags..."
-              [ngModel]="searchQuery()"
-              (ngModelChange)="searchQuery.set($event)"
-              class="search-input"
-            />
-            @if (searchQuery()) {
-              <button class="search-clear" (click)="searchQuery.set('')">&times;</button>
-            }
-          </div>
-          <div class="topbar-actions">
-            <span class="browse-count">{{ browseItems().length }} books</span>
-            <button class="btn-header-action" (click)="studioService.loadAll()" title="Refresh">↻</button>
-            <button class="btn-add" (click)="showAddModal.set(true)" title="Add Content">+</button>
-          </div>
-        }
-      </div>
-
       <!-- The library could not be listed. Said here rather than swallowed,
            because "the list did not change" and "the list could not be read"
            look identical on screen and only one of them means the books below
@@ -141,32 +92,6 @@ import { isBookPath } from '@shared/document/book-path';
         </div>
       }
 
-      @if (viewMode() === 'browse') {
-        @if (allTags().length > 0) {
-          <div class="tag-filter-bar browse-tags">
-            <button class="tag-filter-pill" [class.active]="!activeTag()" (click)="activeTag.set(null)">All</button>
-            @for (tag of allTags(); track tag) {
-              <button class="tag-filter-pill" [class.active]="activeTag() === tag" (click)="toggleTag(tag)">{{ tag }}</button>
-            }
-          </div>
-        }
-        <div class="tag-filter-bar browse-narration">
-          <span class="filter-group-label">Narration</span>
-          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'all'" (click)="narrationFilter.set('all')">All</button>
-          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'professional'" (click)="narrationFilter.set('professional')">Professional</button>
-          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'tts'" (click)="narrationFilter.set('tts')">TTS</button>
-          <button class="tag-filter-pill" [class.active]="narrationFilter() === 'none'" title="Books with no audiobook attached yet" (click)="narrationFilter.set('none')">No audiobook</button>
-        </div>
-        <app-studio-browse
-          [items]="browseItems()"
-          [selectedId]="selectedItemId()"
-          (open)="openInWorkspace($event)"
-          (processRequested)="processFromBrowse($event)"
-          (exportRequested)="exportFromBrowse($event)"
-          (reclassifyRequested)="reclassifyFromBrowse($event)"
-          (reorder)="onBrowseReorder($event)"
-        />
-      } @else {
       <desktop-split-pane [primarySize]="340" [minSize]="200" [maxSize]="500">
         <!-- Left Panel: List -->
         <div pane-primary class="list-panel">
@@ -192,6 +117,24 @@ import { isBookPath } from '@shared/document/book-path';
             @if (searchQuery()) {
               <button class="search-clear" (click)="searchQuery.set('')">&times;</button>
             }
+          </div>
+          <div class="tag-filter-bar sort-filter">
+            <span class="filter-group-label">Sort</span>
+            <desktop-select
+              class="sort-select"
+              [options]="sortOptions"
+              [ngModel]="studioService.sort().field"
+              (ngModelChange)="studioService.setSortField($event)"
+              ariaLabel="Sort by"
+            />
+            <button
+              class="sort-dir"
+              [disabled]="studioService.sort().field === 'custom'"
+              (click)="studioService.toggleSortDirection()"
+              [title]="studioService.sort().direction === 'asc' ? 'Ascending' : 'Descending'"
+            >
+              {{ studioService.sort().direction === 'asc' ? '↑' : '↓' }}
+            </button>
           </div>
           @if (allTags().length > 0) {
             <div class="tag-filter-bar">
@@ -455,7 +398,6 @@ import { isBookPath } from '@shared/document/book-path';
           }
         </div>
       </desktop-split-pane>
-      }
     </div>
 
     <!-- Add Modal -->
@@ -617,14 +559,11 @@ import { isBookPath } from '@shared/document/book-path';
       }
     }
 
-    /* Browse/Workspace content fills the area below the top bar */
+    /* The workspace fills the tab */
     /* 'backwards' not 'both': don't retain viewFade's end transform, which would
        make the split-pane a containing block for position:fixed descendants
        (e.g. the diff-view change tooltip) and offset their placement. */
     desktop-split-pane { flex: 1; min-height: 0; animation: viewFade 0.2s ease backwards; }
-    /* Opacity-only fade: a lingering transform (from fill-mode: both) would make
-       this a containing block for the browse context menu's position:fixed. */
-    app-studio-browse { flex: 1; min-height: 0; display: block; animation: viewFadeOpacity 0.2s ease both; }
 
     /* Tab content fades in when switching tabs (each @if block recreates its root) */
     /* 'backwards' (not 'both'): apply the start state before the run for a clean
@@ -637,50 +576,12 @@ import { isBookPath } from '@shared/document/book-path';
       from { opacity: 0; transform: translateY(6px); }
       to   { opacity: 1; transform: translateY(0); }
     }
-    @keyframes viewFadeOpacity {
-      from { opacity: 0; }
-      to   { opacity: 1; }
-    }
     @keyframes tabFade {
       from { opacity: 0; transform: translateY(4px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    .studio-topbar {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border-default, rgba(255,255,255,0.08));
-      flex-shrink: 0;
-    }
-    .view-toggle {
-      display: flex;
-      background: var(--bg-elevated);
-      border-radius: 7px;
-      padding: 2px;
-      flex-shrink: 0;
-    }
-    .view-toggle button {
-      border: none;
-      background: none;
-      color: var(--text-secondary);
-      padding: 5px 14px;
-      border-radius: 5px;
-      font-size: 0.82rem;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .view-toggle button.active {
-      background: var(--accent-primary, #06b6d4);
-      color: #fff;
-    }
-    .sort-control {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex-shrink: 0;
-    }
+    .sort-filter { align-items: center; }
     .sort-select {
       background: var(--bg-elevated);
       border: 1px solid var(--border-default, rgba(255,255,255,0.12));
@@ -708,52 +609,6 @@ import { isBookPath } from '@shared/document/book-path';
     }
     .sort-dir:hover:not(:disabled) { border-color: var(--accent-primary, #06b6d4); }
     .sort-dir:disabled { opacity: 0.4; cursor: default; }
-    .topbar-search { flex: 1; position: relative; max-width: 420px; }
-    .topbar-search .search-input {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 6px 28px 6px 12px;
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-size: 0.82rem;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-    .topbar-search .search-input:focus {
-      border-color: var(--accent-primary, #06b6d4);
-    }
-    .topbar-search .search-input::placeholder {
-      color: var(--text-muted, var(--text-secondary));
-    }
-    .topbar-search .search-clear {
-      position: absolute;
-      right: 8px;
-      top: 50%;
-      transform: translateY(-50%);
-      width: 18px;
-      height: 18px;
-      border: none;
-      background: none;
-      color: var(--text-muted, var(--text-secondary));
-      font-size: 1rem;
-      line-height: 1;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0;
-    }
-    .topbar-search .search-clear:hover { color: var(--text-primary); }
-    .topbar-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-left: auto;
-    }
-    .browse-count { font-size: 0.78rem; color: var(--text-secondary); }
-    .browse-tags { padding: 8px 16px; flex-shrink: 0; }
     .panel-back-btn {
       align-self: flex-start;
       background: none; border: 1px solid var(--border-default, rgba(255,255,255,0.12));
@@ -853,8 +708,8 @@ import { isBookPath } from '@shared/document/book-path';
       white-space: nowrap;
     }
 
-    /* Left-pane variant: the pane is narrow, so these wrap onto a second line
-       instead of scrolling out of sight like the wide Browse bar does. */
+    /* The pane is narrow, so these wrap onto a second line instead of
+       scrolling out of sight. */
     .tag-filter-bar.narration-filter {
       flex-wrap: wrap;
       row-gap: 4px;
@@ -1520,8 +1375,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   /**
    * The narration modal, hosted once in the shell.
    *
-   * This tab's two Process doors — the Browse card and an article's Finalize —
-   * open it rather than navigating anywhere, since 2026-08-27 when the Process
+   * This tab's Process door — an article's Finalize — opens it rather than navigating anywhere, since 2026-08-27 when the Process
    * page they used to open was erased.
    */
   private readonly narrationDialog = inject(NarrationDialogService);
@@ -1541,9 +1395,6 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   readonly showAddModal = signal<boolean>(false);
   readonly selectedItemId = signal<string | null>(null);
-
-  // View mode: 'browse' = cover-grid library view, 'workspace' = list + workflow.
-  readonly viewMode = signal<'browse' | 'workspace'>('workspace');
 
   // Drag-and-drop file import
   readonly showDropOverlay = signal<boolean>(false);
@@ -1647,15 +1498,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     return archived;
   });
 
-  // Combined collection for the Browse grid. Title/date sorts interleave books
-  // and articles into one true order; Custom keeps them grouped (books then
-  // articles) since each type owns a separate manual sortOrder space.
-  readonly browseItems = computed(() => {
-    const combined = [...this.filteredBooks(), ...this.filteredArticles()];
-    const sort = this.studioService.sort();
-    return sort.field === 'custom' ? combined : sortStudioItems(combined, sort);
-  });
-
   // Tab navigation
   readonly mainTab = signal<MainTab>('files');
 
@@ -1736,7 +1578,7 @@ export class StudioComponent implements OnInit, OnDestroy {
       console.error(`[studio] Asked to open "${id}", which is not in this library's project list.`);
       return;
     }
-    this.openInWorkspace(item);
+    this.selectItem(item);
   }, { allowSignalWrites: true });
 
   // Full-resolution cover for the metadata editor preview, loaded on demand when a
@@ -2256,56 +2098,10 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Open a book from the Browse grid into the Studio workspace.
-  openInWorkspace(item: StudioItem): void {
-    this.selectItem(item);
-    this.viewMode.set('workspace');
-  }
-
-  /**
-   * Process, pressed on a card in the Browse grid.
-   *
-   * Owen, 2026-08-16: "im going to need a tts processing button on the homepage
-   * once i export a tts-able epub."
-   *
-   * It goes through the SAME door the versions page's Narrate button uses — the
-   * narration modal, opened on a complete target — so there is one Process
-   * destination and not a second one that drifts. It used to open the Process
-   * tab, which was erased on 2026-08-27; the destination changed, the rule about
-   * WHICH file did not. That was decided in main (`ttsTarget`) and travels with
-   * the press; nothing here picks a version, and nothing downstream picks a
-   * different one, because the id names exactly one of this book's records.
-   *
-   * The refusals are separate facts and are said separately. A card with no
-   * target draws no button at all, so reaching here without one is a bug in the
-   * grid rather than a user error — logged, not shown. A target whose FILE has
-   * gone is an ordinary thing (output/ is the folder a book's output delete
-   * clears) and is told to the user in the notice bar, naming the file. A book
-   * with no project directory has nowhere to put sentences OR an audiobook, and
-   * is refused before the dialog rather than inside it.
-   *
-   * 'document' because the press was made ON a file. The card has no view of the
-   * sentence cache; the cache-only door is the Versions page's own row.
-   */
-  processFromBrowse(item: StudioItem): void {
-    const target = item.ttsTarget;
-    if (!target) {
-      console.error(
-        `[studio] Process was pressed on "${item.title}", which has no TTS target. The button is `
-        + 'only drawn for a book main named one file for — this is a bug in the browse grid.');
-      return;
-    }
-    this.openInWorkspace(item);
-    this.openNarrationOn(item, target);
-  }
-
   /**
    * Open the narration modal on the file MAIN named for this project.
    *
-   * Shared by the two doors that have an ITEM rather than a version row — the
-   * Browse card's Process and an article's Finalize. Both refusals are about
-   * the same two facts, and writing them twice is how one of them comes to say
-   * something the other does not.
+   * The door that has an ITEM rather than a version row: an article's Finalize.
    *
    * Always 'document': a press that names a FILE is a press about reading it.
    */
@@ -2337,20 +2133,6 @@ export class StudioComponent implements OnInit, OnDestroy {
       outputFilename: item.outputFilename || '',
       isArticle: item.type === 'article',
     }, 'document');
-  }
-
-  // Quick "Export audiobook" from the Browse context menu.
-  exportFromBrowse(item: StudioItem): void {
-    this.contextMenuItem.set(item);
-    void this.exportM4b();
-  }
-
-  // "Classify as Book/Article" from the Browse context menu. Browse has no
-  // multi-selection, so this is always the one clicked item.
-  reclassifyFromBrowse(item: StudioItem): void {
-    this.contextMenuItem.set(item);
-    this.contextMenuSelectedIds.set([item.id]);
-    void this.reclassifyContextMenuItem();
   }
 
   onItemAdded(item: StudioItem): void {
@@ -2581,7 +2363,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   /**
    * Export an audiobook to a user-chosen location. Called two ways:
    *  - From the Versions Audio row with the CLICKED variant's absolute m4b path.
-   *  - From the Browse/context menu with no argument, in which case it targets
+   *  - From the context menu with no argument, in which case it targets
    *    the context-menu item's registered audiobook.
    */
   async exportM4b(m4bPath?: string): Promise<void> {
@@ -2973,25 +2755,6 @@ export class StudioComponent implements OnInit, OnDestroy {
       this.studioService.setSortField('custom');
     }
     this.studioService.reorderItems(event.section, event.orderedIds);
-  }
-
-  /**
-   * Reorder from the Browse grid, which mixes books and articles. Switch to
-   * Custom and persist each type's new relative order (the grid groups books
-   * before articles in Custom, so cross-type position resolves to rank within
-   * the dragged item's own type).
-   */
-  onBrowseReorder(orderedIds: string[]): void {
-    if (this.studioService.sort().field !== 'custom') {
-      this.studioService.setSortField('custom');
-    }
-    const items = orderedIds
-      .map(id => this.studioService.getItem(id))
-      .filter((i): i is StudioItem => !!i);
-    const bookIds = items.filter(i => i.type === 'book').map(i => i.id);
-    const articleIds = items.filter(i => i.type === 'article').map(i => i.id);
-    void this.studioService.reorderItems('books', bookIds);
-    void this.studioService.reorderItems('articles', articleIds);
   }
 
   async onArchive(ids: string[]): Promise<void> {
