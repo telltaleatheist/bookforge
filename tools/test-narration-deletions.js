@@ -1711,6 +1711,31 @@ function illustratedLayout() {
       'a derivation that reached everything was refused anyway');
   });
 
+  // 2026-11-27, Crisis of Conscience: a verse table whose cleaned text was
+  // rewritten held a footnote marker ("before¹⁰ the throne"). The marker strip
+  // runs on the bytes as they are written, and the read-back expected the "10"
+  // anyway, so a correct copy was discarded. A rewritten unit is expected to say
+  // what the WRITTEN file says, marker gone.
+  await check('a rewritten unit holding a footnote marker is expected without it', async () => {
+    const chapter = CHAPTER.replace(
+      'The first paragraph of the book, which is ordinary body prose and long enough to align.',
+      'In 1914 they stood before<sup>10</sup> the throne, and the paragraph is long enough to align.');
+    const book = await buildEpub('rewrite-marker.epub', chapter);
+    const units = await readEpubConversionUnits(book);
+    const unit = units.find((u) => /1914/.test(u.text));
+    assert.ok(unit, `no unit holds the year: ${JSON.stringify(units.map((u) => u.text))}`);
+    const at = unit.text.indexOf('1914');
+    const out = path.join(ROOT, 'rewrite-marker.tts.epub');
+    const written = await writeNarrationEpub(book, out, [], {
+      rewrites: new Map([[unit.key, [{ at, find: '1914', replace: 'nineteen fourteen' }]]]),
+    });
+    assert.ok(written, 'the copy was not written');
+    const xhtml = await readEntry(out, 'OEBPS/chapter-01.xhtml');
+    assert.match(xhtml, /In nineteen fourteen they stood before the throne/,
+      'the rewrite landed and the marker is gone');
+    assert.doesNotMatch(xhtml, /<sup>10<\/sup>/);
+  });
+
   // ── report ────────────────────────────────────────────────────────────────
   for (const [status, name, message] of results) {
     console.log(`${status === 'ok' ? '  ok  ' : ' FAIL '} ${name}${message ? `\n        ${message}` : ''}`);

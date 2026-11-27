@@ -7241,6 +7241,23 @@ function narrationUnitText(el: any, stripSups: boolean): string {
  * cuts. The tag travels with the text because a paragraph and the heading above
  * it can carry the same words.
  */
+/**
+ * A copy of `el` without the footnote markers the strip is about to remove, by
+ * {@link narrationUnitText}'s rule, so a text read off it is the text the
+ * written file will hold. The original is untouched: it is the tree being
+ * written, and the strip runs on its bytes.
+ */
+function withoutFootnoteMarkers(el: any): any {
+  const copy = el.cloneNode(true);
+  const sups = Array.from(copy.getElementsByTagName('sup') as ArrayLike<any>);
+  for (const sup of sups) {
+    if (isFootnoteMarkerSupText((sup.textContent ?? '').trim()) && sup.parentNode) {
+      sup.parentNode.removeChild(sup);
+    }
+  }
+  return copy;
+}
+
 export function narrationUnitSignature(el: any, stripSups: boolean): string {
   const tag = (el.tagName ?? '').toLowerCase();
   const text = narrationUnitText(el, stripSups).replace(/[\s ]+/g, '');
@@ -8237,8 +8254,13 @@ export async function writeNarrationEpub(
       applyTextNodeRewrites(el, edits, key);
       rewrittenSpans += edits.length;
       overrideTouched.add(fileByKey.get(key)!);
+      // As the WRITTEN file will say it: the marker strip runs on the bytes after
+      // this, so a rewritten unit holding a footnote marker (Crisis of
+      // Conscience's verse table, 2026-11-27: "before¹⁰ the throne") would
+      // otherwise be expected to say a "10" the copy rightly does not.
       rewriteExpectations.push({
-        key, file: fileByKey.get(key)!, kind: 'unit', text: getUnitTextContent(el),
+        key, file: fileByKey.get(key)!, kind: 'unit',
+        text: getUnitTextContent(stripSups ? withoutFootnoteMarkers(el) : el),
       });
     }
 
